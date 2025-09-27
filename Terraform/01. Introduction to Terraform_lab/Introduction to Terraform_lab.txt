@@ -1,0 +1,417 @@
+Lab 1: Introduction to Terraform
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Understand the fundamental concepts of Infrastructure as Code (IaC) using Terraform
+Install and configure Terraform on a Linux system
+Initialize a Terraform working directory and understand the project structure
+Write basic Terraform configuration files using HashiCorp Configuration Language (HCL)
+Create and manage AWS EC2 instances using Terraform
+Execute Terraform commands to plan, apply, and destroy infrastructure
+Understand Terraform state management basics
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Linux command line operations
+Familiarity with text editors (nano, vim, or similar)
+Basic knowledge of cloud computing concepts
+An AWS account with programmatic access (Access Key ID and Secret Access Key)
+Understanding of basic networking concepts (VPC, subnets, security groups)
+Lab Environment
+Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated Linux machine. The provided Linux machine is bare metal with no pre-installed tools, so you will need to install Terraform and other required tools during the lab following the instructions below.
+
+Task 1: Install Terraform
+Subtask 1.1: Update System Packages
+First, ensure your system packages are up to date:
+
+sudo apt update
+sudo apt upgrade -y
+Subtask 1.2: Install Required Dependencies
+Install necessary packages for downloading and verifying Terraform:
+
+sudo apt install -y wget curl unzip gnupg software-properties-common
+Subtask 1.3: Add HashiCorp GPG Key
+Add the official HashiCorp GPG key to verify package authenticity:
+
+wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+Subtask 1.4: Add HashiCorp Repository
+Add the official HashiCorp repository to your system:
+
+echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+Subtask 1.5: Install Terraform
+Update package list and install Terraform:
+
+sudo apt update
+sudo apt install terraform
+Subtask 1.6: Verify Terraform Installation
+Confirm Terraform is installed correctly:
+
+terraform version
+You should see output similar to:
+
+Terraform v1.6.0
+on linux_amd64
+Subtask 1.7: Install AWS CLI (Required for AWS Authentication)
+Install AWS CLI to configure AWS credentials:
+
+sudo apt install -y awscli
+Verify AWS CLI installation:
+
+aws --version
+Task 2: Initialize a Terraform Working Directory
+Subtask 2.1: Create Project Directory
+Create a dedicated directory for your Terraform project:
+
+mkdir ~/terraform-lab
+cd ~/terraform-lab
+Subtask 2.2: Configure AWS Credentials
+Configure your AWS credentials using AWS CLI:
+
+aws configure
+When prompted, enter:
+
+AWS Access Key ID: Your AWS access key
+AWS Secret Access Key: Your AWS secret key
+Default region name: us-east-1
+Default output format: json
+Subtask 2.3: Create Basic Directory Structure
+Create a organized directory structure for your Terraform project:
+
+mkdir -p {modules,environments/dev,environments/prod}
+ls -la
+Subtask 2.4: Initialize Terraform Working Directory
+Initialize the Terraform working directory:
+
+terraform init
+You should see output indicating successful initialization:
+
+Terraform has been successfully initialized!
+Note: At this point, Terraform creates a .terraform directory and downloads necessary provider plugins.
+
+Subtask 2.5: Examine Terraform Directory Structure
+List the contents to see what Terraform created:
+
+ls -la
+ls -la .terraform/
+Task 3: Write a Basic Terraform Configuration to Create an AWS EC2 Instance
+Subtask 3.1: Create Provider Configuration
+Create the main Terraform configuration file:
+
+nano main.tf
+Add the following provider configuration:
+
+# Configure the AWS Provider
+terraform {
+  required_version = ">= 1.0"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+# Configure AWS Provider
+provider "aws" {
+  region = var.aws_region
+}
+Save and exit the file (Ctrl+X, then Y, then Enter).
+
+Subtask 3.2: Create Variables File
+Create a variables file to make your configuration flexible:
+
+nano variables.tf
+Add the following variable definitions:
+
+# Variables for AWS configuration
+variable "aws_region" {
+  description = "AWS region for resources"
+  type        = string
+  default     = "us-east-1"
+}
+
+variable "instance_type" {
+  description = "EC2 instance type"
+  type        = string
+  default     = "t2.micro"
+}
+
+variable "key_name" {
+  description = "AWS Key Pair name for EC2 access"
+  type        = string
+  default     = "my-terraform-key"
+}
+
+variable "environment" {
+  description = "Environment name"
+  type        = string
+  default     = "dev"
+}
+Save and exit the file.
+
+Subtask 3.3: Create Data Sources
+Create a file for data sources to fetch existing AWS resources:
+
+nano data.tf
+Add the following data sources:
+
+# Get the latest Amazon Linux 2 AMI
+data "aws_ami" "amazon_linux" {
+  most_recent = true
+  owners      = ["amazon"]
+
+  filter {
+    name   = "name"
+    values = ["amzn2-ami-hvm-*-x86_64-gp2"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+}
+
+# Get default VPC
+data "aws_vpc" "default" {
+  default = true
+}
+
+# Get default subnet
+data "aws_subnet" "default" {
+  vpc_id            = data.aws_vpc.default.id
+  availability_zone = "${var.aws_region}a"
+  default_for_az    = true
+}
+Save and exit the file.
+
+Subtask 3.4: Create Security Group Resource
+Create a security group configuration:
+
+nano security.tf
+Add the following security group configuration:
+
+# Create security group for EC2 instance
+resource "aws_security_group" "terraform_sg" {
+  name_prefix = "terraform-lab-sg-"
+  description = "Security group for Terraform lab EC2 instance"
+  vpc_id      = data.aws_vpc.default.id
+
+  # Allow SSH access
+  ingress {
+    description = "SSH"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # Allow HTTP access
+  ingress {
+    description = "HTTP"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # Allow all outbound traffic
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name        = "terraform-lab-sg"
+    Environment = var.environment
+    CreatedBy   = "Terraform"
+  }
+}
+Save and exit the file.
+
+Subtask 3.5: Create EC2 Instance Resource
+Create the main EC2 instance configuration:
+
+nano ec2.tf
+Add the following EC2 instance configuration:
+
+# Create EC2 instance
+resource "aws_instance" "terraform_instance" {
+  ami                    = data.aws_ami.amazon_linux.id
+  instance_type          = var.instance_type
+  subnet_id              = data.aws_subnet.default.id
+  vpc_security_group_ids = [aws_security_group.terraform_sg.id]
+
+  # User data script to install and start Apache
+  user_data = <<-EOF
+              #!/bin/bash
+              yum update -y
+              yum install -y httpd
+              systemctl start httpd
+              systemctl enable httpd
+              echo "<h1>Hello from Terraform Lab!</h1>" > /var/www/html/index.html
+              echo "<p>Instance ID: $(curl -s http://169.254.169.254/latest/meta-data/instance-id)</p>" >> /var/www/html/index.html
+              echo "<p>Availability Zone: $(curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone)</p>" >> /var/www/html/index.html
+              EOF
+
+  tags = {
+    Name        = "terraform-lab-instance"
+    Environment = var.environment
+    CreatedBy   = "Terraform"
+  }
+}
+Save and exit the file.
+
+Subtask 3.6: Create Outputs File
+Create an outputs file to display important information:
+
+nano outputs.tf
+Add the following output configurations:
+
+# Output values
+output "instance_id" {
+  description = "ID of the EC2 instance"
+  value       = aws_instance.terraform_instance.id
+}
+
+output "instance_public_ip" {
+  description = "Public IP address of the EC2 instance"
+  value       = aws_instance.terraform_instance.public_ip
+}
+
+output "instance_public_dns" {
+  description = "Public DNS name of the EC2 instance"
+  value       = aws_instance.terraform_instance.public_dns
+}
+
+output "security_group_id" {
+  description = "ID of the security group"
+  value       = aws_security_group.terraform_sg.id
+}
+
+output "website_url" {
+  description = "URL to access the web server"
+  value       = "http://${aws_instance.terraform_instance.public_ip}"
+}
+Save and exit the file.
+
+Subtask 3.7: Validate Terraform Configuration
+Check if your Terraform configuration is syntactically correct:
+
+terraform validate
+You should see:
+
+Success! The configuration is valid.
+Subtask 3.8: Format Terraform Files
+Format your Terraform files for consistency:
+
+terraform fmt
+Subtask 3.9: Initialize with New Providers
+Since we added the AWS provider, reinitialize Terraform:
+
+terraform init
+Subtask 3.10: Plan the Infrastructure
+Create an execution plan to see what Terraform will create:
+
+terraform plan
+Review the output carefully. You should see that Terraform plans to create:
+
+1 security group
+1 EC2 instance
+Subtask 3.11: Apply the Configuration
+Apply the Terraform configuration to create the infrastructure:
+
+terraform apply
+When prompted, type yes to confirm the creation.
+
+Subtask 3.12: Verify the Deployment
+After successful deployment, verify your resources:
+
+Check Terraform outputs:
+terraform output
+Test the web server (replace with your instance's public IP):
+curl http://$(terraform output -raw instance_public_ip)
+List Terraform state:
+terraform state list
+Show detailed resource information:
+terraform show
+Subtask 3.13: Examine Terraform State
+Understand Terraform state management:
+
+# List state file
+ls -la terraform.tfstate*
+
+# View state file content (optional)
+cat terraform.tfstate | head -20
+Subtask 3.14: Make a Configuration Change
+Modify the instance to demonstrate Terraform's change management:
+
+nano ec2.tf
+Add a new tag to the EC2 instance resource:
+
+tags = {
+  Name        = "terraform-lab-instance"
+  Environment = var.environment
+  CreatedBy   = "Terraform"
+  Modified    = "true"
+}
+Save the file and apply the change:
+
+terraform plan
+terraform apply
+Subtask 3.15: Clean Up Resources
+When you're finished with the lab, destroy the created resources:
+
+terraform destroy
+When prompted, type yes to confirm the destruction.
+
+Verify all resources are destroyed:
+
+terraform show
+Troubleshooting Tips
+Common Issues and Solutions
+Issue 1: AWS credentials not configured
+
+Solution: Run aws configure and ensure valid credentials are provided
+Issue 2: Terraform initialization fails
+
+Solution: Check internet connectivity and run terraform init -upgrade
+Issue 3: EC2 instance creation fails due to key pair
+
+Solution: Either create a key pair in AWS console or remove the key_name reference from the configuration
+Issue 4: Security group rules too permissive
+
+Solution: Modify CIDR blocks to restrict access to specific IP ranges instead of 0.0.0.0/0
+Issue 5: Instance not accessible via HTTP
+
+Solution: Wait a few minutes for user data script to complete, or check security group rules
+Key Concepts Learned
+Infrastructure as Code (IaC)
+Terraform enables you to define infrastructure using code, making it version-controlled, repeatable, and consistent.
+
+Terraform Workflow
+The standard Terraform workflow consists of:
+
+Write - Author infrastructure as code
+Plan - Preview changes before applying
+Apply - Provision infrastructure
+Terraform State
+Terraform maintains a state file that tracks the current state of your infrastructure, enabling it to determine what changes need to be made.
+
+Resource Dependencies
+Terraform automatically determines the correct order to create resources based on their dependencies.
+
+Conclusion
+In this lab, you have successfully:
+
+Installed Terraform on a Linux system using the official HashiCorp repository
+Initialized a Terraform working directory and understood the project structure
+Created a comprehensive Terraform configuration using multiple files for better organization
+Deployed an AWS EC2 instance with a security group using Infrastructure as Code principles
+Learned to use Terraform commands including init, validate, plan, apply, and destroy
+Understood basic Terraform state management and resource dependencies
+Implemented best practices such as using variables, data sources, and outputs
+This foundation in Terraform will enable you to manage cloud infrastructure efficiently and consistently. The skills you've learned here scale from simple single-resource deployments to complex multi-tier applications across multiple cloud providers. Understanding Infrastructure as Code is crucial in modern DevOps practices, as it brings the same benefits of version control, testing, and automation that developers enjoy with application code to infrastructure management.
+
+The modular approach you've learned with separate files for variables, data sources, security groups, and outputs will serve you well as you progress to more complex Terraform projects involving multiple environments, modules, and team collaboration.
