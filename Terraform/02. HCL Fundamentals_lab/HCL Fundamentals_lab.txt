@@ -1,0 +1,1005 @@
+Lab 2: HCL Fundamentals
+Lab Objectives
+By the end of this lab, students will be able to:
+
+Understand the basic syntax and structure of HashiCorp Configuration Language (HCL)
+Define and use variables, locals, and outputs in HCL configurations
+Implement advanced HCL features including for_each, count, and dynamic blocks
+Create and test a complete HCL configuration for provisioning resources
+Validate and format HCL code using Terraform tools
+Apply HCL best practices for maintainable infrastructure code
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of infrastructure concepts
+Familiarity with command-line operations in Linux
+Basic knowledge of text editors (nano, vim, or similar)
+Understanding of key-value pairs and basic programming concepts
+Lab Environment
+Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated environment. The provided Linux machine is bare metal with no pre-installed tools, so you will install all required tools during the lab exercises.
+
+Task 1: Environment Setup and HCL Basics
+Subtask 1.1: Install Required Tools
+First, we need to install Terraform, which includes the HCL parser and validation tools.
+
+Update the system package manager:
+sudo apt update
+Install required dependencies:
+sudo apt install -y gnupg software-properties-common curl
+Add the HashiCorp GPG key:
+curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo apt-key add -
+Add the HashiCorp repository:
+sudo apt-add-repository "deb [arch=amd64] https://apt.releases.hashicorp.com $(lsb_release -cs) main"
+Update package information and install Terraform:
+sudo apt update
+sudo apt install terraform
+Verify the installation:
+terraform version
+Subtask 1.2: Create Lab Directory Structure
+Create a dedicated directory for this lab:
+mkdir -p ~/hcl-fundamentals-lab
+cd ~/hcl-fundamentals-lab
+Create subdirectories for different exercises:
+mkdir -p examples/{variables,locals,outputs,advanced}
+Subtask 1.3: Understanding HCL Syntax
+Create your first HCL file to understand basic syntax:
+nano examples/basic-syntax.tf
+Add the following content to understand HCL structure:
+# This is a comment in HCL
+# HCL uses blocks, arguments, and expressions
+
+# Basic block structure
+resource "local_file" "example" {
+  content  = "Hello, HCL World!"
+  filename = "${path.module}/hello.txt"
+}
+
+# Arguments can be strings, numbers, booleans, or expressions
+variable "example_string" {
+  type        = string
+  default     = "default value"
+  description = "An example string variable"
+}
+
+variable "example_number" {
+  type    = number
+  default = 42
+}
+
+variable "example_boolean" {
+  type    = bool
+  default = true
+}
+
+# Lists and maps
+variable "example_list" {
+  type    = list(string)
+  default = ["item1", "item2", "item3"]
+}
+
+variable "example_map" {
+  type = map(string)
+  default = {
+    key1 = "value1"
+    key2 = "value2"
+  }
+}
+Initialize and validate the configuration:
+cd examples
+terraform init
+terraform validate
+Format the code to see HCL formatting standards:
+terraform fmt
+Task 2: Working with Variables, Locals, and Outputs
+Subtask 2.1: Define and Use Variables
+Create a comprehensive variables example:
+nano variables/variables.tf
+Add the following variable definitions:
+# Input variables
+variable "environment" {
+  description = "The deployment environment"
+  type        = string
+  default     = "development"
+  
+  validation {
+    condition     = contains(["development", "staging", "production"], var.environment)
+    error_message = "Environment must be development, staging, or production."
+  }
+}
+
+variable "instance_count" {
+  description = "Number of instances to create"
+  type        = number
+  default     = 2
+  
+  validation {
+    condition     = var.instance_count >= 1 && var.instance_count <= 10
+    error_message = "Instance count must be between 1 and 10."
+  }
+}
+
+variable "tags" {
+  description = "Tags to apply to resources"
+  type        = map(string)
+  default = {
+    Project = "HCL-Lab"
+    Owner   = "Student"
+  }
+}
+
+variable "enable_monitoring" {
+  description = "Enable monitoring for resources"
+  type        = bool
+  default     = false
+}
+
+variable "allowed_ports" {
+  description = "List of allowed ports"
+  type        = list(number)
+  default     = [80, 443, 22]
+}
+
+# Complex variable types
+variable "server_config" {
+  description = "Server configuration object"
+  type = object({
+    name         = string
+    instance_type = string
+    disk_size    = number
+    backup_enabled = bool
+  })
+  default = {
+    name         = "web-server"
+    instance_type = "t3.micro"
+    disk_size    = 20
+    backup_enabled = true
+  }
+}
+Create a terraform.tfvars file to override defaults:
+nano variables/terraform.tfvars
+Add custom values:
+environment = "staging"
+instance_count = 3
+enable_monitoring = true
+tags = {
+  Project = "HCL-Advanced-Lab"
+  Owner   = "Advanced-Student"
+  Environment = "staging"
+}
+allowed_ports = [80, 443, 22, 8080]
+server_config = {
+  name         = "advanced-web-server"
+  instance_type = "t3.small"
+  disk_size    = 50
+  backup_enabled = true
+}
+Subtask 2.2: Implement Local Values
+Create a locals configuration file:
+nano variables/locals.tf
+Add local value definitions:
+locals {
+  # Simple local values
+  common_name = "${var.environment}-${var.server_config.name}"
+  
+  # Computed local values
+  total_storage = var.instance_count * var.server_config.disk_size
+  
+  # Conditional local values
+  monitoring_enabled = var.environment == "production" ? true : var.enable_monitoring
+  
+  # Complex local values using functions
+  common_tags = merge(var.tags, {
+    Environment = var.environment
+    Timestamp   = timestamp()
+    TotalInstances = tostring(var.instance_count)
+  })
+  
+  # Local values using other locals
+  resource_prefix = "${local.common_name}-${formatdate("YYYY-MM-DD", timestamp())}"
+  
+  # List manipulation
+  security_ports = concat(var.allowed_ports, [3389])
+  
+  # Map manipulation
+  server_configs = {
+    for i in range(var.instance_count) : 
+    "server-${i + 1}" => {
+      name = "${local.common_name}-${i + 1}"
+      port = var.allowed_ports[i % length(var.allowed_ports)]
+      size = var.server_config.disk_size
+    }
+  }
+}
+Subtask 2.3: Define Outputs
+Create an outputs configuration file:
+nano variables/outputs.tf
+Add comprehensive output definitions:
+# Simple outputs
+output "environment_name" {
+  description = "The current environment"
+  value       = var.environment
+}
+
+output "instance_count" {
+  description = "Number of instances configured"
+  value       = var.instance_count
+}
+
+# Outputs using local values
+output "common_resource_name" {
+  description = "Common name used for resources"
+  value       = local.common_name
+}
+
+output "total_storage_gb" {
+  description = "Total storage across all instances"
+  value       = local.total_storage
+}
+
+# Complex outputs
+output "server_configurations" {
+  description = "Configuration for each server"
+  value       = local.server_configs
+}
+
+output "merged_tags" {
+  description = "All tags that will be applied to resources"
+  value       = local.common_tags
+  sensitive   = false
+}
+
+# Conditional outputs
+output "monitoring_status" {
+  description = "Whether monitoring is enabled"
+  value       = local.monitoring_enabled ? "Enabled" : "Disabled"
+}
+
+# Formatted outputs
+output "deployment_summary" {
+  description = "Summary of the deployment configuration"
+  value = {
+    environment     = var.environment
+    instance_count  = var.instance_count
+    total_storage   = "${local.total_storage} GB"
+    monitoring      = local.monitoring_enabled
+    resource_prefix = local.resource_prefix
+  }
+}
+
+# Sensitive output example
+output "server_internal_config" {
+  description = "Internal server configuration (sensitive)"
+  value = {
+    admin_ports = local.security_ports
+    config_hash = md5(jsonencode(var.server_config))
+  }
+  sensitive = true
+}
+Test the variables, locals, and outputs:
+cd ~/hcl-fundamentals-lab/examples/variables
+terraform init
+terraform validate
+terraform plan
+Apply the configuration to see outputs:
+terraform apply -auto-approve
+View specific outputs:
+terraform output
+terraform output deployment_summary
+terraform output -json server_configurations
+Task 3: Advanced HCL Features
+Subtask 3.1: Implementing for_each
+Create a for_each example:
+nano advanced/for_each.tf
+Add for_each implementations:
+# Variables for for_each examples
+variable "users" {
+  description = "Map of users to create"
+  type = map(object({
+    role        = string
+    department  = string
+    access_level = number
+  }))
+  default = {
+    "alice" = {
+      role        = "developer"
+      department  = "engineering"
+      access_level = 3
+    }
+    "bob" = {
+      role        = "manager"
+      department  = "engineering"
+      access_level = 5
+    }
+    "charlie" = {
+      role        = "analyst"
+      department  = "data"
+      access_level = 2
+    }
+  }
+}
+
+variable "environments" {
+  description = "Set of environments to create"
+  type        = set(string)
+  default     = ["dev", "staging", "prod"]
+}
+
+# for_each with maps
+resource "local_file" "user_configs" {
+  for_each = var.users
+  
+  filename = "${path.module}/users/${each.key}.json"
+  content = jsonencode({
+    username     = each.key
+    role         = each.value.role
+    department   = each.value.department
+    access_level = each.value.access_level
+    created_at   = timestamp()
+  })
+}
+
+# for_each with sets
+resource "local_file" "environment_configs" {
+  for_each = var.environments
+  
+  filename = "${path.module}/environments/${each.value}.conf"
+  content = templatefile("${path.module}/templates/env.tpl", {
+    environment = each.value
+    timestamp   = timestamp()
+  })
+}
+
+# for_each with complex expressions
+locals {
+  # Create a map from the users for specific roles
+  developers = {
+    for name, user in var.users : name => user
+    if user.role == "developer"
+  }
+  
+  # Create environment-specific configurations
+  env_configs = {
+    for env in var.environments : env => {
+      name = env
+      replicas = env == "prod" ? 3 : 1
+      resources = env == "prod" ? "high" : "low"
+    }
+  }
+}
+
+resource "local_file" "developer_access" {
+  for_each = local.developers
+  
+  filename = "${path.module}/access/${each.key}-dev-access.json"
+  content = jsonencode({
+    developer = each.key
+    permissions = [
+      "read",
+      "write",
+      each.value.access_level >= 3 ? "deploy" : null
+    ]
+    valid_until = timeadd(timestamp(), "720h") # 30 days
+  })
+}
+Create the template file:
+mkdir -p advanced/templates
+nano advanced/templates/env.tpl
+Add template content:
+# Environment Configuration for ${environment}
+# Generated at: ${timestamp}
+
+[environment]
+name = "${environment}"
+debug = ${environment == "dev" ? "true" : "false"}
+log_level = "${environment == "prod" ? "error" : "debug"}"
+
+[database]
+host = "${environment}-db.example.com"
+port = 5432
+ssl_required = ${environment == "prod" ? "true" : "false"}
+
+[cache]
+enabled = ${environment != "dev" ? "true" : "false"}
+ttl = ${environment == "prod" ? "3600" : "300"}
+Subtask 3.2: Using Count Parameter
+Create a count example:
+nano advanced/count.tf
+Add count implementations:
+# Variables for count examples
+variable "server_count" {
+  description = "Number of servers to create"
+  type        = number
+  default     = 3
+}
+
+variable "create_backup_servers" {
+  description = "Whether to create backup servers"
+  type        = bool
+  default     = true
+}
+
+variable "server_names" {
+  description = "List of server names"
+  type        = list(string)
+  default     = ["web", "api", "database", "cache", "monitor"]
+}
+
+# Basic count usage
+resource "local_file" "server_configs" {
+  count = var.server_count
+  
+  filename = "${path.module}/servers/server-${count.index + 1}.conf"
+  content = templatefile("${path.module}/templates/server.tpl", {
+    server_id   = count.index + 1
+    server_name = "server-${count.index + 1}"
+    is_primary  = count.index == 0
+  })
+}
+
+# Conditional count
+resource "local_file" "backup_configs" {
+  count = var.create_backup_servers ? var.server_count : 0
+  
+  filename = "${path.module}/backups/backup-${count.index + 1}.conf"
+  content = templatefile("${path.module}/templates/backup.tpl", {
+    backup_id     = count.index + 1
+    source_server = "server-${count.index + 1}"
+    schedule      = count.index == 0 ? "hourly" : "daily"
+  })
+}
+
+# Count with list length
+resource "local_file" "named_servers" {
+  count = length(var.server_names)
+  
+  filename = "${path.module}/named/${var.server_names[count.index]}.json"
+  content = jsonencode({
+    name     = var.server_names[count.index]
+    index    = count.index
+    type     = count.index < 2 ? "frontend" : "backend"
+    priority = length(var.server_names) - count.index
+  })
+}
+
+# Locals using count
+locals {
+  server_ips = [
+    for i in range(var.server_count) : "192.168.1.${i + 10}"
+  ]
+  
+  server_ports = [
+    for i in range(var.server_count) : 8080 + i
+  ]
+}
+
+# Output count-based resources
+output "server_files" {
+  description = "List of server configuration files"
+  value       = local_file.server_configs[*].filename
+}
+
+output "server_details" {
+  description = "Server details with IPs and ports"
+  value = [
+    for i in range(var.server_count) : {
+      name = "server-${i + 1}"
+      ip   = local.server_ips[i]
+      port = local.server_ports[i]
+      file = local_file.server_configs[i].filename
+    }
+  ]
+}
+Create server template:
+nano advanced/templates/server.tpl
+Add server template content:
+# Server Configuration
+# Server ID: ${server_id}
+# Server Name: ${server_name}
+# Primary Server: ${is_primary}
+
+[server]
+id = ${server_id}
+name = "${server_name}"
+primary = ${is_primary}
+port = ${8080 + server_id - 1}
+ip = "192.168.1.${server_id + 9}"
+
+[logging]
+level = "${is_primary ? "info" : "warn"}"
+file = "/var/log/${server_name}.log"
+
+[monitoring]
+enabled = true
+interval = ${is_primary ? 30 : 60}
+Create backup template:
+nano advanced/templates/backup.tpl
+Add backup template content:
+# Backup Configuration
+# Backup ID: ${backup_id}
+# Source Server: ${source_server}
+
+[backup]
+id = ${backup_id}
+source = "${source_server}"
+schedule = "${schedule}"
+retention_days = 30
+
+[storage]
+path = "/backups/${source_server}"
+compression = true
+encryption = true
+Subtask 3.3: Dynamic Blocks
+Create a dynamic blocks example:
+nano advanced/dynamic_blocks.tf
+Add dynamic block implementations:
+# Variables for dynamic blocks
+variable "security_rules" {
+  description = "List of security rules"
+  type = list(object({
+    name        = string
+    port        = number
+    protocol    = string
+    cidr_blocks = list(string)
+    description = string
+  }))
+  default = [
+    {
+      name        = "http"
+      port        = 80
+      protocol    = "tcp"
+      cidr_blocks = ["0.0.0.0/0"]
+      description = "HTTP traffic"
+    },
+    {
+      name        = "https"
+      port        = 443
+      protocol    = "tcp"
+      cidr_blocks = ["0.0.0.0/0"]
+      description = "HTTPS traffic"
+    },
+    {
+      name        = "ssh"
+      port        = 22
+      protocol    = "tcp"
+      cidr_blocks = ["10.0.0.0/8"]
+      description = "SSH access"
+    }
+  ]
+}
+
+variable "storage_volumes" {
+  description = "Storage volume configurations"
+  type = list(object({
+    name = string
+    size = number
+    type = string
+    encrypted = bool
+    tags = map(string)
+  }))
+  default = [
+    {
+      name = "root"
+      size = 20
+      type = "gp3"
+      encrypted = true
+      tags = {
+        Purpose = "system"
+      }
+    },
+    {
+      name = "data"
+      size = 100
+      type = "gp3"
+      encrypted = true
+      tags = {
+        Purpose = "application-data"
+      }
+    }
+  ]
+}
+
+variable "network_interfaces" {
+  description = "Network interface configurations"
+  type = list(object({
+    name = string
+    subnet = string
+    security_groups = list(string)
+    public_ip = bool
+  }))
+  default = [
+    {
+      name = "primary"
+      subnet = "subnet-12345"
+      security_groups = ["sg-web", "sg-common"]
+      public_ip = true
+    },
+    {
+      name = "internal"
+      subnet = "subnet-67890"
+      security_groups = ["sg-internal"]
+      public_ip = false
+    }
+  ]
+}
+
+# Resource using dynamic blocks for security rules
+resource "local_file" "security_group_config" {
+  filename = "${path.module}/security/security-group.json"
+  content = jsonencode({
+    name = "web-security-group"
+    description = "Security group for web servers"
+    
+    # Dynamic ingress rules
+    ingress_rules = [
+      for rule in var.security_rules : {
+        name        = rule.name
+        from_port   = rule.port
+        to_port     = rule.port
+        protocol    = rule.protocol
+        cidr_blocks = rule.cidr_blocks
+        description = rule.description
+      }
+    ]
+    
+    # Static egress rule
+    egress_rules = [{
+      name        = "all-outbound"
+      from_port   = 0
+      to_port     = 0
+      protocol    = "-1"
+      cidr_blocks = ["0.0.0.0/0"]
+      description = "All outbound traffic"
+    }]
+  })
+}
+
+# Resource using dynamic blocks for storage
+resource "local_file" "instance_config" {
+  filename = "${path.module}/instances/web-instance.json"
+  content = jsonencode({
+    name = "web-server-instance"
+    instance_type = "t3.medium"
+    
+    # Dynamic block for storage volumes
+    block_device_mappings = [
+      for volume in var.storage_volumes : {
+        device_name = volume.name == "root" ? "/dev/sda1" : "/dev/sd${substr("bcdefghijk", index(var.storage_volumes, volume) - 1, 1)}1"
+        ebs = {
+          volume_size = volume.size
+          volume_type = volume.type
+          encrypted   = volume.encrypted
+          tags = merge(volume.tags, {
+            Name = "${volume.name}-volume"
+          })
+        }
+      }
+    ]
+    
+    # Dynamic block for network interfaces
+    network_interfaces = [
+      for idx, interface in var.network_interfaces : {
+        device_index = idx
+        description = "Network interface ${interface.name}"
+        subnet_id = interface.subnet
+        security_groups = interface.security_groups
+        associate_public_ip_address = interface.public_ip
+        tags = {
+          Name = "${interface.name}-interface"
+        }
+      }
+    ]
+  })
+}
+
+# Complex dynamic block example with nested dynamics
+locals {
+  application_config = {
+    services = [
+      {
+        name = "web"
+        ports = [80, 443]
+        health_checks = [
+          { path = "/health", interval = 30 },
+          { path = "/ready", interval = 60 }
+        ]
+      },
+      {
+        name = "api"
+        ports = [8080, 8443]
+        health_checks = [
+          { path = "/api/health", interval = 15 },
+          { path = "/api/metrics", interval = 120 }
+        ]
+      }
+    ]
+  }
+}
+
+resource "local_file" "application_config" {
+  filename = "${path.module}/applications/app-config.json"
+  content = jsonencode({
+    application = "web-application"
+    
+    # Nested dynamic blocks
+    services = [
+      for service in local.application_config.services : {
+        name = service.name
+        
+        # Dynamic ports
+        listeners = [
+          for port in service.ports : {
+            port = port
+            protocol = port == 443 || port == 8443 ? "https" : "http"
+            ssl_enabled = port == 443 || port == 8443
+          }
+        ]
+        
+        # Dynamic health checks
+        health_checks = [
+          for check in service.health_checks : {
+            path = check.path
+            interval_seconds = check.interval
+            timeout_seconds = 5
+            healthy_threshold = 2
+            unhealthy_threshold = 3
+          }
+        ]
+      }
+    ]
+  })
+}
+Subtask 3.4: Test Advanced Features
+Create necessary directories:
+cd ~/hcl-fundamentals-lab/examples/advanced
+mkdir -p {users,environments,access,servers,backups,named,security,instances,applications}
+Initialize and validate all configurations:
+terraform init
+terraform validate
+Plan the deployment:
+terraform plan
+Apply the configuration:
+terraform apply -auto-approve
+Examine the created files:
+find . -name "*.json" -o -name "*.conf" | head -10
+cat users/alice.json
+cat environments/dev.conf
+cat servers/server-1.conf
+Task 4: Create and Test Complete HCL Configuration
+Subtask 4.1: Build Comprehensive Infrastructure Configuration
+Create a complete infrastructure configuration:
+cd ~/hcl-fundamentals-lab
+mkdir complete-example
+cd complete-example
+Create the main configuration file:
+nano main.tf
+Add comprehensive infrastructure configuration:
+# Terraform configuration
+terraform {
+  required_version = ">= 1.0"
+  required_providers {
+    local = {
+      source  = "hashicorp/local"
+      version = "~> 2.4"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.4"
+    }
+  }
+}
+
+# Variables
+variable "project_name" {
+  description = "Name of the project"
+  type        = string
+  default     = "hcl-demo"
+}
+
+variable "environment" {
+  description = "Environment name"
+  type        = string
+  default     = "development"
+  
+  validation {
+    condition     = contains(["development", "staging", "production"], var.environment)
+    error_message = "Environment must be development, staging, or production."
+  }
+}
+
+variable "regions" {
+  description = "List of regions to deploy to"
+  type        = list(string)
+  default     = ["us-east-1", "us-west-2"]
+}
+
+variable "instance_types" {
+  description = "Map of instance types per environment"
+  type        = map(string)
+  default = {
+    development = "t3.micro"
+    staging     = "t3.small"
+    production  = "t3.medium"
+  }
+}
+
+variable "services" {
+  description = "Services configuration"
+  type = map(object({
+    port         = number
+    health_check = string
+    replicas     = number
+    cpu_limit    = string
+    memory_limit = string
+  }))
+  default = {
+    web = {
+      port         = 80
+      health_check = "/health"
+      replicas     = 2
+      cpu_limit    = "500m"
+      memory_limit = "512Mi"
+    }
+    api = {
+      port         = 8080
+      health_check = "/api/health"
+      replicas     = 3
+      cpu_limit    = "1000m"
+      memory_limit = "1Gi"
+    }
+    database = {
+      port         = 5432
+      health_check = "/db/ping"
+      replicas     = 1
+      cpu_limit    = "2000m"
+      memory_limit = "4Gi"
+    }
+  }
+}
+
+# Random resources for unique naming
+resource "random_id" "deployment" {
+  byte_length = 4
+}
+
+resource "random_password" "db_password" {
+  for_each = var.services
+  length   = 16
+  special  = true
+}
+
+# Local values
+locals {
+  deployment_id = random_id.deployment.hex
+  
+  common_tags = {
+    Project     = var.project_name
+    Environment = var.environment
+    DeploymentId = local.deployment_id
+    ManagedBy   = "terraform"
+    CreatedAt   = timestamp()
+  }
+  
+  # Generate service configurations for each region
+  regional_services = {
+    for region in var.regions : region => {
+      for service_name, service_config in var.services : service_name => merge(service_config, {
+        name = "${var.project_name}-${service_name}-${region}"
+        region = region
+        instance_type = var.instance_types[var.environment]
+        tags = merge(local.common_tags, {
+          Service = service_name
+          Region  = region
+        })
+      })
+    }
+  }
+  
+  # Flatten the structure for easier iteration
+  all_services = flatten([
+    for region, services in local.regional_services : [
+      for service_name, service_config in services : {
+        key    = "${region}-${service_name}"
+        region = region
+        name   = service_name
+        config = service_config
+      }
+    ]
+  ])
+  
+  # Create a map from the flattened list
+  services_map = {
+    for service in local.all_services : service.key => service
+  }
+}
+
+# Generate service configurations using for_each
+resource "local_file" "service_configs" {
+  for_each = local.services_map
+  
+  filename = "${path.module}/configs/${each.value.region}/${each.value.name}.json"
+  content = jsonencode({
+    service_name = each.value.name
+    region      = each.value.region
+    config      = each.value.config
+    password_id = random_password.db_password[each.value.name].id
+  })
+  
+  depends_on = [local_file.region_directories]
+}
+
+# Create region directories
+resource "local_file" "region_directories" {
+  for_each = toset(var.regions)
+  
+  filename = "${path.module}/configs/${each.value}/.gitkeep"
+  content  = "# Directory for ${each.value} configurations\n"
+}
+
+# Generate deployment scripts using count
+resource "local_file" "deployment_scripts" {
+  count = length(var.regions)
+  
+  filename = "${path.module}/scripts/deploy-${var.regions[count.index]}.sh"
+  content = templatefile("${path.module}/templates/deploy.tpl", {
+    region      = var.regions[count.index]
+    environment = var.environment
+    project     = var.project_name
+    services    = [for name, config in var.services : name]
+    deployment_id = local.deployment_id
+  })
+  
+  depends_on = [local_file.script_directory]
+}
+
+resource "local_file" "script_directory" {
+  filename = "${path.module}/scripts/.gitkeep"
+  content  = "# Scripts directory\n"
+}
+
+# Generate monitoring configuration using dynamic blocks concept
+resource "local_file" "monitoring_config" {
+  filename = "${path.module}/monitoring/prometheus.yml"
+  content = yamlencode({
+    global = {
+      scrape_interval = "15s"
+      evaluation_interval = "15s"
+    }
+    
+    scrape_configs = [
+      for service_name, service_config in var.services : {
+        job_name = service_name
+        static_configs = [
+          {
+            targets = [
+              for region in var.regions : "${service_name}.${region}.${var.project_name}.local:${service_config.port}"
+            ]
+          }
+        ]
+        metrics_path = service_config.health_check
+        scrape_interval = service_name == "database" ? "30s" : "15s"
+      }
+    ]
+    
+    rule_files = ["rules/*.yml"]
+  })
+  
+  depends_on = [local_file.monitoring_directory]
+}
+
+resource "local_file" "monitoring_directory" {
+  filename = "${path.module}/monitoring/.gitkeep"
+  content  = "# Monitoring configurations\n"
+}
+
+# Generate Kubernetes manifests
+resource "local_file" "k8s_manifests" {
+  for_each = var.services
+  
+  filename = "${path.module}/k8s/${each.key}-deployment.yaml"
+  content = templatefile("${path.module}/templates/k8s-deployment.tpl", {
+    service_name   = each.key
+    service_config = each.value
+    environment    = var.environment
+    project_name   = var.project_name
+    deployment_id  = local.deployment_id
+    replicas       = each.value.replicas * (var.environment == "production" ? 
