@@ -1,0 +1,1014 @@
+Lab 14: Multi-Cloud Strategies with Terraform
+Lab Objectives
+By the end of this lab, students will be able to:
+
+Understand the fundamentals of multi-cloud architecture and its benefits
+Install and configure Terraform for multi-cloud deployments
+Create Terraform configurations that provision resources across AWS, Azure, and GCP simultaneously
+Implement provider-specific modules for each cloud platform
+Configure cross-cloud networking and security groups
+Test and validate multi-cloud resource provisioning
+Implement basic cross-cloud integrations and connectivity
+Troubleshoot common multi-cloud deployment issues
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of cloud computing concepts
+Familiarity with Linux command line operations
+Basic knowledge of networking concepts (VPC, subnets, security groups)
+Understanding of Infrastructure as Code (IaC) principles
+Active accounts on AWS, Azure, and GCP with appropriate permissions
+Access credentials for all three cloud providers
+Lab Environment
+Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated environment. The provided Linux machine is bare metal with no pre-installed tools, so you will need to install Terraform and other required tools during the lab exercises.
+
+Task 1: Environment Setup and Tool Installation
+Subtask 1.1: Update System and Install Dependencies
+First, update your Linux system and install necessary dependencies:
+
+# Update package manager
+sudo apt update && sudo apt upgrade -y
+
+# Install required packages
+sudo apt install -y curl wget unzip git vim
+
+# Install jq for JSON processing
+sudo apt install -y jq
+
+# Verify installations
+curl --version
+wget --version
+unzip -v
+Subtask 1.2: Install Terraform
+Download and install the latest version of Terraform:
+
+# Download Terraform (check for latest version at terraform.io)
+wget https://releases.hashicorp.com/terraform/1.6.6/terraform_1.6.6_linux_amd64.zip
+
+# Unzip the downloaded file
+unzip terraform_1.6.6_linux_amd64.zip
+
+# Move terraform to system PATH
+sudo mv terraform /usr/local/bin/
+
+# Verify installation
+terraform version
+
+# Clean up
+rm terraform_1.6.6_linux_amd64.zip
+Subtask 1.3: Install Cloud CLI Tools
+Install command-line tools for all three cloud providers:
+
+AWS CLI Installation:
+
+# Download AWS CLI v2
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+
+# Unzip and install
+unzip awscliv2.zip
+sudo ./aws/install
+
+# Verify installation
+aws --version
+
+# Clean up
+rm -rf awscliv2.zip aws/
+Azure CLI Installation:
+
+# Install Azure CLI
+curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+
+# Verify installation
+az --version
+Google Cloud CLI Installation:
+
+# Add Google Cloud SDK repository
+echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
+
+# Import Google Cloud public key
+curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key --keyring /usr/share/keyrings/cloud.google.gpg add -
+
+# Update and install
+sudo apt update && sudo apt install google-cloud-cli
+
+# Verify installation
+gcloud version
+Subtask 1.4: Configure Cloud Provider Authentication
+Set up authentication for all three cloud providers:
+
+AWS Configuration:
+
+# Configure AWS credentials
+aws configure
+
+# You will be prompted to enter:
+# AWS Access Key ID
+# AWS Secret Access Key
+# Default region (e.g., us-east-1)
+# Default output format (json)
+Azure Configuration:
+
+# Login to Azure
+az login
+
+# Set default subscription (if you have multiple)
+az account set --subscription "your-subscription-id"
+
+# Verify login
+az account show
+GCP Configuration:
+
+# Initialize gcloud and authenticate
+gcloud init
+
+# Follow the prompts to:
+# - Login to your Google account
+# - Select or create a project
+# - Choose default compute region/zone
+
+# Verify authentication
+gcloud auth list
+gcloud config list
+Task 2: Create Multi-Cloud Terraform Configuration
+Subtask 2.1: Set Up Project Structure
+Create a well-organized directory structure for your multi-cloud project:
+
+# Create main project directory
+mkdir multi-cloud-terraform
+cd multi-cloud-terraform
+
+# Create subdirectories for each cloud provider
+mkdir -p modules/aws modules/azure modules/gcp
+
+# Create main configuration files
+touch main.tf variables.tf outputs.tf terraform.tfvars
+
+# Create provider-specific module files
+touch modules/aws/main.tf modules/aws/variables.tf modules/aws/outputs.tf
+touch modules/azure/main.tf modules/azure/variables.tf modules/azure/outputs.tf
+touch modules/gcp/main.tf modules/gcp/variables.tf modules/gcp/outputs.tf
+
+# Display directory structure
+tree . || find . -type f -name "*.tf" | sort
+Subtask 2.2: Configure Main Terraform File
+Create the main Terraform configuration file:
+
+cat > main.tf << 'EOF'
+# Multi-Cloud Terraform Configuration
+terraform {
+  required_version = ">= 1.0"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~> 3.0"
+    }
+    google = {
+      source  = "hashicorp/google"
+      version = "~> 5.0"
+    }
+  }
+}
+
+# AWS Provider Configuration
+provider "aws" {
+  region = var.aws_region
+  
+  default_tags {
+    tags = {
+      Environment = var.environment
+      Project     = var.project_name
+      ManagedBy   = "Terraform"
+    }
+  }
+}
+
+# Azure Provider Configuration
+provider "azurerm" {
+  features {}
+  
+  subscription_id = var.azure_subscription_id
+}
+
+# Google Cloud Provider Configuration
+provider "google" {
+  project = var.gcp_project_id
+  region  = var.gcp_region
+  zone    = var.gcp_zone
+}
+
+# AWS Module
+module "aws_infrastructure" {
+  source = "./modules/aws"
+  
+  environment    = var.environment
+  project_name   = var.project_name
+  aws_region     = var.aws_region
+  instance_type  = var.aws_instance_type
+  key_pair_name  = var.aws_key_pair_name
+}
+
+# Azure Module
+module "azure_infrastructure" {
+  source = "./modules/azure"
+  
+  environment         = var.environment
+  project_name        = var.project_name
+  azure_location      = var.azure_location
+  vm_size            = var.azure_vm_size
+  admin_username     = var.azure_admin_username
+}
+
+# GCP Module
+module "gcp_infrastructure" {
+  source = "./modules/gcp"
+  
+  environment    = var.environment
+  project_name   = var.project_name
+  gcp_project_id = var.gcp_project_id
+  gcp_region     = var.gcp_region
+  gcp_zone       = var.gcp_zone
+  machine_type   = var.gcp_machine_type
+}
+EOF
+Subtask 2.3: Define Variables
+Create the variables file for all cloud providers:
+
+cat > variables.tf << 'EOF'
+# Global Variables
+variable "environment" {
+  description = "Environment name"
+  type        = string
+  default     = "dev"
+}
+
+variable "project_name" {
+  description = "Project name for resource naming"
+  type        = string
+  default     = "multicloud-demo"
+}
+
+# AWS Variables
+variable "aws_region" {
+  description = "AWS region"
+  type        = string
+  default     = "us-east-1"
+}
+
+variable "aws_instance_type" {
+  description = "AWS EC2 instance type"
+  type        = string
+  default     = "t3.micro"
+}
+
+variable "aws_key_pair_name" {
+  description = "AWS key pair name for EC2 instances"
+  type        = string
+  default     = "multicloud-key"
+}
+
+# Azure Variables
+variable "azure_subscription_id" {
+  description = "Azure subscription ID"
+  type        = string
+}
+
+variable "azure_location" {
+  description = "Azure region"
+  type        = string
+  default     = "East US"
+}
+
+variable "azure_vm_size" {
+  description = "Azure VM size"
+  type        = string
+  default     = "Standard_B1s"
+}
+
+variable "azure_admin_username" {
+  description = "Azure VM admin username"
+  type        = string
+  default     = "azureuser"
+}
+
+# GCP Variables
+variable "gcp_project_id" {
+  description = "GCP project ID"
+  type        = string
+}
+
+variable "gcp_region" {
+  description = "GCP region"
+  type        = string
+  default     = "us-central1"
+}
+
+variable "gcp_zone" {
+  description = "GCP zone"
+  type        = string
+  default     = "us-central1-a"
+}
+
+variable "gcp_machine_type" {
+  description = "GCP machine type"
+  type        = string
+  default     = "e2-micro"
+}
+EOF
+Subtask 2.4: Create Terraform Variables File
+Create a terraform.tfvars file with your specific values:
+
+cat > terraform.tfvars << 'EOF'
+# Global Configuration
+environment  = "dev"
+project_name = "multicloud-demo"
+
+# AWS Configuration
+aws_region        = "us-east-1"
+aws_instance_type = "t3.micro"
+aws_key_pair_name = "multicloud-key"
+
+# Azure Configuration - Replace with your actual subscription ID
+azure_subscription_id = "your-azure-subscription-id"
+azure_location        = "East US"
+azure_vm_size        = "Standard_B1s"
+azure_admin_username = "azureuser"
+
+# GCP Configuration - Replace with your actual project ID
+gcp_project_id   = "your-gcp-project-id"
+gcp_region       = "us-central1"
+gcp_zone         = "us-central1-a"
+gcp_machine_type = "e2-micro"
+EOF
+Important: Edit the terraform.tfvars file to include your actual Azure subscription ID and GCP project ID:
+
+# Get your Azure subscription ID
+az account show --query id -o tsv
+
+# Get your GCP project ID
+gcloud config get-value project
+
+# Edit the terraform.tfvars file with your actual values
+vim terraform.tfvars
+Task 3: Create Provider-Specific Modules
+Subtask 3.1: Create AWS Module
+Create the AWS infrastructure module:
+
+cat > modules/aws/variables.tf << 'EOF'
+variable "environment" {
+  description = "Environment name"
+  type        = string
+}
+
+variable "project_name" {
+  description = "Project name"
+  type        = string
+}
+
+variable "aws_region" {
+  description = "AWS region"
+  type        = string
+}
+
+variable "instance_type" {
+  description = "EC2 instance type"
+  type        = string
+}
+
+variable "key_pair_name" {
+  description = "Key pair name"
+  type        = string
+}
+EOF
+cat > modules/aws/main.tf << 'EOF'
+# Data source for latest Amazon Linux 2 AMI
+data "aws_ami" "amazon_linux" {
+  most_recent = true
+  owners      = ["amazon"]
+  
+  filter {
+    name   = "name"
+    values = ["amzn2-ami-hvm-*-x86_64-gp2"]
+  }
+}
+
+# Create VPC
+resource "aws_vpc" "main" {
+  cidr_block           = "10.0.0.0/16"
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+  
+  tags = {
+    Name = "${var.project_name}-${var.environment}-vpc"
+  }
+}
+
+# Create Internet Gateway
+resource "aws_internet_gateway" "main" {
+  vpc_id = aws_vpc.main.id
+  
+  tags = {
+    Name = "${var.project_name}-${var.environment}-igw"
+  }
+}
+
+# Create public subnet
+resource "aws_subnet" "public" {
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = "10.0.1.0/24"
+  availability_zone       = data.aws_availability_zones.available.names[0]
+  map_public_ip_on_launch = true
+  
+  tags = {
+    Name = "${var.project_name}-${var.environment}-public-subnet"
+  }
+}
+
+# Data source for availability zones
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+
+# Create route table
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
+  
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.main.id
+  }
+  
+  tags = {
+    Name = "${var.project_name}-${var.environment}-public-rt"
+  }
+}
+
+# Associate route table with subnet
+resource "aws_route_table_association" "public" {
+  subnet_id      = aws_subnet.public.id
+  route_table_id = aws_route_table.public.id
+}
+
+# Create security group
+resource "aws_security_group" "web" {
+  name_prefix = "${var.project_name}-${var.environment}-"
+  vpc_id      = aws_vpc.main.id
+  
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  
+  tags = {
+    Name = "${var.project_name}-${var.environment}-sg"
+  }
+}
+
+# Create key pair
+resource "aws_key_pair" "main" {
+  key_name   = var.key_pair_name
+  public_key = file("~/.ssh/id_rsa.pub")
+}
+
+# Create EC2 instance
+resource "aws_instance" "web" {
+  ami                    = data.aws_ami.amazon_linux.id
+  instance_type          = var.instance_type
+  key_name              = aws_key_pair.main.key_name
+  vpc_security_group_ids = [aws_security_group.web.id]
+  subnet_id             = aws_subnet.public.id
+  
+  user_data = <<-EOF
+              #!/bin/bash
+              yum update -y
+              yum install -y httpd
+              systemctl start httpd
+              systemctl enable httpd
+              echo "<h1>Hello from AWS - ${var.environment}</h1>" > /var/www/html/index.html
+              EOF
+  
+  tags = {
+    Name = "${var.project_name}-${var.environment}-aws-instance"
+  }
+}
+EOF
+cat > modules/aws/outputs.tf << 'EOF'
+output "vpc_id" {
+  description = "ID of the VPC"
+  value       = aws_vpc.main.id
+}
+
+output "instance_id" {
+  description = "ID of the EC2 instance"
+  value       = aws_instance.web.id
+}
+
+output "instance_public_ip" {
+  description = "Public IP of the EC2 instance"
+  value       = aws_instance.web.public_ip
+}
+
+output "instance_public_dns" {
+  description = "Public DNS of the EC2 instance"
+  value       = aws_instance.web.public_dns
+}
+EOF
+Subtask 3.2: Create Azure Module
+Create the Azure infrastructure module:
+
+cat > modules/azure/variables.tf << 'EOF'
+variable "environment" {
+  description = "Environment name"
+  type        = string
+}
+
+variable "project_name" {
+  description = "Project name"
+  type        = string
+}
+
+variable "azure_location" {
+  description = "Azure location"
+  type        = string
+}
+
+variable "vm_size" {
+  description = "Azure VM size"
+  type        = string
+}
+
+variable "admin_username" {
+  description = "Admin username for VM"
+  type        = string
+}
+EOF
+cat > modules/azure/main.tf << 'EOF'
+# Create Resource Group
+resource "azurerm_resource_group" "main" {
+  name     = "${var.project_name}-${var.environment}-rg"
+  location = var.azure_location
+  
+  tags = {
+    Environment = var.environment
+    Project     = var.project_name
+  }
+}
+
+# Create Virtual Network
+resource "azurerm_virtual_network" "main" {
+  name                = "${var.project_name}-${var.environment}-vnet"
+  address_space       = ["10.1.0.0/16"]
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+  
+  tags = {
+    Environment = var.environment
+    Project     = var.project_name
+  }
+}
+
+# Create Subnet
+resource "azurerm_subnet" "internal" {
+  name                 = "${var.project_name}-${var.environment}-subnet"
+  resource_group_name  = azurerm_resource_group.main.name
+  virtual_network_name = azurerm_virtual_network.main.name
+  address_prefixes     = ["10.1.1.0/24"]
+}
+
+# Create Public IP
+resource "azurerm_public_ip" "main" {
+  name                = "${var.project_name}-${var.environment}-pip"
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  allocation_method   = "Static"
+  
+  tags = {
+    Environment = var.environment
+    Project     = var.project_name
+  }
+}
+
+# Create Network Security Group
+resource "azurerm_network_security_group" "main" {
+  name                = "${var.project_name}-${var.environment}-nsg"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+  
+  security_rule {
+    name                       = "SSH"
+    priority                   = 1001
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "22"
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+  }
+  
+  security_rule {
+    name                       = "HTTP"
+    priority                   = 1002
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "80"
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+  }
+  
+  tags = {
+    Environment = var.environment
+    Project     = var.project_name
+  }
+}
+
+# Create Network Interface
+resource "azurerm_network_interface" "main" {
+  name                = "${var.project_name}-${var.environment}-nic"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+  
+  ip_configuration {
+    name                          = "internal"
+    subnet_id                     = azurerm_subnet.internal.id
+    private_ip_address_allocation = "Dynamic"
+    public_ip_address_id          = azurerm_public_ip.main.id
+  }
+  
+  tags = {
+    Environment = var.environment
+    Project     = var.project_name
+  }
+}
+
+# Associate Network Security Group to Network Interface
+resource "azurerm_network_interface_security_group_association" "main" {
+  network_interface_id      = azurerm_network_interface.main.id
+  network_security_group_id = azurerm_network_security_group.main.id
+}
+
+# Create Virtual Machine
+resource "azurerm_linux_virtual_machine" "main" {
+  name                = "${var.project_name}-${var.environment}-vm"
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  size                = var.vm_size
+  admin_username      = var.admin_username
+  
+  disable_password_authentication = true
+  
+  network_interface_ids = [
+    azurerm_network_interface.main.id,
+  ]
+  
+  admin_ssh_key {
+    username   = var.admin_username
+    public_key = file("~/.ssh/id_rsa.pub")
+  }
+  
+  os_disk {
+    caching              = "ReadWrite"
+    storage_account_type = "Standard_LRS"
+  }
+  
+  source_image_reference {
+    publisher = "Canonical"
+    offer     = "0001-com-ubuntu-server-focal"
+    sku       = "20_04-lts-gen2"
+    version   = "latest"
+  }
+  
+  custom_data = base64encode(<<-EOF
+              #!/bin/bash
+              apt-get update
+              apt-get install -y nginx
+              systemctl start nginx
+              systemctl enable nginx
+              echo "<h1>Hello from Azure - ${var.environment}</h1>" > /var/www/html/index.html
+              EOF
+  )
+  
+  tags = {
+    Environment = var.environment
+    Project     = var.project_name
+  }
+}
+EOF
+cat > modules/azure/outputs.tf << 'EOF'
+output "resource_group_name" {
+  description = "Name of the resource group"
+  value       = azurerm_resource_group.main.name
+}
+
+output "vm_id" {
+  description = "ID of the virtual machine"
+  value       = azurerm_linux_virtual_machine.main.id
+}
+
+output "public_ip_address" {
+  description = "Public IP address of the VM"
+  value       = azurerm_public_ip.main.ip_address
+}
+
+output "vm_name" {
+  description = "Name of the virtual machine"
+  value       = azurerm_linux_virtual_machine.main.name
+}
+EOF
+Subtask 3.3: Create GCP Module
+Create the GCP infrastructure module:
+
+cat > modules/gcp/variables.tf << 'EOF'
+variable "environment" {
+  description = "Environment name"
+  type        = string
+}
+
+variable "project_name" {
+  description = "Project name"
+  type        = string
+}
+
+variable "gcp_project_id" {
+  description = "GCP project ID"
+  type        = string
+}
+
+variable "gcp_region" {
+  description = "GCP region"
+  type        = string
+}
+
+variable "gcp_zone" {
+  description = "GCP zone"
+  type        = string
+}
+
+variable "machine_type" {
+  description = "GCP machine type"
+  type        = string
+}
+EOF
+cat > modules/gcp/main.tf << 'EOF'
+# Create VPC Network
+resource "google_compute_network" "main" {
+  name                    = "${var.project_name}-${var.environment}-vpc"
+  auto_create_subnetworks = false
+  project                 = var.gcp_project_id
+}
+
+# Create Subnet
+resource "google_compute_subnetwork" "main" {
+  name          = "${var.project_name}-${var.environment}-subnet"
+  ip_cidr_range = "10.2.0.0/24"
+  region        = var.gcp_region
+  network       = google_compute_network.main.id
+  project       = var.gcp_project_id
+}
+
+# Create Firewall Rules
+resource "google_compute_firewall" "allow_ssh" {
+  name    = "${var.project_name}-${var.environment}-allow-ssh"
+  network = google_compute_network.main.name
+  project = var.gcp_project_id
+  
+  allow {
+    protocol = "tcp"
+    ports    = ["22"]
+  }
+  
+  source_ranges = ["0.0.0.0/0"]
+  target_tags   = ["ssh-allowed"]
+}
+
+resource "google_compute_firewall" "allow_http" {
+  name    = "${var.project_name}-${var.environment}-allow-http"
+  network = google_compute_network.main.name
+  project = var.gcp_project_id
+  
+  allow {
+    protocol = "tcp"
+    ports    = ["80"]
+  }
+  
+  source_ranges = ["0.0.0.0/0"]
+  target_tags   = ["http-allowed"]
+}
+
+# Create Compute Instance
+resource "google_compute_instance" "main" {
+  name         = "${var.project_name}-${var.environment}-instance"
+  machine_type = var.machine_type
+  zone         = var.gcp_zone
+  project      = var.gcp_project_id
+  
+  tags = ["ssh-allowed", "http-allowed"]
+  
+  boot_disk {
+    initialize_params {
+      image = "ubuntu-os-cloud/ubuntu-2004-lts"
+      size  = 10
+      type  = "pd-standard"
+    }
+  }
+  
+  network_interface {
+    network    = google_compute_network.main.id
+    subnetwork = google_compute_subnetwork.main.id
+    
+    access_config {
+      // Ephemeral public IP
+    }
+  }
+  
+  metadata = {
+    ssh-keys = "ubuntu:${file("~/.ssh/id_rsa.pub")}"
+  }
+  
+  metadata_startup_script = <<-EOF
+    #!/bin/bash
+    apt-get update
+    apt-get install -y apache2
+    systemctl start apache2
+    systemctl enable apache2
+    echo "<h1>Hello from GCP - ${var.environment}</h1>" > /var/www/html/index.html
+  EOF
+  
+  labels = {
+    environment = var.environment
+    project     = var.project_name
+  }
+}
+EOF
+cat > modules/gcp/outputs.tf << 'EOF'
+output "network_name" {
+  description = "Name of the VPC network"
+  value       = google_compute_network.main.name
+}
+
+output "instance_id" {
+  description = "ID of the compute instance"
+  value       = google_compute_instance.main.id
+}
+
+output "instance_external_ip" {
+  description = "External IP of the compute instance"
+  value       = google_compute_instance.main.network_interface[0].access_config[0].nat_ip
+}
+
+output "instance_name" {
+  description = "Name of the compute instance"
+  value       = google_compute_instance.main.name
+}
+EOF
+Subtask 3.4: Create Main Outputs File
+Create the main outputs file to display information from all cloud providers:
+
+cat > outputs.tf << 'EOF'
+# AWS Outputs
+output "aws_instance_public_ip" {
+  description = "Public IP of AWS EC2 instance"
+  value       = module.aws_infrastructure.instance_public_ip
+}
+
+output "aws_instance_public_dns" {
+  description = "Public DNS of AWS EC2 instance"
+  value       = module.aws_infrastructure.instance_public_dns
+}
+
+# Azure Outputs
+output "azure_public_ip" {
+  description = "Public IP of Azure VM"
+  value       = module.azure_infrastructure.public_ip_address
+}
+
+output "azure_vm_name" {
+  description = "Name of Azure VM"
+  value       = module.azure_infrastructure.vm_name
+}
+
+# GCP Outputs
+output "gcp_instance_external_ip" {
+  description = "External IP of GCP instance"
+  value       = module.gcp_infrastructure.instance_external_ip
+}
+
+output "gcp_instance_name" {
+  description = "Name of GCP instance"
+  value       = module.gcp_infrastructure.instance_name
+}
+
+# Summary Output
+output "multi_cloud_summary" {
+  description = "Summary of all deployed resources"
+  value = {
+    aws = {
+      instance_ip  = module.aws_infrastructure.instance_public_ip
+      instance_dns = module.aws_infrastructure.instance_public_dns
+    }
+    azure = {
+      vm_ip   = module.azure_infrastructure.public_ip_address
+      vm_name = module.azure_infrastructure.vm_name
+    }
+    gcp = {
+      instance_ip   = module.gcp_infrastructure.instance_external_ip
+      instance_name = module.gcp_infrastructure.instance_name
+    }
+  }
+}
+EOF
+Task 4: Test Provisioning and Cross-Cloud Integrations
+Subtask 4.1: Generate SSH Key Pair
+Generate an SSH key pair for accessing the instances:
+
+# Generate SSH key pair if it doesn't exist
+if [ ! -f ~/.ssh/id_rsa ]; then
+    ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ""
+    echo "SSH key pair generated successfully"
+else
+    echo "SSH key pair already exists"
+fi
+
+# Display public key
+echo "Your public key:"
+cat ~/.ssh/id_rsa.pub
+Subtask 4.2: Initialize and Validate Terraform
+Initialize Terraform and validate the configuration:
+
+# Initialize Terraform
+terraform init
+
+# Validate configuration
+terraform validate
+
+# Format Terraform files
+terraform fmt -recursive
+
+# Check for any syntax errors
+echo "Terraform configuration validation completed"
+Subtask 4.3: Plan the Deployment
+Create and review the deployment plan:
+
+# Create deployment plan
+terraform plan -out=multicloud.tfplan
+
+# Review the plan (optional - shows detailed changes)
+terraform show multicloud.tfplan
+Subtask 4.4: Deploy Multi-Cloud Infrastructure
+Deploy the infrastructure across all three cloud providers:
+
+# Apply the configuration
+terraform apply multicloud.tfplan
+
+# Alternatively, apply without pre-created plan (will prompt for confirmation)
+# terraform apply
+
+# Display outputs after successful deployment
+terraform output
+Note: The deployment process may take 5-10 minutes as resources are created across all three cloud providers.
+
+Subtask 4.5: Verify Deployments
+Verify that resources have been created successfully in each cloud provider:
+
+Verify AWS Resources:
+
+# List EC2 instances
+aws ec2 describe-instances --query 'Reservations[*].Instances[*].[InstanceId,State.Name,PublicIpAddress,Tags[?Key==`Name`].Value|[0]]' --output table
+
+# List VPCs
+aws ec2 describe-vpcs --query 'Vpcs[*].[VpcId,CidrBlock,Tags[?Key==`Name`].Value|[0]]' --output table
+Verify Azure Resources:
+
+# List resource groups
+az group list --output table
+
+# List VMs
+az vm list --output table
+
+# List public IPs
+az network public-ip list --output table
+Verify GCP Resources:
+
+# List compute instances
+g
