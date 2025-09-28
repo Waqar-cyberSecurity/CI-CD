@@ -1,0 +1,1011 @@
+Lab 19: Terraform Ecosystem and Best Practices
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Discover and utilize public Terraform modules from the Terraform Registry
+Implement Terraform best practices including minimal state management and reusable modules
+Create and organize modular Terraform configurations
+Automate Terraform deployments using shell scripts
+Understand the broader Terraform ecosystem and community resources
+Apply industry-standard practices for infrastructure as code
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Terraform concepts (resources, providers, state)
+Familiarity with Linux command line operations
+Basic knowledge of cloud infrastructure concepts
+Understanding of version control systems (Git)
+Previous experience with Terraform configuration files
+Lab Environment Setup
+Note: Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated Linux machine. The provided machine is bare metal with no pre-installed tools, so you will install all required tools during the lab exercises.
+
+Task 1: Environment Preparation and Tool Installation
+Subtask 1.1: Install Required Tools
+First, let's install Terraform and other necessary tools on your Linux machine.
+
+# Update the system package manager
+sudo apt update && sudo apt upgrade -y
+
+# Install required packages
+sudo apt install -y wget curl unzip git tree
+
+# Download and install Terraform
+wget https://releases.hashicorp.com/terraform/1.6.6/terraform_1.6.6_linux_amd64.zip
+unzip terraform_1.6.6_linux_amd64.zip
+sudo mv terraform /usr/local/bin/
+rm terraform_1.6.6_linux_amd64.zip
+
+# Verify Terraform installation
+terraform version
+Subtask 1.2: Create Lab Directory Structure
+Set up a well-organized directory structure following Terraform best practices.
+
+# Create main lab directory
+mkdir -p ~/terraform-ecosystem-lab
+cd ~/terraform-ecosystem-lab
+
+# Create directory structure following best practices
+mkdir -p {modules,environments,scripts,examples}
+mkdir -p modules/{networking,compute,storage}
+mkdir -p environments/{dev,staging,prod}
+
+# Display the directory structure
+tree .
+Subtask 1.3: Initialize Git Repository
+# Initialize Git repository for version control
+git init
+git config --global user.name "Lab Student"
+git config --global user.email "student@example.com"
+
+# Create .gitignore file for Terraform
+cat > .gitignore << 'EOF'
+# Terraform files
+*.tfstate
+*.tfstate.*
+*.tfvars
+.terraform/
+.terraform.lock.hcl
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+EOF
+Task 2: Discover and Use Public Terraform Modules
+Subtask 2.1: Explore Terraform Registry
+Let's explore the Terraform Registry and understand how to find and evaluate modules.
+
+# Create a documentation file about module discovery
+cat > module-discovery-guide.md << 'EOF'
+# Terraform Module Discovery Guide
+
+## Terraform Registry (registry.terraform.io)
+- Official repository for Terraform modules
+- Verified modules have blue checkmarks
+- Community modules available from various providers
+
+## Key Evaluation Criteria:
+1. **Download Count**: Indicates popularity and adoption
+2. **Last Updated**: Shows maintenance activity
+3. **Documentation Quality**: Clear usage examples
+4. **Version History**: Regular updates and semantic versioning
+5. **Source Code**: Available on GitHub/GitLab
+6. **Provider Support**: AWS, Azure, GCP compatibility
+
+## Popular Module Categories:
+- VPC/Networking modules
+- Security groups and IAM
+- Database modules
+- Container orchestration
+- Monitoring and logging
+EOF
+Subtask 2.2: Create Configuration Using Public Modules
+Create a practical example using popular public modules for AWS infrastructure.
+
+# Create main configuration file
+cat > environments/dev/main.tf << 'EOF'
+terraform {
+  required_version = ">= 1.0"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+provider "aws" {
+  region = var.aws_region
+  
+  # Use localstack for local development
+  endpoints {
+    ec2 = "http://localhost:4566"
+    s3  = "http://localhost:4566"
+  }
+  
+  access_key = "test"
+  secret_key = "test"
+  
+  skip_credentials_validation = true
+  skip_metadata_api_check     = true
+  skip_requesting_account_id  = true
+}
+
+# Using public VPC module from Terraform Registry
+module "vpc" {
+  source = "terraform-aws-modules/vpc/aws"
+  version = "~> 5.0"
+
+  name = "${var.project_name}-vpc"
+  cidr = var.vpc_cidr
+
+  azs             = var.availability_zones
+  private_subnets = var.private_subnets
+  public_subnets  = var.public_subnets
+
+  enable_nat_gateway = true
+  enable_vpn_gateway = false
+  enable_dns_hostnames = true
+  enable_dns_support = true
+
+  tags = var.common_tags
+}
+
+# Using public security group module
+module "web_security_group" {
+  source = "terraform-aws-modules/security-group/aws"
+  version = "~> 5.0"
+
+  name        = "${var.project_name}-web-sg"
+  description = "Security group for web servers"
+  vpc_id      = module.vpc.vpc_id
+
+  ingress_cidr_blocks = ["0.0.0.0/0"]
+  ingress_rules       = ["http-80-tcp", "https-443-tcp", "ssh-tcp"]
+  egress_rules        = ["all-all"]
+
+  tags = var.common_tags
+}
+
+# Using public EC2 instance module
+module "web_servers" {
+  source = "terraform-aws-modules/ec2-instance/aws"
+  version = "~> 5.0"
+
+  count = var.instance_count
+
+  name = "${var.project_name}-web-${count.index + 1}"
+
+  ami                    = var.ami_id
+  instance_type          = var.instance_type
+  key_name              = var.key_pair_name
+  monitoring            = true
+  vpc_security_group_ids = [module.web_security_group.security_group_id]
+  subnet_id             = module.vpc.public_subnets[count.index % length(module.vpc.public_subnets)]
+
+  user_data = base64encode(templatefile("${path.module}/user-data.sh", {
+    server_name = "${var.project_name}-web-${count.index + 1}"
+  }))
+
+  tags = merge(var.common_tags, {
+    Name = "${var.project_name}-web-${count.index + 1}"
+    Type = "WebServer"
+  })
+}
+EOF
+Subtask 2.3: Create Variables and Outputs
+# Create variables file
+cat > environments/dev/variables.tf << 'EOF'
+variable "aws_region" {
+  description = "AWS region for resources"
+  type        = string
+  default     = "us-east-1"
+}
+
+variable "project_name" {
+  description = "Name of the project"
+  type        = string
+  default     = "terraform-lab"
+}
+
+variable "vpc_cidr" {
+  description = "CIDR block for VPC"
+  type        = string
+  default     = "10.0.0.0/16"
+}
+
+variable "availability_zones" {
+  description = "Availability zones"
+  type        = list(string)
+  default     = ["us-east-1a", "us-east-1b"]
+}
+
+variable "private_subnets" {
+  description = "Private subnet CIDR blocks"
+  type        = list(string)
+  default     = ["10.0.1.0/24", "10.0.2.0/24"]
+}
+
+variable "public_subnets" {
+  description = "Public subnet CIDR blocks"
+  type        = list(string)
+  default     = ["10.0.101.0/24", "10.0.102.0/24"]
+}
+
+variable "instance_count" {
+  description = "Number of EC2 instances"
+  type        = number
+  default     = 2
+}
+
+variable "instance_type" {
+  description = "EC2 instance type"
+  type        = string
+  default     = "t3.micro"
+}
+
+variable "ami_id" {
+  description = "AMI ID for EC2 instances"
+  type        = string
+  default     = "ami-0c02fb55956c7d316" # Amazon Linux 2
+}
+
+variable "key_pair_name" {
+  description = "EC2 Key Pair name"
+  type        = string
+  default     = "my-key-pair"
+}
+
+variable "common_tags" {
+  description = "Common tags for all resources"
+  type        = map(string)
+  default = {
+    Environment = "dev"
+    Project     = "terraform-lab"
+    ManagedBy   = "terraform"
+  }
+}
+EOF
+# Create outputs file
+cat > environments/dev/outputs.tf << 'EOF'
+output "vpc_id" {
+  description = "ID of the VPC"
+  value       = module.vpc.vpc_id
+}
+
+output "vpc_cidr_block" {
+  description = "CIDR block of the VPC"
+  value       = module.vpc.vpc_cidr_block
+}
+
+output "public_subnets" {
+  description = "List of IDs of public subnets"
+  value       = module.vpc.public_subnets
+}
+
+output "private_subnets" {
+  description = "List of IDs of private subnets"
+  value       = module.vpc.private_subnets
+}
+
+output "security_group_id" {
+  description = "ID of the security group"
+  value       = module.web_security_group.security_group_id
+}
+
+output "instance_ids" {
+  description = "List of EC2 instance IDs"
+  value       = module.web_servers[*].id
+}
+
+output "instance_public_ips" {
+  description = "List of public IP addresses of instances"
+  value       = module.web_servers[*].public_ip
+}
+
+output "load_balancer_dns" {
+  description = "DNS name of the load balancer"
+  value       = "Not implemented in this lab"
+}
+EOF
+Subtask 2.4: Create User Data Script
+# Create user data script for EC2 instances
+cat > environments/dev/user-data.sh << 'EOF'
+#!/bin/bash
+yum update -y
+yum install -y httpd
+
+# Start and enable Apache
+systemctl start httpd
+systemctl enable httpd
+
+# Create a simple web page
+cat > /var/www/html/index.html << HTML
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Terraform Lab Server</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .header { background-color: #f4f4f4; padding: 20px; border-radius: 5px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Welcome to ${server_name}</h1>
+            <p>This server was provisioned using Terraform with public modules!</p>
+            <p><strong>Server:</strong> ${server_name}</p>
+            <p><strong>Timestamp:</strong> $(date)</p>
+        </div>
+    </div>
+</body>
+</html>
+HTML
+
+# Set proper permissions
+chown -R apache:apache /var/www/html/
+chmod -R 755 /var/www/html/
+EOF
+Task 3: Implement Terraform Best Practices
+Subtask 3.1: Create Reusable Modules
+Let's create custom reusable modules following best practices.
+
+# Create a custom networking module
+cat > modules/networking/main.tf << 'EOF'
+# Custom VPC module with best practices
+resource "aws_vpc" "main" {
+  cidr_block           = var.vpc_cidr
+  enable_dns_hostnames = var.enable_dns_hostnames
+  enable_dns_support   = var.enable_dns_support
+
+  tags = merge(var.tags, {
+    Name = "${var.name_prefix}-vpc"
+  })
+}
+
+resource "aws_internet_gateway" "main" {
+  vpc_id = aws_vpc.main.id
+
+  tags = merge(var.tags, {
+    Name = "${var.name_prefix}-igw"
+  })
+}
+
+resource "aws_subnet" "public" {
+  count = length(var.public_subnets)
+
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = var.public_subnets[count.index]
+  availability_zone       = var.availability_zones[count.index]
+  map_public_ip_on_launch = true
+
+  tags = merge(var.tags, {
+    Name = "${var.name_prefix}-public-subnet-${count.index + 1}"
+    Type = "Public"
+  })
+}
+
+resource "aws_subnet" "private" {
+  count = length(var.private_subnets)
+
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = var.private_subnets[count.index]
+  availability_zone = var.availability_zones[count.index]
+
+  tags = merge(var.tags, {
+    Name = "${var.name_prefix}-private-subnet-${count.index + 1}"
+    Type = "Private"
+  })
+}
+
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.main.id
+  }
+
+  tags = merge(var.tags, {
+    Name = "${var.name_prefix}-public-rt"
+  })
+}
+
+resource "aws_route_table_association" "public" {
+  count = length(aws_subnet.public)
+
+  subnet_id      = aws_subnet.public[count.index].id
+  route_table_id = aws_route_table.public.id
+}
+
+# NAT Gateway for private subnets (optional)
+resource "aws_eip" "nat" {
+  count = var.enable_nat_gateway ? 1 : 0
+
+  domain = "vpc"
+  depends_on = [aws_internet_gateway.main]
+
+  tags = merge(var.tags, {
+    Name = "${var.name_prefix}-nat-eip"
+  })
+}
+
+resource "aws_nat_gateway" "main" {
+  count = var.enable_nat_gateway ? 1 : 0
+
+  allocation_id = aws_eip.nat[0].id
+  subnet_id     = aws_subnet.public[0].id
+
+  tags = merge(var.tags, {
+    Name = "${var.name_prefix}-nat-gateway"
+  })
+
+  depends_on = [aws_internet_gateway.main]
+}
+
+resource "aws_route_table" "private" {
+  count = var.enable_nat_gateway ? 1 : 0
+
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block     = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.main[0].id
+  }
+
+  tags = merge(var.tags, {
+    Name = "${var.name_prefix}-private-rt"
+  })
+}
+
+resource "aws_route_table_association" "private" {
+  count = var.enable_nat_gateway ? length(aws_subnet.private) : 0
+
+  subnet_id      = aws_subnet.private[count.index].id
+  route_table_id = aws_route_table.private[0].id
+}
+EOF
+# Create variables for networking module
+cat > modules/networking/variables.tf << 'EOF'
+variable "name_prefix" {
+  description = "Prefix for resource names"
+  type        = string
+}
+
+variable "vpc_cidr" {
+  description = "CIDR block for VPC"
+  type        = string
+  validation {
+    condition     = can(cidrhost(var.vpc_cidr, 0))
+    error_message = "VPC CIDR must be a valid IPv4 CIDR block."
+  }
+}
+
+variable "public_subnets" {
+  description = "List of public subnet CIDR blocks"
+  type        = list(string)
+  validation {
+    condition     = length(var.public_subnets) > 0
+    error_message = "At least one public subnet must be specified."
+  }
+}
+
+variable "private_subnets" {
+  description = "List of private subnet CIDR blocks"
+  type        = list(string)
+  default     = []
+}
+
+variable "availability_zones" {
+  description = "List of availability zones"
+  type        = list(string)
+  validation {
+    condition     = length(var.availability_zones) > 0
+    error_message = "At least one availability zone must be specified."
+  }
+}
+
+variable "enable_dns_hostnames" {
+  description = "Enable DNS hostnames in VPC"
+  type        = bool
+  default     = true
+}
+
+variable "enable_dns_support" {
+  description = "Enable DNS support in VPC"
+  type        = bool
+  default     = true
+}
+
+variable "enable_nat_gateway" {
+  description = "Enable NAT Gateway for private subnets"
+  type        = bool
+  default     = false
+}
+
+variable "tags" {
+  description = "Tags to apply to resources"
+  type        = map(string)
+  default     = {}
+}
+EOF
+# Create outputs for networking module
+cat > modules/networking/outputs.tf << 'EOF'
+output "vpc_id" {
+  description = "ID of the VPC"
+  value       = aws_vpc.main.id
+}
+
+output "vpc_cidr_block" {
+  description = "CIDR block of the VPC"
+  value       = aws_vpc.main.cidr_block
+}
+
+output "internet_gateway_id" {
+  description = "ID of the Internet Gateway"
+  value       = aws_internet_gateway.main.id
+}
+
+output "public_subnet_ids" {
+  description = "List of IDs of public subnets"
+  value       = aws_subnet.public[*].id
+}
+
+output "private_subnet_ids" {
+  description = "List of IDs of private subnets"
+  value       = aws_subnet.private[*].id
+}
+
+output "public_route_table_id" {
+  description = "ID of the public route table"
+  value       = aws_route_table.public.id
+}
+
+output "private_route_table_ids" {
+  description = "List of IDs of private route tables"
+  value       = aws_route_table.private[*].id
+}
+
+output "nat_gateway_id" {
+  description = "ID of the NAT Gateway"
+  value       = var.enable_nat_gateway ? aws_nat_gateway.main[0].id : null
+}
+
+output "nat_gateway_ip" {
+  description = "Public IP of the NAT Gateway"
+  value       = var.enable_nat_gateway ? aws_eip.nat[0].public_ip : null
+}
+EOF
+Subtask 3.2: Create Compute Module
+# Create compute module
+cat > modules/compute/main.tf << 'EOF'
+# Data source for latest Amazon Linux 2 AMI
+data "aws_ami" "amazon_linux" {
+  most_recent = true
+  owners      = ["amazon"]
+
+  filter {
+    name   = "name"
+    values = ["amzn2-ami-hvm-*-x86_64-gp2"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+}
+
+# Security group for instances
+resource "aws_security_group" "instance" {
+  name_prefix = "${var.name_prefix}-instance-"
+  vpc_id      = var.vpc_id
+  description = "Security group for ${var.name_prefix} instances"
+
+  dynamic "ingress" {
+    for_each = var.ingress_rules
+    content {
+      from_port   = ingress.value.from_port
+      to_port     = ingress.value.to_port
+      protocol    = ingress.value.protocol
+      cidr_blocks = ingress.value.cidr_blocks
+      description = ingress.value.description
+    }
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "All outbound traffic"
+  }
+
+  tags = merge(var.tags, {
+    Name = "${var.name_prefix}-instance-sg"
+  })
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# Launch template for instances
+resource "aws_launch_template" "main" {
+  name_prefix   = "${var.name_prefix}-template-"
+  image_id      = var.ami_id != "" ? var.ami_id : data.aws_ami.amazon_linux.id
+  instance_type = var.instance_type
+  key_name      = var.key_name
+
+  vpc_security_group_ids = [aws_security_group.instance.id]
+
+  user_data = var.user_data_base64
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = merge(var.tags, {
+      Name = "${var.name_prefix}-instance"
+    })
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# EC2 instances
+resource "aws_instance" "main" {
+  count = var.instance_count
+
+  launch_template {
+    id      = aws_launch_template.main.id
+    version = "$Latest"
+  }
+
+  subnet_id = var.subnet_ids[count.index % length(var.subnet_ids)]
+
+  tags = merge(var.tags, {
+    Name  = "${var.name_prefix}-instance-${count.index + 1}"
+    Index = count.index + 1
+  })
+}
+EOF
+# Create variables for compute module
+cat > modules/compute/variables.tf << 'EOF'
+variable "name_prefix" {
+  description = "Prefix for resource names"
+  type        = string
+}
+
+variable "vpc_id" {
+  description = "ID of the VPC"
+  type        = string
+}
+
+variable "subnet_ids" {
+  description = "List of subnet IDs for instances"
+  type        = list(string)
+  validation {
+    condition     = length(var.subnet_ids) > 0
+    error_message = "At least one subnet ID must be provided."
+  }
+}
+
+variable "instance_count" {
+  description = "Number of instances to create"
+  type        = number
+  default     = 1
+  validation {
+    condition     = var.instance_count > 0 && var.instance_count <= 10
+    error_message = "Instance count must be between 1 and 10."
+  }
+}
+
+variable "instance_type" {
+  description = "EC2 instance type"
+  type        = string
+  default     = "t3.micro"
+}
+
+variable "ami_id" {
+  description = "AMI ID for instances (leave empty for latest Amazon Linux 2)"
+  type        = string
+  default     = ""
+}
+
+variable "key_name" {
+  description = "EC2 Key Pair name"
+  type        = string
+  default     = null
+}
+
+variable "user_data_base64" {
+  description = "Base64 encoded user data script"
+  type        = string
+  default     = ""
+}
+
+variable "ingress_rules" {
+  description = "List of ingress rules for security group"
+  type = list(object({
+    from_port   = number
+    to_port     = number
+    protocol    = string
+    cidr_blocks = list(string)
+    description = string
+  }))
+  default = [
+    {
+      from_port   = 22
+      to_port     = 22
+      protocol    = "tcp"
+      cidr_blocks = ["0.0.0.0/0"]
+      description = "SSH access"
+    },
+    {
+      from_port   = 80
+      to_port     = 80
+      protocol    = "tcp"
+      cidr_blocks = ["0.0.0.0/0"]
+      description = "HTTP access"
+    }
+  ]
+}
+
+variable "tags" {
+  description = "Tags to apply to resources"
+  type        = map(string)
+  default     = {}
+}
+EOF
+# Create outputs for compute module
+cat > modules/compute/outputs.tf << 'EOF'
+output "instance_ids" {
+  description = "List of instance IDs"
+  value       = aws_instance.main[*].id
+}
+
+output "instance_public_ips" {
+  description = "List of public IP addresses"
+  value       = aws_instance.main[*].public_ip
+}
+
+output "instance_private_ips" {
+  description = "List of private IP addresses"
+  value       = aws_instance.main[*].private_ip
+}
+
+output "security_group_id" {
+  description = "ID of the security group"
+  value       = aws_security_group.instance.id
+}
+
+output "launch_template_id" {
+  description = "ID of the launch template"
+  value       = aws_launch_template.main.id
+}
+EOF
+Subtask 3.3: Create Best Practices Configuration
+# Create a new environment using custom modules
+cat > environments/staging/main.tf << 'EOF'
+terraform {
+  required_version = ">= 1.0"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+provider "aws" {
+  region = var.aws_region
+  
+  # Use localstack for local development
+  endpoints {
+    ec2 = "http://localhost:4566"
+    s3  = "http://localhost:4566"
+  }
+  
+  access_key = "test"
+  secret_key = "test"
+  
+  skip_credentials_validation = true
+  skip_metadata_api_check     = true
+  skip_requesting_account_id  = true
+
+  default_tags {
+    tags = var.default_tags
+  }
+}
+
+# Local values for computed configurations
+locals {
+  name_prefix = "${var.project_name}-${var.environment}"
+  
+  common_tags = merge(var.default_tags, {
+    Environment = var.environment
+    Project     = var.project_name
+  })
+
+  user_data_script = base64encode(templatefile("${path.module}/user-data.tpl", {
+    environment = var.environment
+    project     = var.project_name
+  }))
+}
+
+# Custom networking module
+module "networking" {
+  source = "../../modules/networking"
+
+  name_prefix        = local.name_prefix
+  vpc_cidr          = var.vpc_cidr
+  public_subnets    = var.public_subnets
+  private_subnets   = var.private_subnets
+  availability_zones = var.availability_zones
+  enable_nat_gateway = var.enable_nat_gateway
+
+  tags = local.common_tags
+}
+
+# Custom compute module
+module "web_servers" {
+  source = "../../modules/compute"
+
+  name_prefix       = "${local.name_prefix}-web"
+  vpc_id           = module.networking.vpc_id
+  subnet_ids       = module.networking.public_subnet_ids
+  instance_count   = var.web_instance_count
+  instance_type    = var.web_instance_type
+  user_data_base64 = local.user_data_script
+
+  ingress_rules = [
+    {
+      from_port   = 22
+      to_port     = 22
+      protocol    = "tcp"
+      cidr_blocks = [var.admin_cidr]
+      description = "SSH access from admin network"
+    },
+    {
+      from_port   = 80
+      to_port     = 80
+      protocol    = "tcp"
+      cidr_blocks = ["0.0.0.0/0"]
+      description = "HTTP access"
+    },
+    {
+      from_port   = 443
+      to_port     = 443
+      protocol    = "tcp"
+      cidr_blocks = ["0.0.0.0/0"]
+      description = "HTTPS access"
+    }
+  ]
+
+  tags = merge(local.common_tags, {
+    Tier = "Web"
+  })
+}
+
+# Application servers in private subnets
+module "app_servers" {
+  source = "../../modules/compute"
+
+  name_prefix       = "${local.name_prefix}-app"
+  vpc_id           = module.networking.vpc_id
+  subnet_ids       = module.networking.private_subnet_ids
+  instance_count   = var.app_instance_count
+  instance_type    = var.app_instance_type
+  user_data_base64 = local.user_data_script
+
+  ingress_rules = [
+    {
+      from_port   = 22
+      to_port     = 22
+      protocol    = "tcp"
+      cidr_blocks = [var.vpc_cidr]
+      description = "SSH access from VPC"
+    },
+    {
+      from_port   = 8080
+      to_port     = 8080
+      protocol    = "tcp"
+      cidr_blocks = [var.vpc_cidr]
+      description = "Application port"
+    }
+  ]
+
+  tags = merge(local.common_tags, {
+    Tier = "Application"
+  })
+}
+EOF
+# Create variables for staging environment
+cat > environments/staging/variables.tf << 'EOF'
+# Environment configuration
+variable "environment" {
+  description = "Environment name"
+  type        = string
+  default     = "staging"
+}
+
+variable "project_name" {
+  description = "Name of the project"
+  type        = string
+  default     = "terraform-lab"
+}
+
+variable "aws_region" {
+  description = "AWS region"
+  type        = string
+  default     = "us-east-1"
+}
+
+# Networking variables
+variable "vpc_cidr" {
+  description = "CIDR block for VPC"
+  type        = string
+  default     = "10.1.0.0/16"
+}
+
+variable "availability_zones" {
+  description = "Availability zones"
+  type        = list(string)
+  default     = ["us-east-1a", "us-east-1b", "us-east-1c"]
+}
+
+variable "public_subnets" {
+  description = "Public subnet CIDR blocks"
+  type        = list(string)
+  default     = ["10.1.1.0/24", "10.1.2.0/24", "10.1.3.0/24"]
+}
+
+variable "private_subnets" {
+  description = "Private subnet CIDR blocks"
+  type        = list(string)
+  default     = ["10.1.11.0/24", "10.1.12.0/24", "10.1.13.0/24"]
+}
+
+variable "enable_nat_gateway" {
+  description = "Enable NAT Gateway"
+  type        = bool
+  default     = true
+}
+
+# Compute variables
+variable "web_instance_count" {
+  description = "Number of web server instances"
+  type        = number
+  default     = 2
+}
+
+variable "web_instance_type" {
+  description = "Instance type for web servers"
+  type        = string
+  default     = "t3.micro"
+}
+
+variable "app_instance_count" {
+  description = "Number of application server instances"
+  type        = number
+  default     = 2
+}
+
+variable "app_instance_type" {
+  description = "Instance type for application servers"
+  type        = string
+  default
