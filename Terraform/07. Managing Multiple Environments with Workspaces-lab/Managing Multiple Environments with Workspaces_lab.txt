@@ -1,0 +1,443 @@
+Lab 7: Managing Multiple Environments with Workspaces
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Understand the concept and benefits of Terraform workspaces for environment isolation
+Create and manage multiple Terraform workspaces for different environments (dev, test, prod)
+Switch between workspaces using Terraform CLI commands
+Configure environment-specific variables and resources
+Validate that each workspace maintains isolated state files
+Deploy and manage resources across multiple environments safely
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Linux command line operations
+Familiarity with Terraform fundamentals (resources, providers, state)
+Knowledge of infrastructure as code concepts
+Experience with text editors like nano or vim
+Understanding of environment separation concepts in software development
+Lab Environment Setup
+Note: Al Nafi provides Linux-based cloud machines for this lab. Simply click "Start Lab" to access your dedicated Linux machine. The provided machine is bare metal with no pre-installed tools, so you will install all required tools during the lab.
+
+Task 1: Environment Preparation and Tool Installation
+Subtask 1.1: Install Required Tools
+First, let's install Terraform and other necessary tools on your Linux machine.
+
+# Update the system package list
+sudo apt update
+
+# Install required packages
+sudo apt install -y wget unzip curl
+
+# Download Terraform (latest stable version)
+wget https://releases.hashicorp.com/terraform/1.6.6/terraform_1.6.6_linux_amd64.zip
+
+# Unzip Terraform
+unzip terraform_1.6.6_linux_amd64.zip
+
+# Move Terraform to system PATH
+sudo mv terraform /usr/local/bin/
+
+# Verify Terraform installation
+terraform version
+
+# Clean up downloaded files
+rm terraform_1.6.6_linux_amd64.zip
+Subtask 1.2: Create Project Directory Structure
+# Create main project directory
+mkdir -p ~/terraform-workspaces-lab
+cd ~/terraform-workspaces-lab
+
+# Create subdirectories for organization
+mkdir -p configs environments
+
+# Verify directory structure
+tree . || ls -la
+Task 2: Understanding Terraform Workspaces
+Subtask 2.1: Learn About Default Workspace
+# Check current workspace (should be 'default')
+terraform workspace show
+
+# List all available workspaces
+terraform workspace list
+Subtask 2.2: Create Basic Terraform Configuration
+Create a simple Terraform configuration that we'll use across different environments.
+
+# Create main Terraform configuration file
+cat > main.tf << 'EOF'
+# Configure the local provider for demonstration
+terraform {
+  required_providers {
+    local = {
+      source  = "hashicorp/local"
+      version = "~> 2.4"
+    }
+  }
+  required_version = ">= 1.0"
+}
+
+# Define variables for environment-specific configuration
+variable "environment" {
+  description = "Environment name"
+  type        = string
+  default     = "default"
+}
+
+variable "instance_count" {
+  description = "Number of instances to create"
+  type        = number
+  default     = 1
+}
+
+variable "app_name" {
+  description = "Application name"
+  type        = string
+  default     = "myapp"
+}
+
+# Create environment-specific local files
+resource "local_file" "environment_config" {
+  count    = var.instance_count
+  filename = "${path.module}/environments/${var.environment}-${var.app_name}-${count.index + 1}.txt"
+  content  = <<-EOT
+    Environment: ${var.environment}
+    Application: ${var.app_name}
+    Instance: ${count.index + 1}
+    Workspace: ${terraform.workspace}
+    Timestamp: ${timestamp()}
+  EOT
+}
+
+resource "local_file" "workspace_info" {
+  filename = "${path.module}/environments/${terraform.workspace}-workspace-info.json"
+  content = jsonencode({
+    workspace     = terraform.workspace
+    environment   = var.environment
+    instance_count = var.instance_count
+    app_name      = var.app_name
+    created_at    = timestamp()
+  })
+}
+
+# Output important information
+output "workspace_name" {
+  description = "Current workspace name"
+  value       = terraform.workspace
+}
+
+output "environment" {
+  description = "Environment name"
+  value       = var.environment
+}
+
+output "files_created" {
+  description = "List of files created"
+  value       = local_file.environment_config[*].filename
+}
+EOF
+Subtask 2.3: Initialize Terraform
+# Initialize Terraform in the project directory
+terraform init
+
+# Verify initialization
+ls -la .terraform/
+Task 3: Creating and Managing Workspaces
+Subtask 3.1: Create Development Environment Workspace
+# Create dev workspace
+terraform workspace new dev
+
+# Verify current workspace
+terraform workspace show
+
+# List all workspaces (notice the asterisk indicating current workspace)
+terraform workspace list
+Subtask 3.2: Create Variable Files for Each Environment
+Create environment-specific variable files:
+
+# Create dev environment variables
+cat > dev.tfvars << 'EOF'
+environment    = "development"
+instance_count = 2
+app_name      = "webapp-dev"
+EOF
+
+# Create test environment variables
+cat > test.tfvars << 'EOF'
+environment    = "testing"
+instance_count = 3
+app_name      = "webapp-test"
+EOF
+
+# Create prod environment variables
+cat > prod.tfvars << 'EOF'
+environment    = "production"
+instance_count = 5
+app_name      = "webapp-prod"
+EOF
+Subtask 3.3: Deploy Resources in Dev Environment
+# Ensure we're in dev workspace
+terraform workspace select dev
+
+# Plan the deployment
+terraform plan -var-file="dev.tfvars"
+
+# Apply the configuration
+terraform apply -var-file="dev.tfvars" -auto-approve
+
+# Check the created files
+ls -la environments/
+cat environments/dev-workspace-info.json
+Subtask 3.4: Create and Configure Test Environment
+# Create test workspace
+terraform workspace new test
+
+# Verify current workspace
+terraform workspace show
+
+# Deploy to test environment
+terraform plan -var-file="test.tfvars"
+terraform apply -var-file="test.tfvars" -auto-approve
+
+# Verify test environment files
+ls -la environments/
+cat environments/test-workspace-info.json
+Subtask 3.5: Create and Configure Production Environment
+# Create prod workspace
+terraform workspace new prod
+
+# Deploy to production environment
+terraform plan -var-file="prod.tfvars"
+terraform apply -var-file="prod.tfvars" -auto-approve
+
+# Verify production environment files
+ls -la environments/
+cat environments/prod-workspace-info.json
+Task 4: Switching Between Workspaces and Validating Isolation
+Subtask 4.1: Demonstrate Workspace Switching
+# List all workspaces
+terraform workspace list
+
+# Switch to dev workspace
+terraform workspace select dev
+echo "Current workspace: $(terraform workspace show)"
+
+# Show dev environment state
+terraform show
+
+# Switch to test workspace
+terraform workspace select test
+echo "Current workspace: $(terraform workspace show)"
+
+# Show test environment state
+terraform show
+
+# Switch to prod workspace
+terraform workspace select prod
+echo "Current workspace: $(terraform workspace show)"
+
+# Show production environment state
+terraform show
+Subtask 4.2: Validate State Isolation
+# Check state files for each workspace
+echo "=== Checking state file locations ==="
+find .terraform -name "*.tfstate" -type f
+
+# Display state file contents for each environment
+echo "=== Dev workspace state ==="
+terraform workspace select dev
+terraform state list
+
+echo "=== Test workspace state ==="
+terraform workspace select test
+terraform state list
+
+echo "=== Prod workspace state ==="
+terraform workspace select prod
+terraform state list
+Subtask 4.3: Verify Resource Isolation
+# Count files created by each environment
+echo "=== Files created by each environment ==="
+echo "Dev environment files:"
+ls -la environments/ | grep development || echo "No dev files found"
+
+echo "Test environment files:"
+ls -la environments/ | grep testing || echo "No test files found"
+
+echo "Production environment files:"
+ls -la environments/ | grep production || echo "No prod files found"
+
+# Show workspace-specific files
+echo "=== Workspace info files ==="
+cat environments/dev-workspace-info.json 2>/dev/null || echo "Dev workspace info not found"
+echo "---"
+cat environments/test-workspace-info.json 2>/dev/null || echo "Test workspace info not found"
+echo "---"
+cat environments/prod-workspace-info.json 2>/dev/null || echo "Prod workspace info not found"
+Task 5: Advanced Workspace Operations
+Subtask 5.1: Modify Resources in Specific Environment
+# Switch to dev environment
+terraform workspace select dev
+
+# Update dev configuration with additional instance
+cat > dev-updated.tfvars << 'EOF'
+environment    = "development"
+instance_count = 4
+app_name      = "webapp-dev-v2"
+EOF
+
+# Apply updated configuration
+terraform plan -var-file="dev-updated.tfvars"
+terraform apply -var-file="dev-updated.tfvars" -auto-approve
+
+# Verify changes only affected dev environment
+echo "=== Updated dev environment ==="
+ls -la environments/ | grep development
+Subtask 5.2: Create Workspace Management Script
+# Create a helper script for workspace management
+cat > workspace-manager.sh << 'EOF'
+#!/bin/bash
+
+# Workspace management script
+case "$1" in
+    "list")
+        echo "Available workspaces:"
+        terraform workspace list
+        ;;
+    "current")
+        echo "Current workspace: $(terraform workspace show)"
+        ;;
+    "switch")
+        if [ -z "$2" ]; then
+            echo "Usage: $0 switch <workspace-name>"
+            exit 1
+        fi
+        terraform workspace select "$2"
+        echo "Switched to workspace: $(terraform workspace show)"
+        ;;
+    "status")
+        echo "=== Workspace Status ==="
+        echo "Current workspace: $(terraform workspace show)"
+        echo "Resources in current workspace:"
+        terraform state list
+        ;;
+    "deploy")
+        if [ -z "$2" ]; then
+            echo "Usage: $0 deploy <environment>"
+            exit 1
+        fi
+        workspace="$2"
+        terraform workspace select "$workspace"
+        terraform apply -var-file="${workspace}.tfvars" -auto-approve
+        ;;
+    *)
+        echo "Usage: $0 {list|current|switch|status|deploy} [workspace-name]"
+        echo "Commands:"
+        echo "  list     - List all workspaces"
+        echo "  current  - Show current workspace"
+        echo "  switch   - Switch to specified workspace"
+        echo "  status   - Show current workspace status"
+        echo "  deploy   - Deploy to specified environment"
+        ;;
+esac
+EOF
+
+# Make script executable
+chmod +x workspace-manager.sh
+
+# Test the script
+./workspace-manager.sh list
+./workspace-manager.sh current
+Subtask 5.3: Demonstrate Workspace Isolation with State Commands
+# Create a comprehensive state comparison
+echo "=== Comprehensive Workspace State Comparison ===" > workspace-comparison.txt
+
+for workspace in dev test prod; do
+    echo "=== $workspace workspace ===" >> workspace-comparison.txt
+    terraform workspace select $workspace
+    echo "Resources:" >> workspace-comparison.txt
+    terraform state list >> workspace-comparison.txt
+    echo "Outputs:" >> workspace-comparison.txt
+    terraform output >> workspace-comparison.txt
+    echo "" >> workspace-comparison.txt
+done
+
+# Display the comparison
+cat workspace-comparison.txt
+Task 6: Cleanup and Workspace Deletion
+Subtask 6.1: Destroy Resources in Each Environment
+# Destroy dev environment
+terraform workspace select dev
+terraform destroy -var-file="dev-updated.tfvars" -auto-approve
+
+# Destroy test environment
+terraform workspace select test
+terraform destroy -var-file="test.tfvars" -auto-approve
+
+# Destroy prod environment
+terraform workspace select prod
+terraform destroy -var-file="prod.tfvars" -auto-approve
+
+# Verify all resources are destroyed
+ls -la environments/
+Subtask 6.2: Delete Workspaces (Optional)
+# Switch to default workspace before deleting others
+terraform workspace select default
+
+# Delete workspaces (note: you cannot delete the current workspace)
+terraform workspace delete dev
+terraform workspace delete test
+terraform workspace delete prod
+
+# Verify only default workspace remains
+terraform workspace list
+Troubleshooting Tips
+Common Issues and Solutions
+Issue 1: Cannot switch to workspace
+
+# Solution: Ensure workspace exists
+terraform workspace list
+terraform workspace new <workspace-name>
+Issue 2: State file conflicts
+
+# Solution: Check current workspace
+terraform workspace show
+# Ensure you're in the correct workspace before operations
+Issue 3: Variable file not found
+
+# Solution: Verify file exists and path is correct
+ls -la *.tfvars
+# Use absolute path if necessary
+terraform apply -var-file="$(pwd)/dev.tfvars"
+Issue 4: Permission denied on script execution
+
+# Solution: Make script executable
+chmod +x workspace-manager.sh
+Key Concepts Summary
+Terraform Workspaces
+Workspaces provide state isolation for the same configuration
+Each workspace maintains its own state file
+Default workspace is created automatically
+Workspace names are reflected in terraform.workspace variable
+State Isolation Benefits
+Environment Separation: Dev, test, and prod environments remain completely isolated
+Safe Deployments: Changes in one workspace don't affect others
+Resource Management: Each workspace can have different resource counts and configurations
+Team Collaboration: Multiple team members can work on different environments simultaneously
+Best Practices
+Use descriptive workspace names (dev, test, prod, staging)
+Create environment-specific variable files
+Always verify current workspace before operations
+Use workspace-specific naming conventions for resources
+Implement proper access controls for production workspaces
+Conclusion
+In this lab, you successfully learned how to manage multiple environments using Terraform workspaces. You accomplished the following:
+
+Installed and configured Terraform on a Linux machine
+Created multiple workspaces for dev, test, and production environments
+Deployed isolated resources in each workspace using environment-specific configurations
+Demonstrated state isolation by switching between workspaces and validating separate state files
+Implemented workspace management using both CLI commands and custom scripts
+Validated resource isolation across different environments
+This approach to environment management is crucial in real-world scenarios where you need to maintain separate infrastructure for development, testing, and production while using the same Terraform configuration. Workspaces provide a clean, efficient way to manage multiple environments without code duplication, ensuring consistency across environments while maintaining proper isolation for safety and security.
+
+The skills you've developed in this lab will enable you to implement proper environment separation in your infrastructure as code practices, making your deployments more reliable and your development workflow more efficient.
