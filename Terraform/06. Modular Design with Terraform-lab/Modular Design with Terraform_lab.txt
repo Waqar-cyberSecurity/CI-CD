@@ -1,0 +1,1014 @@
+Lab 6: Modular Design with Terraform
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Understand the principles of modular infrastructure design with Terraform
+Create reusable Terraform modules for common infrastructure components
+Implement proper module structure and organization
+Use variables and outputs to make modules flexible and reusable
+Test modules with different configurations and variable inputs
+Apply best practices for module development and maintenance
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Linux command line operations
+Familiarity with text editors (nano, vim, or similar)
+Basic knowledge of Terraform syntax and concepts
+Understanding of AWS EC2 instances and basic networking concepts
+Experience with YAML/JSON file formats
+Lab Environment Setup
+Note: Al Nafi provides Linux-based cloud machines for this lab. Simply click "Start Lab" to access your dedicated Linux machine. The provided machine is bare metal with no pre-installed tools, so you will install all required tools during the lab.
+
+Task 1: Environment Preparation and Tool Installation
+Subtask 1.1: Install Required Tools
+First, let's install Terraform and other necessary tools on your Linux machine.
+
+# Update the system packages
+sudo apt update && sudo apt upgrade -y
+
+# Install required packages
+sudo apt install -y wget unzip curl git
+
+# Download and install Terraform
+wget https://releases.hashicorp.com/terraform/1.6.6/terraform_1.6.6_linux_amd64.zip
+unzip terraform_1.6.6_linux_amd64.zip
+sudo mv terraform /usr/local/bin/
+rm terraform_1.6.6_linux_amd64.zip
+
+# Verify Terraform installation
+terraform version
+Subtask 1.2: Install AWS CLI (for local testing)
+# Download and install AWS CLI
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip
+sudo ./aws/install
+rm -rf aws awscliv2.zip
+
+# Verify AWS CLI installation
+aws --version
+Subtask 1.3: Create Project Directory Structure
+# Create the main project directory
+mkdir -p ~/terraform-modules-lab
+cd ~/terraform-modules-lab
+
+# Create directory structure for our modular design
+mkdir -p {modules/ec2-instance,environments/dev,environments/prod,environments/test}
+
+# Create additional directories for organization
+mkdir -p modules/ec2-instance/{variables,outputs,main}
+
+# Display the directory structure
+tree . || find . -type d | sort
+Task 2: Create a Reusable EC2 Instance Module
+Subtask 2.1: Define Module Variables
+Create the variables file for our EC2 module:
+
+# Navigate to the module directory
+cd ~/terraform-modules-lab/modules/ec2-instance
+
+# Create variables.tf file
+cat > variables.tf << 'EOF'
+# Variables for EC2 Instance Module
+
+variable "instance_name" {
+  description = "Name tag for the EC2 instance"
+  type        = string
+  default     = "terraform-instance"
+}
+
+variable "instance_type" {
+  description = "EC2 instance type"
+  type        = string
+  default     = "t2.micro"
+}
+
+variable "ami_id" {
+  description = "AMI ID for the EC2 instance"
+  type        = string
+  default     = "ami-0c02fb55956c7d316" # Amazon Linux 2 AMI (us-east-1)
+}
+
+variable "key_name" {
+  description = "Name of the AWS key pair"
+  type        = string
+  default     = ""
+}
+
+variable "subnet_id" {
+  description = "Subnet ID where the instance will be launched"
+  type        = string
+  default     = ""
+}
+
+variable "security_group_ids" {
+  description = "List of security group IDs"
+  type        = list(string)
+  default     = []
+}
+
+variable "associate_public_ip" {
+  description = "Whether to associate a public IP address"
+  type        = bool
+  default     = true
+}
+
+variable "root_volume_size" {
+  description = "Size of the root volume in GB"
+  type        = number
+  default     = 8
+}
+
+variable "root_volume_type" {
+  description = "Type of the root volume"
+  type        = string
+  default     = "gp3"
+}
+
+variable "environment" {
+  description = "Environment name (dev, prod, test)"
+  type        = string
+  default     = "dev"
+}
+
+variable "project" {
+  description = "Project name for resource tagging"
+  type        = string
+  default     = "terraform-lab"
+}
+
+variable "additional_tags" {
+  description = "Additional tags to apply to resources"
+  type        = map(string)
+  default     = {}
+}
+
+variable "user_data" {
+  description = "User data script for instance initialization"
+  type        = string
+  default     = ""
+}
+
+variable "monitoring" {
+  description = "Enable detailed monitoring"
+  type        = bool
+  default     = false
+}
+EOF
+Subtask 2.2: Create the Main Module Configuration
+# Create main.tf file for the module
+cat > main.tf << 'EOF'
+# Main configuration for EC2 Instance Module
+
+# Data source to get the default VPC
+data "aws_vpc" "default" {
+  default = true
+}
+
+# Data source to get the first available subnet if none provided
+data "aws_subnets" "default" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default.id]
+  }
+}
+
+# Data source to get the latest Amazon Linux 2 AMI if none provided
+data "aws_ami" "amazon_linux" {
+  most_recent = true
+  owners      = ["amazon"]
+
+  filter {
+    name   = "name"
+    values = ["amzn2-ami-hvm-*-x86_64-gp2"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+}
+
+# Create a default security group if none provided
+resource "aws_security_group" "default" {
+  count       = length(var.security_group_ids) == 0 ? 1 : 0
+  name        = "${var.instance_name}-sg"
+  description = "Default security group for ${var.instance_name}"
+  vpc_id      = data.aws_vpc.default.id
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "SSH access"
+  }
+
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "HTTP access"
+  }
+
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "HTTPS access"
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "All outbound traffic"
+  }
+
+  tags = merge(
+    {
+      Name        = "${var.instance_name}-sg"
+      Environment = var.environment
+      Project     = var.project
+      ManagedBy   = "terraform"
+    },
+    var.additional_tags
+  )
+}
+
+# Local values for computed configurations
+locals {
+  subnet_id = var.subnet_id != "" ? var.subnet_id : data.aws_subnets.default.ids[0]
+  ami_id    = var.ami_id != "" ? var.ami_id : data.aws_ami.amazon_linux.id
+  security_group_ids = length(var.security_group_ids) > 0 ? var.security_group_ids : [aws_security_group.default[0].id]
+  
+  # Default user data script
+  default_user_data = <<-EOF
+    #!/bin/bash
+    yum update -y
+    yum install -y httpd
+    systemctl start httpd
+    systemctl enable httpd
+    echo "<h1>Hello from ${var.instance_name}</h1>" > /var/www/html/index.html
+    echo "<p>Environment: ${var.environment}</p>" >> /var/www/html/index.html
+    echo "<p>Instance Type: ${var.instance_type}</p>" >> /var/www/html/index.html
+  EOF
+  
+  user_data = var.user_data != "" ? var.user_data : local.default_user_data
+}
+
+# EC2 Instance resource
+resource "aws_instance" "this" {
+  ami                         = local.ami_id
+  instance_type              = var.instance_type
+  key_name                   = var.key_name != "" ? var.key_name : null
+  subnet_id                  = local.subnet_id
+  vpc_security_group_ids     = local.security_group_ids
+  associate_public_ip_address = var.associate_public_ip
+  user_data                  = base64encode(local.user_data)
+  monitoring                 = var.monitoring
+
+  root_block_device {
+    volume_type = var.root_volume_type
+    volume_size = var.root_volume_size
+    encrypted   = true
+
+    tags = merge(
+      {
+        Name        = "${var.instance_name}-root-volume"
+        Environment = var.environment
+        Project     = var.project
+        ManagedBy   = "terraform"
+      },
+      var.additional_tags
+    )
+  }
+
+  tags = merge(
+    {
+      Name        = var.instance_name
+      Environment = var.environment
+      Project     = var.project
+      ManagedBy   = "terraform"
+      ModuleType  = "ec2-instance"
+    },
+    var.additional_tags
+  )
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# Elastic IP (optional)
+resource "aws_eip" "this" {
+  count    = var.associate_public_ip ? 1 : 0
+  instance = aws_instance.this.id
+  domain   = "vpc"
+
+  tags = merge(
+    {
+      Name        = "${var.instance_name}-eip"
+      Environment = var.environment
+      Project     = var.project
+      ManagedBy   = "terraform"
+    },
+    var.additional_tags
+  )
+
+  depends_on = [aws_instance.this]
+}
+EOF
+Subtask 2.3: Define Module Outputs
+# Create outputs.tf file
+cat > outputs.tf << 'EOF'
+# Outputs for EC2 Instance Module
+
+output "instance_id" {
+  description = "ID of the EC2 instance"
+  value       = aws_instance.this.id
+}
+
+output "instance_arn" {
+  description = "ARN of the EC2 instance"
+  value       = aws_instance.this.arn
+}
+
+output "instance_state" {
+  description = "State of the EC2 instance"
+  value       = aws_instance.this.instance_state
+}
+
+output "public_ip" {
+  description = "Public IP address of the instance"
+  value       = aws_instance.this.public_ip
+}
+
+output "private_ip" {
+  description = "Private IP address of the instance"
+  value       = aws_instance.this.private_ip
+}
+
+output "public_dns" {
+  description = "Public DNS name of the instance"
+  value       = aws_instance.this.public_dns
+}
+
+output "private_dns" {
+  description = "Private DNS name of the instance"
+  value       = aws_instance.this.private_dns
+}
+
+output "security_group_ids" {
+  description = "List of security group IDs attached to the instance"
+  value       = aws_instance.this.vpc_security_group_ids
+}
+
+output "subnet_id" {
+  description = "Subnet ID where the instance is launched"
+  value       = aws_instance.this.subnet_id
+}
+
+output "availability_zone" {
+  description = "Availability zone of the instance"
+  value       = aws_instance.this.availability_zone
+}
+
+output "key_name" {
+  description = "Key pair name used for the instance"
+  value       = aws_instance.this.key_name
+}
+
+output "elastic_ip" {
+  description = "Elastic IP address (if created)"
+  value       = length(aws_eip.this) > 0 ? aws_eip.this[0].public_ip : null
+}
+
+output "instance_tags" {
+  description = "Tags applied to the instance"
+  value       = aws_instance.this.tags
+}
+
+output "root_volume_id" {
+  description = "ID of the root volume"
+  value       = aws_instance.this.root_block_device[0].volume_id
+}
+EOF
+Subtask 2.4: Create Module Documentation
+# Create README.md for the module
+cat > README.md << 'EOF'
+# EC2 Instance Terraform Module
+
+This module creates an AWS EC2 instance with configurable parameters and best practices applied.
+
+## Features
+
+- Configurable instance type and AMI
+- Automatic security group creation with sensible defaults
+- Optional Elastic IP assignment
+- Encrypted root volume
+- Comprehensive tagging strategy
+- Default user data script for web server setup
+- Support for custom user data scripts
+
+## Usage
+
+```hcl
+module "web_server" {
+  source = "./modules/ec2-instance"
+  
+  instance_name     = "my-web-server"
+  instance_type     = "t2.micro"
+  environment       = "dev"
+  project           = "my-project"
+  
+  additional_tags = {
+    Owner = "DevOps Team"
+    Cost  = "Development"
+  }
+}
+Requirements
+Terraform >= 1.0
+AWS Provider >= 4.0
+Inputs
+Name	Description	Type	Default	Required
+instance_name	Name tag for the EC2 instance	string	"terraform-instance"	no
+instance_type	EC2 instance type	string	"t2.micro"	no
+ami_id	AMI ID for the EC2 instance	string	""	no
+environment	Environment name	string	"dev"	no
+project	Project name for resource tagging	string	"terraform-lab"	no
+Outputs
+Name	Description
+instance_id	ID of the EC2 instance
+public_ip	Public IP address of the instance
+private_ip	Private IP address of the instance
+public_dns	Public DNS name of the instance
+EOF	
+
+## Task 3: Create Multiple Environment Configurations
+
+### Subtask 3.1: Development Environment Configuration
+
+```bash
+# Navigate to dev environment directory
+cd ~/terraform-modules-lab/environments/dev
+
+# Create main.tf for development environment
+cat > main.tf << 'EOF'
+# Development Environment Configuration
+
+terraform {
+  required_version = ">= 1.0"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+# Configure AWS Provider
+provider "aws" {
+  region = var.aws_region
+  
+  default_tags {
+    tags = {
+      Environment = "dev"
+      Project     = "terraform-modules-lab"
+      ManagedBy   = "terraform"
+    }
+  }
+}
+
+# Development Web Server
+module "dev_web_server" {
+  source = "../../modules/ec2-instance"
+  
+  instance_name     = "dev-web-server"
+  instance_type     = "t2.micro"
+  environment       = "dev"
+  project           = "terraform-modules-lab"
+  monitoring        = false
+  root_volume_size  = 8
+  
+  additional_tags = {
+    Owner       = "Development Team"
+    Cost        = "Development"
+    AutoShutdown = "true"
+  }
+}
+
+# Development Database Server
+module "dev_db_server" {
+  source = "../../modules/ec2-instance"
+  
+  instance_name     = "dev-db-server"
+  instance_type     = "t2.micro"
+  environment       = "dev"
+  project           = "terraform-modules-lab"
+  monitoring        = false
+  root_volume_size  = 10
+  
+  user_data = <<-EOF
+    #!/bin/bash
+    yum update -y
+    yum install -y mysql-server
+    systemctl start mysqld
+    systemctl enable mysqld
+    echo "Database server initialized" > /var/log/init.log
+  EOF
+  
+  additional_tags = {
+    Owner       = "Development Team"
+    Cost        = "Development"
+    Service     = "Database"
+    AutoShutdown = "true"
+  }
+}
+EOF
+
+# Create variables.tf for dev environment
+cat > variables.tf << 'EOF'
+variable "aws_region" {
+  description = "AWS region for resources"
+  type        = string
+  default     = "us-east-1"
+}
+EOF
+
+# Create outputs.tf for dev environment
+cat > outputs.tf << 'EOF'
+# Development Environment Outputs
+
+output "dev_web_server_info" {
+  description = "Development web server information"
+  value = {
+    instance_id = module.dev_web_server.instance_id
+    public_ip   = module.dev_web_server.public_ip
+    private_ip  = module.dev_web_server.private_ip
+    public_dns  = module.dev_web_server.public_dns
+  }
+}
+
+output "dev_db_server_info" {
+  description = "Development database server information"
+  value = {
+    instance_id = module.dev_db_server.instance_id
+    public_ip   = module.dev_db_server.public_ip
+    private_ip  = module.dev_db_server.private_ip
+    public_dns  = module.dev_db_server.public_dns
+  }
+}
+
+output "dev_environment_summary" {
+  description = "Summary of development environment"
+  value = {
+    web_server_url = "http://${module.dev_web_server.public_ip}"
+    total_instances = 2
+    environment     = "development"
+  }
+}
+EOF
+Subtask 3.2: Production Environment Configuration
+# Navigate to prod environment directory
+cd ~/terraform-modules-lab/environments/prod
+
+# Create main.tf for production environment
+cat > main.tf << 'EOF'
+# Production Environment Configuration
+
+terraform {
+  required_version = ">= 1.0"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+# Configure AWS Provider
+provider "aws" {
+  region = var.aws_region
+  
+  default_tags {
+    tags = {
+      Environment = "prod"
+      Project     = "terraform-modules-lab"
+      ManagedBy   = "terraform"
+    }
+  }
+}
+
+# Production Web Server 1
+module "prod_web_server_1" {
+  source = "../../modules/ec2-instance"
+  
+  instance_name     = "prod-web-server-1"
+  instance_type     = "t3.small"
+  environment       = "prod"
+  project           = "terraform-modules-lab"
+  monitoring        = true
+  root_volume_size  = 20
+  root_volume_type  = "gp3"
+  
+  additional_tags = {
+    Owner       = "Production Team"
+    Cost        = "Production"
+    Service     = "WebServer"
+    Backup      = "daily"
+  }
+}
+
+# Production Web Server 2 (for redundancy)
+module "prod_web_server_2" {
+  source = "../../modules/ec2-instance"
+  
+  instance_name     = "prod-web-server-2"
+  instance_type     = "t3.small"
+  environment       = "prod"
+  project           = "terraform-modules-lab"
+  monitoring        = true
+  root_volume_size  = 20
+  root_volume_type  = "gp3"
+  
+  additional_tags = {
+    Owner       = "Production Team"
+    Cost        = "Production"
+    Service     = "WebServer"
+    Backup      = "daily"
+  }
+}
+
+# Production Database Server
+module "prod_db_server" {
+  source = "../../modules/ec2-instance"
+  
+  instance_name     = "prod-db-server"
+  instance_type     = "t3.medium"
+  environment       = "prod"
+  project           = "terraform-modules-lab"
+  monitoring        = true
+  root_volume_size  = 50
+  root_volume_type  = "gp3"
+  
+  user_data = <<-EOF
+    #!/bin/bash
+    yum update -y
+    yum install -y mysql-server
+    systemctl start mysqld
+    systemctl enable mysqld
+    
+    # Configure MySQL for production
+    mysql_secure_installation --use-default
+    
+    echo "Production database server initialized" > /var/log/init.log
+  EOF
+  
+  additional_tags = {
+    Owner       = "Production Team"
+    Cost        = "Production"
+    Service     = "Database"
+    Backup      = "hourly"
+    Critical    = "true"
+  }
+}
+EOF
+
+# Create variables.tf for prod environment
+cat > variables.tf << 'EOF'
+variable "aws_region" {
+  description = "AWS region for resources"
+  type        = string
+  default     = "us-east-1"
+}
+EOF
+
+# Create outputs.tf for prod environment
+cat > outputs.tf << 'EOF'
+# Production Environment Outputs
+
+output "prod_web_servers_info" {
+  description = "Production web servers information"
+  value = {
+    web_server_1 = {
+      instance_id = module.prod_web_server_1.instance_id
+      public_ip   = module.prod_web_server_1.public_ip
+      private_ip  = module.prod_web_server_1.private_ip
+    }
+    web_server_2 = {
+      instance_id = module.prod_web_server_2.instance_id
+      public_ip   = module.prod_web_server_2.public_ip
+      private_ip  = module.prod_web_server_2.private_ip
+    }
+  }
+}
+
+output "prod_db_server_info" {
+  description = "Production database server information"
+  value = {
+    instance_id = module.prod_db_server.instance_id
+    public_ip   = module.prod_db_server.public_ip
+    private_ip  = module.prod_db_server.private_ip
+  }
+}
+
+output "prod_environment_summary" {
+  description = "Summary of production environment"
+  value = {
+    web_server_1_url = "http://${module.prod_web_server_1.public_ip}"
+    web_server_2_url = "http://${module.prod_web_server_2.public_ip}"
+    total_instances  = 3
+    environment      = "production"
+  }
+}
+EOF
+Subtask 3.3: Test Environment Configuration
+# Navigate to test environment directory
+cd ~/terraform-modules-lab/environments/test
+
+# Create main.tf for test environment
+cat > main.tf << 'EOF'
+# Test Environment Configuration
+
+terraform {
+  required_version = ">= 1.0"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+# Configure AWS Provider
+provider "aws" {
+  region = var.aws_region
+  
+  default_tags {
+    tags = {
+      Environment = "test"
+      Project     = "terraform-modules-lab"
+      ManagedBy   = "terraform"
+    }
+  }
+}
+
+# Test Web Server with custom configuration
+module "test_web_server" {
+  source = "../../modules/ec2-instance"
+  
+  instance_name     = "test-web-server"
+  instance_type     = "t2.small"
+  environment       = "test"
+  project           = "terraform-modules-lab"
+  monitoring        = false
+  root_volume_size  = 15
+  
+  user_data = <<-EOF
+    #!/bin/bash
+    yum update -y
+    yum install -y httpd php mysql
+    systemctl start httpd
+    systemctl enable httpd
+    
+    # Create a test page
+    cat > /var/www/html/index.html << 'HTML'
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Test Environment</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 40px; }
+            .header { color: #ff6600; }
+            .info { background-color: #f0f0f0; padding: 10px; margin: 10px 0; }
+        </style>
+    </head>
+    <body>
+        <h1 class="header">Test Environment Server</h1>
+        <div class="info">
+            <p><strong>Instance:</strong> test-web-server</p>
+            <p><strong>Environment:</strong> test</p>
+            <p><strong>Purpose:</strong> Testing and QA</p>
+        </div>
+        <p>This server is used for testing applications before production deployment.</p>
+    </body>
+    </html>
+HTML
+  EOF
+  
+  additional_tags = {
+    Owner       = "QA Team"
+    Cost        = "Testing"
+    Service     = "WebServer"
+    AutoShutdown = "true"
+    TestType    = "integration"
+  }
+}
+
+# Test Application Server
+module "test_app_server" {
+  source = "../../modules/ec2-instance"
+  
+  instance_name     = "test-app-server"
+  instance_type     = "t2.micro"
+  environment       = "test"
+  project           = "terraform-modules-lab"
+  monitoring        = false
+  root_volume_size  = 12
+  
+  user_data = <<-EOF
+    #!/bin/bash
+    yum update -y
+    yum install -y nodejs npm git
+    
+    # Create a simple Node.js application
+    mkdir -p /opt/testapp
+    cd /opt/testapp
+    
+    cat > package.json << 'JSON'
+{
+  "name": "test-app",
+  "version": "1.0.0",
+  "description": "Test application server",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js"
+  }
+}
+JSON
+    
+    cat > app.js << 'JS'
+const http = require('http');
+const hostname = '0.0.0.0';
+const port = 3000;
+
+const server = http.createServer((req, res) => {
+  res.statusCode = 200;
+  res.setHeader('Content-Type', 'text/html');
+  res.end(`
+    <h1>Test Application Server</h1>
+    <p>Environment: test</p>
+    <p>Server: test-app-server</p>
+    <p>Port: 3000</p>
+    <p>Status: Running</p>
+  `);
+});
+
+server.listen(port, hostname, () => {
+  console.log('Test app server running at http://' + hostname + ':' + port + '/');
+});
+JS
+    
+    # Start the application
+    npm install
+    nohup npm start > /var/log/testapp.log 2>&1 &
+  EOF
+  
+  additional_tags = {
+    Owner       = "QA Team"
+    Cost        = "Testing"
+    Service     = "AppServer"
+    AutoShutdown = "true"
+    TestType    = "application"
+  }
+}
+EOF
+
+# Create variables.tf for test environment
+cat > variables.tf << 'EOF'
+variable "aws_region" {
+  description = "AWS region for resources"
+  type        = string
+  default     = "us-east-1"
+}
+EOF
+
+# Create outputs.tf for test environment
+cat > outputs.tf << 'EOF'
+# Test Environment Outputs
+
+output "test_web_server_info" {
+  description = "Test web server information"
+  value = {
+    instance_id = module.test_web_server.instance_id
+    public_ip   = module.test_web_server.public_ip
+    private_ip  = module.test_web_server.private_ip
+    web_url     = "http://${module.test_web_server.public_ip}"
+  }
+}
+
+output "test_app_server_info" {
+  description = "Test application server information"
+  value = {
+    instance_id = module.test_app_server.instance_id
+    public_ip   = module.test_app_server.public_ip
+    private_ip  = module.test_app_server.private_ip
+    app_url     = "http://${module.test_app_server.public_ip}:3000"
+  }
+}
+
+output "test_environment_summary" {
+  description = "Summary of test environment"
+  value = {
+    web_server_url = "http://${module.test_web_server.public_ip}"
+    app_server_url = "http://${module.test_app_server.public_ip}:3000"
+    total_instances = 2
+    environment     = "test"
+  }
+}
+EOF
+Task 4: Test the Module with Different Variable Inputs
+Subtask 4.1: Create a Comprehensive Test Configuration
+# Navigate back to the main project directory
+cd ~/terraform-modules-lab
+
+# Create a test directory for module validation
+mkdir -p test-configurations
+cd test-configurations
+
+# Create a comprehensive test configuration
+cat > test-module.tf << 'EOF'
+# Comprehensive Module Testing Configuration
+
+terraform {
+  required_version = ">= 1.0"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+provider "aws" {
+  region = "us-east-1"
+}
+
+# Test 1: Minimal configuration (using defaults)
+module "test_minimal" {
+  source = "../modules/ec2-instance"
+  
+  instance_name = "test-minimal"
+  environment   = "test"
+}
+
+# Test 2: Custom instance type and size
+module "test_custom_size" {
+  source = "../modules/ec2-instance"
+  
+  instance_name    = "test-custom-size"
+  instance_type    = "t3.medium"
+  root_volume_size = 30
+  environment      = "test"
+  monitoring       = true
+}
+
+# Test 3: Custom user data script
+module "test_custom_userdata" {
+  source = "../modules/ec2-instance"
+  
+  instance_name = "test-custom-userdata"
+  instance_type = "t2.small"
+  environment   = "test"
+  
+  user_data = <<-EOF
+    #!/bin/bash
+    yum update -y
+    yum install -y docker
+    systemctl start docker
+    systemctl enable docker
+    usermod -a -G docker ec2-user
+    
+    # Run a simple nginx container
+    docker run -d -p 80:80 --name test-nginx nginx:alpine
+    
+    echo "Docker and Nginx container deployed" > /var/log/custom-init.log
+  EOF
+  
+  additional_tags = {
+    TestType = "custom-userdata"
+    Service  = "docker"
+  }
+}
+
+# Test 4: Different volume types and encryption
+module "test_storage_options" {
+  source = "../modules/ec2-instance"
+  
+  instance_name    = "test-storage"
+  instance_type    = "t3.small"
+  root_volume_size = 25
+  root_volume_type = "gp3"
+  environment      = "test"
+  
+  additional_tags = {
+    TestType = "storage-options"
+    Storage  = "gp3-encrypted"
+  }
+}
+
+# Test 5: No public IP assignment
+module "test
