@@ -1,0 +1,1073 @@
+Lab 20: Advanced Terraform Troubleshooting
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Diagnose and resolve common Terraform state management issues
+Use terraform console to debug and test Terraform configurations interactively
+Implement proper error handling strategies for failed terraform apply operations
+Identify and fix configuration syntax errors and resource conflicts
+Understand Terraform's debugging capabilities and logging mechanisms
+Apply best practices for troubleshooting complex infrastructure deployments
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Terraform concepts (resources, providers, state)
+Familiarity with Linux command line operations
+Knowledge of basic infrastructure concepts (networks, compute instances)
+Understanding of JSON and HCL (HashiCorp Configuration Language) syntax
+Experience with text editors like vim or nano
+Lab Environment Setup
+Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated Linux machine. The provided machine is bare metal with no pre-installed tools, so you will install all required tools during the lab exercises.
+
+Task 1: Environment Preparation and Tool Installation
+Subtask 1.1: Install Required Tools
+First, let's install Terraform and other necessary tools on your Linux machine.
+
+# Update the system package manager
+sudo apt update && sudo apt upgrade -y
+
+# Install required packages
+sudo apt install -y wget unzip curl git tree jq
+
+# Download and install Terraform
+wget https://releases.hashicorp.com/terraform/1.6.6/terraform_1.6.6_linux_amd64.zip
+
+# Unzip and install Terraform
+unzip terraform_1.6.6_linux_amd64.zip
+sudo mv terraform /usr/local/bin/
+
+# Verify Terraform installation
+terraform version
+
+# Clean up downloaded files
+rm terraform_1.6.6_linux_amd64.zip
+Subtask 1.2: Create Lab Working Directory
+# Create and navigate to lab directory
+mkdir -p ~/terraform-troubleshooting-lab
+cd ~/terraform-troubleshooting-lab
+
+# Create subdirectories for different scenarios
+mkdir -p scenario1-state-issues
+mkdir -p scenario2-console-debugging
+mkdir -p scenario3-error-handling
+mkdir -p scenario4-advanced-troubleshooting
+Subtask 1.3: Set Up Terraform Logging
+# Create a script to enable detailed Terraform logging
+cat > enable_terraform_logging.sh << 'EOF'
+#!/bin/bash
+export TF_LOG=DEBUG
+export TF_LOG_PATH=./terraform-debug.log
+echo "Terraform logging enabled at DEBUG level"
+echo "Log file: terraform-debug.log"
+EOF
+
+chmod +x enable_terraform_logging.sh
+Task 2: Diagnose and Resolve State Management Issues
+Subtask 2.1: Create a Problematic Configuration
+Let's create a scenario where state management issues commonly occur.
+
+cd ~/terraform-troubleshooting-lab/scenario1-state-issues
+
+# Create a basic Terraform configuration
+cat > main.tf << 'EOF'
+terraform {
+  required_version = ">= 1.0"
+  required_providers {
+    local = {
+      source  = "hashicorp/local"
+      version = "~> 2.4"
+    }
+  }
+}
+
+# Create a local file resource
+resource "local_file" "example" {
+  content  = "Hello from Terraform - Version 1"
+  filename = "${path.module}/example.txt"
+}
+
+# Create a directory
+resource "local_file" "config" {
+  content  = "config_version=1.0\nstatus=active"
+  filename = "${path.module}/config/app.conf"
+}
+
+# Output the file content
+output "file_content" {
+  value = local_file.example.content
+}
+EOF
+
+# Create the config directory
+mkdir -p config
+Subtask 2.2: Initialize and Apply Configuration
+# Initialize Terraform
+terraform init
+
+# Apply the configuration
+terraform apply -auto-approve
+
+# Verify the created files
+ls -la
+cat example.txt
+cat config/app.conf
+Subtask 2.3: Simulate State Corruption Issues
+# First, let's examine the current state
+terraform show
+
+# Create a backup of the original state
+cp terraform.tfstate terraform.tfstate.backup
+
+# Simulate state corruption by manually editing the state file
+cat > corrupt_state.py << 'EOF'
+import json
+import sys
+
+# Read the current state file
+with open('terraform.tfstate', 'r') as f:
+    state = json.load(f)
+
+# Corrupt the state by changing resource attributes
+if 'resources' in state:
+    for resource in state['resources']:
+        if resource['type'] == 'local_file' and resource['name'] == 'example':
+            # Change the filename to create a mismatch
+            for instance in resource['instances']:
+                instance['attributes']['filename'] = './wrong-filename.txt'
+
+# Write the corrupted state back
+with open('terraform.tfstate', 'w') as f:
+    json.dump(state, f, indent=2)
+
+print("State file corrupted for demonstration purposes")
+EOF
+
+python3 corrupt_state.py
+Subtask 2.4: Detect and Diagnose State Issues
+# Enable detailed logging
+source ../enable_terraform_logging.sh
+
+# Try to run terraform plan to detect issues
+terraform plan
+
+# Check for state inconsistencies
+terraform show
+
+# Use terraform refresh to detect drift
+terraform refresh
+
+# Examine the debug log
+tail -20 terraform-debug.log
+Subtask 2.5: Resolve State Management Issues
+# Method 1: Restore from backup
+echo "=== Method 1: Restore from backup ==="
+cp terraform.tfstate.backup terraform.tfstate
+terraform plan
+
+# Method 2: Import existing resources (simulate lost state)
+echo "=== Method 2: Import resources ==="
+rm terraform.tfstate*
+
+# Reinitialize
+terraform init
+
+# Import the existing file resource
+terraform import local_file.example ./example.txt
+terraform import local_file.config ./config/app.conf
+
+# Verify the import worked
+terraform plan
+
+# Method 3: Use terraform state commands for fine-grained control
+echo "=== Method 3: State manipulation ==="
+
+# List all resources in state
+terraform state list
+
+# Show specific resource details
+terraform state show local_file.example
+
+# Create a state manipulation script
+cat > fix_state.sh << 'EOF'
+#!/bin/bash
+echo "Current state resources:"
+terraform state list
+
+echo "Removing problematic resource from state:"
+terraform state rm local_file.config
+
+echo "Re-importing with correct configuration:"
+terraform import local_file.config ./config/app.conf
+
+echo "Verifying fix:"
+terraform plan
+EOF
+
+chmod +x fix_state.sh
+Task 3: Use Terraform Console for Debugging
+Subtask 3.1: Set Up Console Debugging Scenario
+cd ~/terraform-troubleshooting-lab/scenario2-console-debugging
+
+# Create a complex configuration with variables and functions
+cat > variables.tf << 'EOF'
+variable "environment" {
+  description = "Environment name"
+  type        = string
+  default     = "development"
+}
+
+variable "application_config" {
+  description = "Application configuration"
+  type = object({
+    name         = string
+    version      = string
+    replicas     = number
+    enable_debug = bool
+    ports        = list(number)
+    labels       = map(string)
+  })
+  default = {
+    name         = "web-app"
+    version      = "1.0.0"
+    replicas     = 3
+    enable_debug = true
+    ports        = [80, 443, 8080]
+    labels = {
+      team        = "platform"
+      cost-center = "engineering"
+    }
+  }
+}
+
+variable "server_configs" {
+  description = "Server configurations"
+  type = map(object({
+    cpu    = string
+    memory = string
+    disk   = string
+  }))
+  default = {
+    small = {
+      cpu    = "1"
+      memory = "2Gi"
+      disk   = "20Gi"
+    }
+    medium = {
+      cpu    = "2"
+      memory = "4Gi"
+      disk   = "40Gi"
+    }
+    large = {
+      cpu    = "4"
+      memory = "8Gi"
+      disk   = "80Gi"
+    }
+  }
+}
+EOF
+
+cat > locals.tf << 'EOF'
+locals {
+  # Generate configuration files for each server type
+  server_configs = {
+    for server_type, config in var.server_configs : server_type => {
+      filename = "${server_type}-server.conf"
+      content = templatefile("${path.module}/server.conf.tpl", {
+        cpu           = config.cpu
+        memory        = config.memory
+        disk          = config.disk
+        environment   = var.environment
+        app_name      = var.application_config.name
+        app_version   = var.application_config.version
+        enable_debug  = var.application_config.enable_debug
+        ports         = var.application_config.ports
+      })
+    }
+  }
+
+  # Generate labels with computed values
+  computed_labels = merge(
+    var.application_config.labels,
+    {
+      environment = var.environment
+      timestamp   = formatdate("YYYY-MM-DD-hhmm", timestamp())
+      config-hash = md5(jsonencode(var.application_config))
+    }
+  )
+
+  # Complex conditional logic
+  deployment_strategy = var.environment == "production" ? "blue-green" : "rolling"
+  
+  # List processing
+  exposed_ports = [
+    for port in var.application_config.ports : port
+    if port != 8080 || var.application_config.enable_debug
+  ]
+}
+EOF
+
+cat > server.conf.tpl << 'EOF'
+# Server Configuration
+# Generated for ${environment} environment
+
+[server]
+cpu_limit = ${cpu}
+memory_limit = ${memory}
+disk_limit = ${disk}
+
+[application]
+name = ${app_name}
+version = ${app_version}
+debug_enabled = ${enable_debug}
+
+[network]
+%{ for port in ports ~}
+port_${port} = enabled
+%{ endfor ~}
+
+[metadata]
+generated_at = $(date)
+EOF
+
+cat > main.tf << 'EOF'
+terraform {
+  required_providers {
+    local = {
+      source  = "hashicorp/local"
+      version = "~> 2.4"
+    }
+  }
+}
+
+# Create configuration files for each server type
+resource "local_file" "server_configs" {
+  for_each = local.server_configs
+  
+  filename = each.value.filename
+  content  = each.value.content
+}
+
+# Create a summary file with all computed values
+resource "local_file" "deployment_summary" {
+  filename = "deployment-summary.json"
+  content = jsonencode({
+    environment         = var.environment
+    deployment_strategy = local.deployment_strategy
+    labels             = local.computed_labels
+    exposed_ports      = local.exposed_ports
+    server_types       = keys(var.server_configs)
+    total_servers      = length(var.server_configs)
+  })
+}
+EOF
+
+cat > outputs.tf << 'EOF'
+output "server_config_files" {
+  description = "Generated server configuration files"
+  value = {
+    for k, v in local.server_configs : k => v.filename
+  }
+}
+
+output "computed_labels" {
+  description = "All computed labels"
+  value = local.computed_labels
+}
+
+output "deployment_info" {
+  description = "Deployment information"
+  value = {
+    strategy      = local.deployment_strategy
+    exposed_ports = local.exposed_ports
+    environment   = var.environment
+  }
+}
+EOF
+Subtask 3.2: Initialize and Use Terraform Console
+# Initialize the configuration
+terraform init
+
+# Start exploring with terraform console
+echo "=== Starting Terraform Console Session ==="
+
+# Create a console session script for debugging
+cat > console_debug_session.txt << 'EOF'
+# Terraform Console Debug Session Commands
+# Copy and paste these commands one by one into terraform console
+
+# 1. Examine variables
+var.environment
+var.application_config
+var.server_configs
+
+# 2. Test local values
+local.server_configs
+local.computed_labels
+local.deployment_strategy
+local.exposed_ports
+
+# 3. Test functions and expressions
+keys(var.server_configs)
+values(var.server_configs)
+length(var.server_configs)
+
+# 4. Test conditional logic
+var.environment == "production" ? "blue-green" : "rolling"
+
+# 5. Test complex expressions
+[for port in var.application_config.ports : port if port != 8080]
+{for k, v in var.server_configs : k => v.cpu}
+
+# 6. Test template functions
+templatefile("${path.module}/server.conf.tpl", {
+  cpu = "2"
+  memory = "4Gi"
+  disk = "40Gi"
+  environment = "test"
+  app_name = "debug-app"
+  app_version = "1.0.0"
+  enable_debug = true
+  ports = [80, 443]
+})
+
+# 7. Test string functions
+upper(var.environment)
+format("app-%s-%s", var.environment, var.application_config.name)
+md5(jsonencode(var.application_config))
+
+# 8. Test time functions
+timestamp()
+formatdate("YYYY-MM-DD", timestamp())
+
+# Exit console with: exit
+EOF
+
+echo "Console debug commands saved to console_debug_session.txt"
+echo "Run 'terraform console' and use the commands from the file"
+Subtask 3.3: Interactive Console Debugging
+# Create an automated console testing script
+cat > test_console_expressions.sh << 'EOF'
+#!/bin/bash
+
+echo "=== Testing Terraform Expressions ==="
+
+# Test basic variable access
+echo "Testing variable access:"
+echo 'var.environment' | terraform console
+
+echo "Testing complex variable:"
+echo 'var.application_config.name' | terraform console
+
+echo "Testing local values:"
+echo 'local.deployment_strategy' | terraform console
+
+echo "Testing function calls:"
+echo 'length(var.server_configs)' | terraform console
+
+echo "Testing for expressions:"
+echo 'keys(var.server_configs)' | terraform console
+
+echo "Testing conditional expressions:"
+echo 'var.environment == "production" ? "PROD" : "NON-PROD"' | terraform console
+
+echo "Testing string manipulation:"
+echo 'upper(var.environment)' | terraform console
+
+echo "Testing JSON encoding:"
+echo 'jsonencode(local.computed_labels)' | terraform console
+EOF
+
+chmod +x test_console_expressions.sh
+./test_console_expressions.sh
+Subtask 3.4: Debug Configuration Issues Using Console
+# Create a problematic configuration to debug
+cat > debug_scenario.tf << 'EOF'
+# This configuration has intentional issues to debug
+
+locals {
+  # Issue 1: Trying to access non-existent variable
+  problematic_value = var.non_existent_var
+  
+  # Issue 2: Type mismatch
+  port_string = tostring(var.application_config.ports)
+  
+  # Issue 3: Invalid function usage
+  invalid_template = templatefile("non-existent.tpl", {})
+}
+
+resource "local_file" "debug_test" {
+  filename = "debug-test.txt"
+  content  = local.problematic_value
+}
+EOF
+
+# Test each problematic expression in console
+cat > debug_expressions.sh << 'EOF'
+#!/bin/bash
+
+echo "=== Debugging Problematic Expressions ==="
+
+echo "Testing non-existent variable (should fail):"
+echo 'var.non_existent_var' | terraform console 2>&1 || echo "Expected error caught"
+
+echo "Testing type conversion:"
+echo 'tostring(var.application_config.ports[0])' | terraform console
+
+echo "Testing list to string conversion:"
+echo 'join(",", [for port in var.application_config.ports : tostring(port)])' | terraform console
+
+echo "Testing file existence:"
+echo 'fileexists("server.conf.tpl")' | terraform console
+
+echo "Testing template with existing file:"
+echo 'templatefile("server.conf.tpl", {
+  cpu = "1"
+  memory = "2Gi" 
+  disk = "10Gi"
+  environment = "debug"
+  app_name = "test"
+  app_version = "1.0"
+  enable_debug = true
+  ports = [80]
+})' | terraform console
+EOF
+
+chmod +x debug_expressions.sh
+./debug_expressions.sh
+
+# Remove the problematic configuration
+rm debug_scenario.tf
+Task 4: Implement Error Handling for Failed Terraform Apply Operations
+Subtask 4.1: Create Error-Prone Configuration
+cd ~/terraform-troubleshooting-lab/scenario3-error-handling
+
+# Create a configuration that will have various types of failures
+cat > main.tf << 'EOF'
+terraform {
+  required_providers {
+    local = {
+      source  = "hashicorp/local"
+      version = "~> 2.4"
+    }
+  }
+}
+
+variable "create_files" {
+  description = "List of files to create"
+  type = list(object({
+    name    = string
+    content = string
+    path    = string
+  }))
+  default = [
+    {
+      name    = "app-config"
+      content = "app_name=myapp\nversion=1.0"
+      path    = "config"
+    },
+    {
+      name    = "database-config"
+      content = "db_host=localhost\ndb_port=5432"
+      path    = "config"
+    },
+    {
+      name    = "secrets"
+      content = "api_key=secret123\ndb_password=password123"
+      path    = "secure"
+    }
+  ]
+}
+
+# Create directories first
+resource "local_file" "directories" {
+  for_each = toset(distinct([for file in var.create_files : file.path]))
+  
+  filename = "${each.key}/.gitkeep"
+  content  = "# Directory placeholder"
+}
+
+# Create configuration files
+resource "local_file" "config_files" {
+  for_each = {
+    for file in var.create_files : file.name => file
+  }
+  
+  filename = "${each.value.path}/${each.value.name}.conf"
+  content  = each.value.content
+  
+  depends_on = [local_file.directories]
+}
+
+# Create a file that might fail due to permissions
+resource "local_file" "system_file" {
+  filename = "/etc/terraform-test.conf"
+  content  = "# This will likely fail due to permissions"
+}
+
+# Create a file with invalid path characters (will fail on some systems)
+resource "local_file" "invalid_path" {
+  filename = "invalid:file*name?.txt"
+  content  = "This filename has invalid characters"
+}
+EOF
+Subtask 4.2: Implement Error Handling Strategies
+# Create a comprehensive error handling script
+cat > error_handling_apply.sh << 'EOF'
+#!/bin/bash
+
+# Enable strict error handling
+set -e
+set -o pipefail
+
+# Configuration
+LOG_FILE="terraform-apply.log"
+ERROR_LOG="terraform-errors.log"
+MAX_RETRIES=3
+RETRY_DELAY=5
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+# Logging functions
+log_info() {
+    echo -e "${GREEN}[INFO]${NC} $1" | tee -a "$LOG_FILE"
+}
+
+log_warn() {
+    echo -e "${YELLOW}[WARN]${NC} $1" | tee -a "$LOG_FILE"
+}
+
+log_error() {
+    echo -e "${RED}[ERROR]${NC} $1" | tee -a "$LOG_FILE" "$ERROR_LOG"
+}
+
+# Function to handle terraform apply with retries
+terraform_apply_with_retry() {
+    local attempt=1
+    local target_resource="$1"
+    
+    while [ $attempt -le $MAX_RETRIES ]; do
+        log_info "Attempt $attempt of $MAX_RETRIES for terraform apply"
+        
+        if [ -n "$target_resource" ]; then
+            log_info "Targeting specific resource: $target_resource"
+            if terraform apply -target="$target_resource" -auto-approve 2>&1 | tee -a "$LOG_FILE"; then
+                log_info "Terraform apply succeeded on attempt $attempt"
+                return 0
+            fi
+        else
+            if terraform apply -auto-approve 2>&1 | tee -a "$LOG_FILE"; then
+                log_info "Terraform apply succeeded on attempt $attempt"
+                return 0
+            fi
+        fi
+        
+        log_warn "Terraform apply failed on attempt $attempt"
+        
+        if [ $attempt -lt $MAX_RETRIES ]; then
+            log_info "Waiting $RETRY_DELAY seconds before retry..."
+            sleep $RETRY_DELAY
+        fi
+        
+        ((attempt++))
+    done
+    
+    log_error "Terraform apply failed after $MAX_RETRIES attempts"
+    return 1
+}
+
+# Function to analyze terraform errors
+analyze_terraform_errors() {
+    log_info "Analyzing terraform errors..."
+    
+    if grep -q "Permission denied" "$LOG_FILE"; then
+        log_error "Permission denied error detected"
+        echo "Suggested fix: Check file permissions or run with appropriate privileges"
+    fi
+    
+    if grep -q "Invalid filename" "$LOG_FILE"; then
+        log_error "Invalid filename error detected"
+        echo "Suggested fix: Check for invalid characters in filenames"
+    fi
+    
+    if grep -q "already exists" "$LOG_FILE"; then
+        log_warn "Resource already exists"
+        echo "Suggested fix: Import existing resource or use terraform refresh"
+    fi
+    
+    if grep -q "timeout" "$LOG_FILE"; then
+        log_error "Timeout error detected"
+        echo "Suggested fix: Increase timeout values or check network connectivity"
+    fi
+}
+
+# Function to create safe configuration
+create_safe_config() {
+    log_info "Creating safe configuration without problematic resources..."
+    
+    cat > main_safe.tf << 'SAFE_EOF'
+terraform {
+  required_providers {
+    local = {
+      source  = "hashicorp/local"
+      version = "~> 2.4"
+    }
+  }
+}
+
+variable "create_files" {
+  description = "List of files to create"
+  type = list(object({
+    name    = string
+    content = string
+    path    = string
+  }))
+  default = [
+    {
+      name    = "app-config"
+      content = "app_name=myapp\nversion=1.0"
+      path    = "config"
+    },
+    {
+      name    = "database-config"
+      content = "db_host=localhost\ndb_port=5432"
+      path    = "config"
+    },
+    {
+      name    = "secrets"
+      content = "api_key=secret123\ndb_password=password123"
+      path    = "secure"
+    }
+  ]
+}
+
+# Create directories first
+resource "local_file" "directories" {
+  for_each = toset(distinct([for file in var.create_files : file.path]))
+  
+  filename = "${each.key}/.gitkeep"
+  content  = "# Directory placeholder"
+}
+
+# Create configuration files
+resource "local_file" "config_files" {
+  for_each = {
+    for file in var.create_files : file.name => file
+  }
+  
+  filename = "${each.value.path}/${each.value.name}.conf"
+  content  = each.value.content
+  
+  depends_on = [local_file.directories]
+}
+SAFE_EOF
+}
+
+# Main execution
+main() {
+    log_info "Starting Terraform apply with error handling"
+    
+    # Initialize terraform
+    log_info "Initializing Terraform..."
+    terraform init
+    
+    # First, try to apply the full configuration
+    log_info "Attempting full terraform apply..."
+    if ! terraform_apply_with_retry; then
+        log_error "Full apply failed, analyzing errors..."
+        analyze_terraform_errors
+        
+        # Try applying safe resources only
+        log_info "Attempting to apply safe resources..."
+        
+        # Apply directories first
+        if terraform_apply_with_retry "local_file.directories"; then
+            log_info "Directories created successfully"
+        fi
+        
+        # Apply config files
+        if terraform_apply_with_retry "local_file.config_files"; then
+            log_info "Config files created successfully"
+        fi
+        
+        # Create and use safe configuration
+        log_info "Creating safe configuration..."
+        create_safe_config
+        
+        # Backup original and use safe config
+        mv main.tf main_problematic.tf
+        mv main_safe.tf main.tf
+        
+        log_info "Applying safe configuration..."
+        if terraform_apply_with_retry; then
+            log_info "Safe configuration applied successfully"
+        else
+            log_error "Even safe configuration failed"
+            return 1
+        fi
+    fi
+    
+    log_info "Terraform apply process completed"
+}
+
+# Run main function
+main "$@"
+EOF
+
+chmod +x error_handling_apply.sh
+Subtask 4.3: Execute Error Handling Script
+# Run the error handling script
+./error_handling_apply.sh
+
+# Examine the logs
+echo "=== Terraform Apply Log ==="
+cat terraform-apply.log
+
+echo "=== Error Log ==="
+if [ -f terraform-errors.log ]; then
+    cat terraform-errors.log
+fi
+
+# Check what was actually created
+echo "=== Created Files ==="
+find . -name "*.conf" -o -name ".gitkeep" | sort
+Subtask 4.4: Advanced Error Recovery Techniques
+# Create an advanced error recovery script
+cat > advanced_error_recovery.sh << 'EOF'
+#!/bin/bash
+
+# Advanced Terraform Error Recovery Script
+
+# Function to backup current state
+backup_state() {
+    if [ -f terraform.tfstate ]; then
+        cp terraform.tfstate "terraform.tfstate.backup.$(date +%Y%m%d_%H%M%S)"
+        echo "State backed up"
+    fi
+}
+
+# Function to validate configuration
+validate_config() {
+    echo "=== Validating Terraform Configuration ==="
+    terraform validate
+    if [ $? -eq 0 ]; then
+        echo "Configuration is valid"
+        return 0
+    else
+        echo "Configuration validation failed"
+        return 1
+    fi
+}
+
+# Function to plan with detailed output
+detailed_plan() {
+    echo "=== Creating Detailed Plan ==="
+    terraform plan -detailed-exitcode -out=tfplan
+    local exit_code=$?
+    
+    case $exit_code in
+        0)
+            echo "No changes needed"
+            ;;
+        1)
+            echo "Plan failed"
+            return 1
+            ;;
+        2)
+            echo "Changes planned"
+            terraform show tfplan
+            ;;
+    esac
+    
+    return $exit_code
+}
+
+# Function to apply with state locking
+safe_apply() {
+    echo "=== Safe Apply with State Locking ==="
+    
+    # Check for existing lock
+    if [ -f .terraform.tfstate.lock.info ]; then
+        echo "State is locked, checking lock info..."
+        cat .terraform.tfstate.lock.info
+        read -p "Force unlock? (y/N): " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            terraform force-unlock -force $(cat .terraform.tfstate.lock.info | jq -r '.ID')
+        else
+            echo "Aborting due to state lock"
+            return 1
+        fi
+    fi
+    
+    # Backup state before apply
+    backup_state
+    
+    # Apply with auto-approve
+    terraform apply tfplan
+}
+
+# Function to handle partial failures
+handle_partial_failure() {
+    echo "=== Handling Partial Failure ==="
+    
+    # Get list of resources in state
+    echo "Resources currently in state:"
+    terraform state list
+    
+    # Show resources that failed
+    echo "Checking for failed resources..."
+    terraform refresh
+    
+    # Option to remove failed resources from state
+    echo "Failed resources can be removed from state and re-imported"
+    
+    # Create a recovery plan
+    cat > recovery_plan.txt << 'RECOVERY_EOF'
+# Terraform Recovery Plan
+# Generated: $(date)
+
+## Steps to recover from partial failure:
+
+1. Identify failed resources:
+   terraform state list
+   terraform state show <resource_name>
+
+2. Remove failed resources from state:
+   terraform state rm <resource_name>
+
+3. Fix configuration issues
+
+4. Re-import or re-create resources:
+   terraform import <resource_type>.<resource_name> <resource_id>
+   # OR
+   terraform apply -target=<resource_name>
+
+5. Verify final state:
+   terraform plan
+RECOVERY_EOF
+
+    echo "Recovery plan saved to recovery_plan.txt"
+}
+
+# Main recovery workflow
+main() {
+    echo "=== Advanced Terraform Error Recovery ==="
+    
+    # Step 1: Validate configuration
+    if ! validate_config; then
+        echo "Fix configuration errors first"
+        return 1
+    fi
+    
+    # Step 2: Create detailed plan
+    if ! detailed_plan; then
+        echo "Planning failed, check configuration"
+        return 1
+    fi
+    
+    # Step 3: Safe apply
+    if ! safe_apply; then
+        echo "Apply failed, initiating recovery procedures"
+        handle_partial_failure
+        return 1
+    fi
+    
+    echo "=== Recovery completed successfully ==="
+}
+
+# Execute main function
+main "$@"
+EOF
+
+chmod +x advanced_error_recovery.sh
+
+# Run the advanced recovery script
+./advanced_error_recovery.sh
+Task 5: Advanced Troubleshooting Techniques
+Subtask 5.1: Set Up Complex Troubleshooting Scenario
+cd ~/terraform-troubleshooting-lab/scenario4-advanced-troubleshooting
+
+# Create a complex configuration with multiple potential issues
+cat > complex_main.tf << 'EOF'
+terraform {
+  required_version = ">= 1.0"
+  required_providers {
+    local = {
+      source  = "hashicorp/local"
+      version = "~> 2.4"
+    }
+  }
+}
+
+# Variables with validation
+variable "environment" {
+  description = "Environment name"
+  type        = string
+  default     = "development"
+  
+  validation {
+    condition     = contains(["development", "staging", "production"], var.environment)
+    error_message = "Environment must be development, staging, or production."
+  }
+}
+
+variable "application_ports" {
+  description = "Application ports"
+  type        = list(number)
+  default     = [80, 443, 8080]
+  
+  validation {
+    condition     = alltrue([for port in var.application_ports : port > 0 && port < 65536])
+    error_message = "All ports must be between 1 and 65535."
+  }
+}
+
+variable "resource_limits" {
+  description = "Resource limits"
+  type = map(object({
+    cpu_cores = number
+    memory_gb = number
+    storage_gb = number
+  }))
+  
+  validation {
+    condition = alltrue([
+      for k, v in var.resource_limits : 
+      v.cpu_cores > 0 && v.memory_gb > 0 && v.storage_gb > 0
+    ])
+    error_message = "All resource limits must be positive numbers."
+  }
+  
+  default = {
+    small = {
+      cpu_cores  = 1
+      memory_gb  = 2
+      storage_gb = 20
+    }
+    medium = {
+      cpu_cores  = 2
+      memory_gb  = 4
+      storage_gb = 40
+    }
+    large = {
+      cpu_cores  = 4
+      memory_gb  = 8
+      storage_gb = 80
+    }
+  }
+}
+
+# Locals with complex logic
+locals {
+  # Environment-specific configurations
+  env_config = {
+    development = {
+      debug_enabled = true
+      log_level     = "DEBUG"
+      replicas      = 1
+    }
+    staging = {
