@@ -1,0 +1,951 @@
+Lab 13: Cost Estimation in Terraform
+Lab Objectives
+By the end of this lab, students will be able to:
+
+Install and configure Terraform on a Linux machine
+Set up AWS CLI and configure credentials for cost estimation
+Install and use the Infracost tool for Terraform cost estimation
+Create Terraform configurations for AWS infrastructure
+Generate detailed cost estimates and breakdown reports
+Analyze cost projections for different infrastructure scenarios
+Understand cost optimization strategies for cloud infrastructure
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of cloud computing concepts
+Familiarity with AWS services (EC2, S3, RDS)
+Basic knowledge of Terraform syntax and concepts
+Understanding of Linux command line operations
+Basic text editing skills using vi/vim or nano
+Lab Environment
+Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated Linux machine. The provided machine is bare metal with no pre-installed tools, so you will install all required tools during the lab exercises.
+
+Task 1: Environment Setup and Tool Installation
+Subtask 1.1: Update System and Install Dependencies
+First, update your Linux system and install necessary dependencies.
+
+# Update package manager
+sudo apt update && sudo apt upgrade -y
+
+# Install required dependencies
+sudo apt install -y curl wget unzip git jq
+
+# Install Python and pip (required for some tools)
+sudo apt install -y python3 python3-pip
+Subtask 1.2: Install Terraform
+Download and install the latest version of Terraform.
+
+# Download Terraform
+wget https://releases.hashicorp.com/terraform/1.6.6/terraform_1.6.6_linux_amd64.zip
+
+# Unzip the downloaded file
+unzip terraform_1.6.6_linux_amd64.zip
+
+# Move terraform to system PATH
+sudo mv terraform /usr/local/bin/
+
+# Verify installation
+terraform version
+
+# Clean up
+rm terraform_1.6.6_linux_amd64.zip
+Subtask 1.3: Install AWS CLI
+Install AWS CLI for credential management and AWS service interaction.
+
+# Download AWS CLI installer
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+
+# Unzip the installer
+unzip awscliv2.zip
+
+# Install AWS CLI
+sudo ./aws/install
+
+# Verify installation
+aws --version
+
+# Clean up
+rm -rf aws awscliv2.zip
+Subtask 1.4: Install Infracost (Open Source Cost Estimation Tool)
+Infracost is an open-source tool that provides cost estimates for Terraform configurations.
+
+# Download and install Infracost
+curl -fsSL https://raw.githubusercontent.com/infracost/infracost/master/scripts/install.sh | sh
+
+# Move infracost to system PATH
+sudo mv /home/$(whoami)/.local/bin/infracost /usr/local/bin/
+
+# Verify installation
+infracost --version
+Subtask 1.5: Configure AWS Credentials
+Set up AWS credentials for cost estimation. For this lab, we'll use placeholder credentials.
+
+# Configure AWS credentials (use placeholder values for lab)
+aws configure set aws_access_key_id "AKIAIOSFODNN7EXAMPLE"
+aws configure set aws_secret_access_key "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+aws configure set default.region "us-east-1"
+aws configure set default.output "json"
+
+# Verify configuration
+aws configure list
+Subtask 1.6: Register with Infracost (Free Tier)
+Register for a free Infracost API key to enable cost estimation features.
+
+# Register for free API key (this will open a browser or provide a link)
+infracost auth login
+
+# If browser doesn't open, manually visit the provided URL and follow instructions
+# After registration, verify the setup
+infracost configure get api_key
+Task 2: Create Terraform Infrastructure Configurations
+Subtask 2.1: Set Up Project Directory Structure
+Create a structured directory for your Terraform project.
+
+# Create project directory
+mkdir -p ~/terraform-cost-lab
+cd ~/terraform-cost-lab
+
+# Create subdirectories for different scenarios
+mkdir -p scenarios/basic scenarios/advanced scenarios/optimized
+
+# Create a shared modules directory
+mkdir -p modules
+Subtask 2.2: Create Basic Infrastructure Configuration
+Create a basic AWS infrastructure configuration for cost estimation.
+
+# Navigate to basic scenario directory
+cd ~/terraform-cost-lab/scenarios/basic
+
+# Create main.tf file
+cat > main.tf << 'EOF'
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+  required_version = ">= 1.0"
+}
+
+provider "aws" {
+  region = var.aws_region
+}
+
+# Variables
+variable "aws_region" {
+  description = "AWS region for resources"
+  type        = string
+  default     = "us-east-1"
+}
+
+variable "environment" {
+  description = "Environment name"
+  type        = string
+  default     = "dev"
+}
+
+# EC2 Instance
+resource "aws_instance" "web_server" {
+  ami           = "ami-0c02fb55956c7d316" # Amazon Linux 2 AMI
+  instance_type = "t3.medium"
+  
+  tags = {
+    Name        = "${var.environment}-web-server"
+    Environment = var.environment
+  }
+}
+
+# RDS Database
+resource "aws_db_instance" "database" {
+  identifier     = "${var.environment}-database"
+  engine         = "mysql"
+  engine_version = "8.0"
+  instance_class = "db.t3.micro"
+  
+  allocated_storage     = 20
+  max_allocated_storage = 100
+  storage_type          = "gp2"
+  
+  db_name  = "appdb"
+  username = "admin"
+  password = "changeme123!"
+  
+  skip_final_snapshot = true
+  
+  tags = {
+    Name        = "${var.environment}-database"
+    Environment = var.environment
+  }
+}
+
+# S3 Bucket
+resource "aws_s3_bucket" "storage" {
+  bucket = "${var.environment}-app-storage-${random_id.bucket_suffix.hex}"
+  
+  tags = {
+    Name        = "${var.environment}-storage"
+    Environment = var.environment
+  }
+}
+
+resource "random_id" "bucket_suffix" {
+  byte_length = 4
+}
+
+# Application Load Balancer
+resource "aws_lb" "app_lb" {
+  name               = "${var.environment}-app-lb"
+  internal           = false
+  load_balancer_type = "application"
+  
+  enable_deletion_protection = false
+  
+  tags = {
+    Name        = "${var.environment}-app-lb"
+    Environment = var.environment
+  }
+}
+EOF
+
+# Create outputs.tf file
+cat > outputs.tf << 'EOF'
+output "ec2_instance_type" {
+  description = "EC2 instance type"
+  value       = aws_instance.web_server.instance_type
+}
+
+output "rds_instance_class" {
+  description = "RDS instance class"
+  value       = aws_db_instance.database.instance_class
+}
+
+output "s3_bucket_name" {
+  description = "S3 bucket name"
+  value       = aws_s3_bucket.storage.bucket
+}
+
+output "load_balancer_arn" {
+  description = "Load balancer ARN"
+  value       = aws_lb.app_lb.arn
+}
+EOF
+Subtask 2.3: Create Advanced Infrastructure Configuration
+Create a more complex infrastructure configuration with additional services.
+
+# Navigate to advanced scenario directory
+cd ~/terraform-cost-lab/scenarios/advanced
+
+# Create main.tf file for advanced scenario
+cat > main.tf << 'EOF'
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+  required_version = ">= 1.0"
+}
+
+provider "aws" {
+  region = var.aws_region
+}
+
+# Variables
+variable "aws_region" {
+  description = "AWS region for resources"
+  type        = string
+  default     = "us-east-1"
+}
+
+variable "environment" {
+  description = "Environment name"
+  type        = string
+  default     = "prod"
+}
+
+# Auto Scaling Group with Launch Template
+resource "aws_launch_template" "web_template" {
+  name_prefix   = "${var.environment}-web-template"
+  image_id      = "ami-0c02fb55956c7d316"
+  instance_type = "t3.large"
+  
+  vpc_security_group_ids = [aws_security_group.web_sg.id]
+  
+  tag_specifications {
+    resource_type = "instance"
+    tags = {
+      Name        = "${var.environment}-web-instance"
+      Environment = var.environment
+    }
+  }
+}
+
+resource "aws_autoscaling_group" "web_asg" {
+  name                = "${var.environment}-web-asg"
+  vpc_zone_identifier = [aws_subnet.public_1.id, aws_subnet.public_2.id]
+  target_group_arns   = [aws_lb_target_group.web_tg.arn]
+  health_check_type   = "ELB"
+  
+  min_size         = 2
+  max_size         = 10
+  desired_capacity = 3
+  
+  launch_template {
+    id      = aws_launch_template.web_template.id
+    version = "$Latest"
+  }
+  
+  tag {
+    key                 = "Name"
+    value               = "${var.environment}-web-asg"
+    propagate_at_launch = false
+  }
+}
+
+# VPC and Networking
+resource "aws_vpc" "main" {
+  cidr_block           = "10.0.0.0/16"
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+  
+  tags = {
+    Name        = "${var.environment}-vpc"
+    Environment = var.environment
+  }
+}
+
+resource "aws_subnet" "public_1" {
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = "10.0.1.0/24"
+  availability_zone       = "${var.aws_region}a"
+  map_public_ip_on_launch = true
+  
+  tags = {
+    Name        = "${var.environment}-public-1"
+    Environment = var.environment
+  }
+}
+
+resource "aws_subnet" "public_2" {
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = "10.0.2.0/24"
+  availability_zone       = "${var.aws_region}b"
+  map_public_ip_on_launch = true
+  
+  tags = {
+    Name        = "${var.environment}-public-2"
+    Environment = var.environment
+  }
+}
+
+resource "aws_subnet" "private_1" {
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = "10.0.3.0/24"
+  availability_zone = "${var.aws_region}a"
+  
+  tags = {
+    Name        = "${var.environment}-private-1"
+    Environment = var.environment
+  }
+}
+
+resource "aws_subnet" "private_2" {
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = "10.0.4.0/24"
+  availability_zone = "${var.aws_region}b"
+  
+  tags = {
+    Name        = "${var.environment}-private-2"
+    Environment = var.environment
+  }
+}
+
+# Internet Gateway
+resource "aws_internet_gateway" "igw" {
+  vpc_id = aws_vpc.main.id
+  
+  tags = {
+    Name        = "${var.environment}-igw"
+    Environment = var.environment
+  }
+}
+
+# Security Group
+resource "aws_security_group" "web_sg" {
+  name_prefix = "${var.environment}-web-sg"
+  vpc_id      = aws_vpc.main.id
+  
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  
+  tags = {
+    Name        = "${var.environment}-web-sg"
+    Environment = var.environment
+  }
+}
+
+# Application Load Balancer
+resource "aws_lb" "app_lb" {
+  name               = "${var.environment}-app-lb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.web_sg.id]
+  subnets            = [aws_subnet.public_1.id, aws_subnet.public_2.id]
+  
+  enable_deletion_protection = false
+  
+  tags = {
+    Name        = "${var.environment}-app-lb"
+    Environment = var.environment
+  }
+}
+
+resource "aws_lb_target_group" "web_tg" {
+  name     = "${var.environment}-web-tg"
+  port     = 80
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.main.id
+  
+  health_check {
+    enabled             = true
+    healthy_threshold   = 2
+    interval            = 30
+    matcher             = "200"
+    path                = "/"
+    port                = "traffic-port"
+    protocol            = "HTTP"
+    timeout             = 5
+    unhealthy_threshold = 2
+  }
+  
+  tags = {
+    Name        = "${var.environment}-web-tg"
+    Environment = var.environment
+  }
+}
+
+# RDS with Multi-AZ
+resource "aws_db_subnet_group" "db_subnet_group" {
+  name       = "${var.environment}-db-subnet-group"
+  subnet_ids = [aws_subnet.private_1.id, aws_subnet.private_2.id]
+  
+  tags = {
+    Name        = "${var.environment}-db-subnet-group"
+    Environment = var.environment
+  }
+}
+
+resource "aws_db_instance" "database" {
+  identifier     = "${var.environment}-database"
+  engine         = "mysql"
+  engine_version = "8.0"
+  instance_class = "db.r5.large"
+  
+  allocated_storage     = 100
+  max_allocated_storage = 1000
+  storage_type          = "gp2"
+  storage_encrypted     = true
+  
+  db_name  = "appdb"
+  username = "admin"
+  password = "changeme123!"
+  
+  vpc_security_group_ids = [aws_security_group.db_sg.id]
+  db_subnet_group_name   = aws_db_subnet_group.db_subnet_group.name
+  
+  multi_az               = true
+  backup_retention_period = 7
+  backup_window          = "03:00-04:00"
+  maintenance_window     = "sun:04:00-sun:05:00"
+  
+  skip_final_snapshot = true
+  
+  tags = {
+    Name        = "${var.environment}-database"
+    Environment = var.environment
+  }
+}
+
+resource "aws_security_group" "db_sg" {
+  name_prefix = "${var.environment}-db-sg"
+  vpc_id      = aws_vpc.main.id
+  
+  ingress {
+    from_port       = 3306
+    to_port         = 3306
+    protocol        = "tcp"
+    security_groups = [aws_security_group.web_sg.id]
+  }
+  
+  tags = {
+    Name        = "${var.environment}-db-sg"
+    Environment = var.environment
+  }
+}
+
+# ElastiCache Redis Cluster
+resource "aws_elasticache_subnet_group" "redis_subnet_group" {
+  name       = "${var.environment}-redis-subnet-group"
+  subnet_ids = [aws_subnet.private_1.id, aws_subnet.private_2.id]
+}
+
+resource "aws_elasticache_replication_group" "redis" {
+  replication_group_id       = "${var.environment}-redis"
+  description                = "Redis cluster for ${var.environment}"
+  
+  node_type                  = "cache.r6g.large"
+  port                       = 6379
+  parameter_group_name       = "default.redis7"
+  
+  num_cache_clusters         = 2
+  automatic_failover_enabled = true
+  multi_az_enabled          = true
+  
+  subnet_group_name = aws_elasticache_subnet_group.redis_subnet_group.name
+  security_group_ids = [aws_security_group.redis_sg.id]
+  
+  tags = {
+    Name        = "${var.environment}-redis"
+    Environment = var.environment
+  }
+}
+
+resource "aws_security_group" "redis_sg" {
+  name_prefix = "${var.environment}-redis-sg"
+  vpc_id      = aws_vpc.main.id
+  
+  ingress {
+    from_port       = 6379
+    to_port         = 6379
+    protocol        = "tcp"
+    security_groups = [aws_security_group.web_sg.id]
+  }
+  
+  tags = {
+    Name        = "${var.environment}-redis-sg"
+    Environment = var.environment
+  }
+}
+EOF
+Subtask 2.4: Create Cost-Optimized Configuration
+Create an optimized version focusing on cost efficiency.
+
+# Navigate to optimized scenario directory
+cd ~/terraform-cost-lab/scenarios/optimized
+
+# Create main.tf file for optimized scenario
+cat > main.tf << 'EOF'
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+  required_version = ">= 1.0"
+}
+
+provider "aws" {
+  region = var.aws_region
+}
+
+# Variables
+variable "aws_region" {
+  description = "AWS region for resources"
+  type        = string
+  default     = "us-east-1"
+}
+
+variable "environment" {
+  description = "Environment name"
+  type        = string
+  default     = "cost-optimized"
+}
+
+# Spot Instance for cost savings
+resource "aws_spot_instance_request" "web_server" {
+  ami                  = "ami-0c02fb55956c7d316"
+  instance_type        = "t3.small"
+  spot_price           = "0.02"
+  wait_for_fulfillment = true
+  
+  tags = {
+    Name        = "${var.environment}-web-server"
+    Environment = var.environment
+  }
+}
+
+# Smaller RDS instance with reserved capacity simulation
+resource "aws_db_instance" "database" {
+  identifier     = "${var.environment}-database"
+  engine         = "mysql"
+  engine_version = "8.0"
+  instance_class = "db.t3.micro"
+  
+  allocated_storage = 20
+  storage_type      = "gp2"
+  
+  db_name  = "appdb"
+  username = "admin"
+  password = "changeme123!"
+  
+  skip_final_snapshot = true
+  
+  tags = {
+    Name        = "${var.environment}-database"
+    Environment = var.environment
+  }
+}
+
+# S3 with Intelligent Tiering
+resource "aws_s3_bucket" "storage" {
+  bucket = "${var.environment}-app-storage-${random_id.bucket_suffix.hex}"
+  
+  tags = {
+    Name        = "${var.environment}-storage"
+    Environment = var.environment
+  }
+}
+
+resource "aws_s3_bucket_intelligent_tiering_configuration" "storage_tiering" {
+  bucket = aws_s3_bucket.storage.id
+  name   = "EntireBucket"
+  
+  status = "Enabled"
+  
+  filter {
+    prefix = ""
+  }
+}
+
+resource "random_id" "bucket_suffix" {
+  byte_length = 4
+}
+
+# Network Load Balancer (cheaper than ALB for simple use cases)
+resource "aws_lb" "network_lb" {
+  name               = "${var.environment}-network-lb"
+  internal           = false
+  load_balancer_type = "network"
+  
+  enable_deletion_protection = false
+  
+  tags = {
+    Name        = "${var.environment}-network-lb"
+    Environment = var.environment
+  }
+}
+EOF
+Task 3: Generate Cost Estimates and Analysis
+Subtask 3.1: Initialize Terraform Projects
+Initialize all three Terraform configurations.
+
+# Initialize basic scenario
+cd ~/terraform-cost-lab/scenarios/basic
+terraform init
+
+# Initialize advanced scenario
+cd ~/terraform-cost-lab/scenarios/advanced
+terraform init
+
+# Initialize optimized scenario
+cd ~/terraform-cost-lab/scenarios/optimized
+terraform init
+Subtask 3.2: Generate Cost Estimates for Basic Scenario
+Use Infracost to generate detailed cost estimates for the basic infrastructure.
+
+# Navigate to basic scenario
+cd ~/terraform-cost-lab/scenarios/basic
+
+# Generate cost estimate
+infracost breakdown --path . --format json --out-file basic-cost-estimate.json
+
+# Generate human-readable report
+infracost breakdown --path . --format table --out-file basic-cost-report.txt
+
+# Display the cost breakdown
+cat basic-cost-report.txt
+
+# Generate detailed HTML report
+infracost breakdown --path . --format html --out-file basic-cost-report.html
+
+echo "Basic scenario cost estimate generated successfully!"
+echo "Files created:"
+echo "- basic-cost-estimate.json (machine-readable)"
+echo "- basic-cost-report.txt (human-readable table)"
+echo "- basic-cost-report.html (detailed HTML report)"
+Subtask 3.3: Generate Cost Estimates for Advanced Scenario
+Generate cost estimates for the more complex infrastructure.
+
+# Navigate to advanced scenario
+cd ~/terraform-cost-lab/scenarios/advanced
+
+# Generate cost estimate
+infracost breakdown --path . --format json --out-file advanced-cost-estimate.json
+
+# Generate human-readable report
+infracost breakdown --path . --format table --out-file advanced-cost-report.txt
+
+# Display the cost breakdown
+cat advanced-cost-report.txt
+
+# Generate detailed HTML report
+infracost breakdown --path . --format html --out-file advanced-cost-report.html
+
+echo "Advanced scenario cost estimate generated successfully!"
+echo "Files created:"
+echo "- advanced-cost-estimate.json (machine-readable)"
+echo "- advanced-cost-report.txt (human-readable table)"
+echo "- advanced-cost-report.html (detailed HTML report)"
+Subtask 3.4: Generate Cost Estimates for Optimized Scenario
+Generate cost estimates for the cost-optimized infrastructure.
+
+# Navigate to optimized scenario
+cd ~/terraform-cost-lab/scenarios/optimized
+
+# Generate cost estimate
+infracost breakdown --path . --format json --out-file optimized-cost-estimate.json
+
+# Generate human-readable report
+infracost breakdown --path . --format table --out-file optimized-cost-report.txt
+
+# Display the cost breakdown
+cat optimized-cost-report.txt
+
+# Generate detailed HTML report
+infracost breakdown --path . --format html --out-file optimized-cost-report.html
+
+echo "Optimized scenario cost estimate generated successfully!"
+echo "Files created:"
+echo "- optimized-cost-estimate.json (machine-readable)"
+echo "- optimized-cost-report.txt (human-readable table)"
+echo "- optimized-cost-report.html (detailed HTML report)"
+Subtask 3.5: Create Comparative Cost Analysis
+Create a comprehensive comparison of all three scenarios.
+
+# Navigate to main project directory
+cd ~/terraform-cost-lab
+
+# Create comparison script
+cat > compare_costs.sh << 'EOF'
+#!/bin/bash
+
+echo "=========================================="
+echo "TERRAFORM COST COMPARISON ANALYSIS"
+echo "=========================================="
+echo ""
+
+echo "1. BASIC SCENARIO COSTS:"
+echo "------------------------"
+if [ -f "scenarios/basic/basic-cost-report.txt" ]; then
+    cat scenarios/basic/basic-cost-report.txt
+else
+    echo "Basic cost report not found!"
+fi
+echo ""
+
+echo "2. ADVANCED SCENARIO COSTS:"
+echo "---------------------------"
+if [ -f "scenarios/advanced/advanced-cost-report.txt" ]; then
+    cat scenarios/advanced/advanced-cost-report.txt
+else
+    echo "Advanced cost report not found!"
+fi
+echo ""
+
+echo "3. OPTIMIZED SCENARIO COSTS:"
+echo "----------------------------"
+if [ -f "scenarios/optimized/optimized-cost-report.txt" ]; then
+    cat scenarios/optimized/optimized-cost-report.txt
+else
+    echo "Optimized cost report not found!"
+fi
+echo ""
+
+echo "=========================================="
+echo "COST ANALYSIS SUMMARY"
+echo "=========================================="
+
+# Extract monthly costs using jq if JSON files exist
+if command -v jq &> /dev/null; then
+    echo "Monthly Cost Summary:"
+    echo "--------------------"
+    
+    if [ -f "scenarios/basic/basic-cost-estimate.json" ]; then
+        BASIC_COST=$(jq -r '.totalMonthlyCost // "N/A"' scenarios/basic/basic-cost-estimate.json)
+        echo "Basic Scenario: \$${BASIC_COST}/month"
+    fi
+    
+    if [ -f "scenarios/advanced/advanced-cost-estimate.json" ]; then
+        ADVANCED_COST=$(jq -r '.totalMonthlyCost // "N/A"' scenarios/advanced/advanced-cost-estimate.json)
+        echo "Advanced Scenario: \$${ADVANCED_COST}/month"
+    fi
+    
+    if [ -f "scenarios/optimized/optimized-cost-estimate.json" ]; then
+        OPTIMIZED_COST=$(jq -r '.totalMonthlyCost // "N/A"' scenarios/optimized/optimized-cost-estimate.json)
+        echo "Optimized Scenario: \$${OPTIMIZED_COST}/month"
+    fi
+else
+    echo "jq not available for JSON parsing"
+fi
+
+echo ""
+echo "Cost Optimization Recommendations:"
+echo "--------------------------------"
+echo "1. Use Spot Instances for non-critical workloads"
+echo "2. Implement S3 Intelligent Tiering for storage cost optimization"
+echo "3. Choose appropriate instance sizes based on actual usage"
+echo "4. Consider Reserved Instances for predictable workloads"
+echo "5. Use Network Load Balancers instead of Application Load Balancers when appropriate"
+echo "6. Enable Multi-AZ only for production environments"
+echo "7. Optimize storage allocation and enable auto-scaling"
+EOF
+
+# Make the script executable
+chmod +x compare_costs.sh
+
+# Run the comparison
+./compare_costs.sh > cost_comparison_report.txt
+
+# Display the comparison
+cat cost_comparison_report.txt
+
+echo ""
+echo "Comprehensive cost comparison report saved to: cost_comparison_report.txt"
+Subtask 3.6: Generate Cost Breakdown by Service
+Create detailed service-wise cost breakdowns.
+
+# Create service breakdown analysis script
+cat > service_breakdown.sh << 'EOF'
+#!/bin/bash
+
+echo "=========================================="
+echo "SERVICE-WISE COST BREAKDOWN ANALYSIS"
+echo "=========================================="
+
+analyze_scenario() {
+    local scenario=$1
+    local json_file=$2
+    
+    echo ""
+    echo "=== $scenario SCENARIO ==="
+    echo ""
+    
+    if [ -f "$json_file" ] && command -v jq &> /dev/null; then
+        echo "Cost by Service Type:"
+        echo "--------------------"
+        
+        # Extract costs by service
+        jq -r '.projects[0].breakdown.resources[] | "\(.name): $\(.monthlyCost // 0)"' "$json_file" | sort
+        
+        echo ""
+        echo "Total Monthly Cost: $$(jq -r '.totalMonthlyCost // "N/A"' "$json_file")"
+        
+        echo ""
+        echo "Resource Count by Type:"
+        echo "----------------------"
+        jq -r '.projects[0].breakdown.resources[] | .resourceType' "$json_file" | sort | uniq -c
+        
+    else
+        echo "JSON file not found or jq not available: $json_file"
+    fi
+    
+    echo ""
+    echo "----------------------------------------"
+}
+
+# Analyze each scenario
+analyze_scenario "BASIC" "scenarios/basic/basic-cost-estimate.json"
+analyze_scenario "ADVANCED" "scenarios/advanced/advanced-cost-estimate.json"
+analyze_scenario "OPTIMIZED" "scenarios/optimized/optimized-cost-estimate.json"
+
+echo ""
+echo "Key Cost Drivers Analysis:"
+echo "========================="
+echo "1. EC2 Instances: Primary compute cost driver"
+echo "2. RDS Databases: Significant cost for managed databases"
+echo "3. Load Balancers: Fixed monthly costs regardless of usage"
+echo "4. Data Transfer: Often overlooked but can be significant"
+echo "5. Storage: S3 and EBS costs scale with usage"
+echo ""
+echo "Cost Optimization Strategies:"
+echo "============================"
+echo "1. Right-size instances based on actual CPU/memory usage"
+echo "2. Use Spot Instances for fault-tolerant workloads"
+echo "3. Implement auto-scaling to match demand"
+echo "4. Choose appropriate storage classes"
+echo "5. Monitor and optimize data transfer costs"
+echo "6. Consider Reserved Instances for steady-state workloads"
+EOF
+
+chmod +x service_breakdown.sh
+./service_breakdown.sh > service_breakdown_report.txt
+
+cat service_breakdown_report.txt
+
+echo ""
+echo "Service breakdown analysis saved to: service_breakdown_report.txt"
+Task 4: Advanced Cost Analysis and Reporting
+Subtask 4.1: Create Cost Trend Analysis
+Generate cost projections for different time periods.
+
+# Create cost trend analysis script
+cat > cost_trends.sh << 'EOF'
+#!/bin/bash
+
+echo "=========================================="
+echo "COST TREND AND PROJECTION ANALYSIS"
+echo "=========================================="
+
+calculate_projections() {
+    local scenario=$1
+    local monthly_cost=$2
+    
+    if [ "$monthly_cost" != "N/A" ] && [ "$monthly_cost" != "null" ]; then
+        echo ""
+        echo "=== $scenario SCENARIO PROJECTIONS ==="
+        echo "Monthly Cost: \$$monthly_cost"
+        echo "Quarterly Cost (3 months): \$$(echo "$monthly_cost * 3" | bc -l 2>/dev/null || echo "N/A")"
+        echo "Annual Cost (12 months): \$$(echo "$monthly_cost * 12" | bc -l 2>/dev/null || echo "N/A")"
+        echo ""
+        
+        # Calculate potential savings with different optimization strategies
+        echo "Potential Savings with Optimization:"
+        echo "- 10% optimization: \$$(echo "$monthly_cost * 0.1" | bc -l 2>/dev/null || echo "N/A")/month"
+        echo "- 25% optimization: \$$(echo "$monthly_cost * 0.25" | bc -l 2>/dev/null || echo "N/A")/month"
+        echo "- 40% optimization: \$$(echo "$monthly_cost * 0.4" | bc -l 2>/dev/null || echo "N/A")/month"
+    else
+        echo ""
+        echo "=== $scenario SCENARIO ==="
+        echo "Cost data not available for projections"
+    fi
+}
+
+# Install bc for calculations if not available
+if ! command -v bc &> /dev/null; then
+    echo "Installing bc calculator..."
+    sudo apt install -y bc
+fi
+
+# Extract costs and calculate projections
+if command -v jq &> /dev
