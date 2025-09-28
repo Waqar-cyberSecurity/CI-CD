@@ -1,0 +1,735 @@
+Lab 8: Terraform Plan and Apply
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Understand the importance of terraform plan for previewing infrastructure changes
+Execute terraform apply safely to implement infrastructure modifications
+Validate infrastructure updates after applying changes
+Test Terraform's change detection capabilities by modifying resources
+Implement best practices for infrastructure change management
+Troubleshoot common issues during plan and apply operations
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Linux command line operations
+Familiarity with text editors (nano, vim, or similar)
+Knowledge of basic Terraform concepts and syntax
+Understanding of infrastructure as code principles
+Completed previous Terraform labs or equivalent experience
+Lab Environment
+Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated environment. The provided Linux machine is bare metal with no pre-installed tools, so you will install all required tools during the lab exercises.
+
+Task 1: Environment Setup and Tool Installation
+Subtask 1.1: Install Required Tools
+First, update your system and install necessary dependencies:
+
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y wget unzip curl gnupg software-properties-common
+Subtask 1.2: Install Terraform
+Download and install the latest version of Terraform:
+
+# Download Terraform
+wget https://releases.hashicorp.com/terraform/1.6.6/terraform_1.6.6_linux_amd64.zip
+
+# Unzip the binary
+unzip terraform_1.6.6_linux_amd64.zip
+
+# Move to system path
+sudo mv terraform /usr/local/bin/
+
+# Verify installation
+terraform version
+Subtask 1.3: Create Lab Directory Structure
+Set up your working directory:
+
+mkdir -p ~/terraform-lab8
+cd ~/terraform-lab8
+mkdir -p {configs,backups,logs}
+Subtask 1.4: Install Local Provider (for demonstration)
+Since we're working on a single machine, we'll use the local provider to demonstrate Terraform concepts:
+
+# Create a simple provider configuration
+cat > provider.tf << 'EOF'
+terraform {
+  required_providers {
+    local = {
+      source  = "hashicorp/local"
+      version = "~> 2.4"
+    }
+  }
+  required_version = ">= 1.0"
+}
+
+provider "local" {}
+EOF
+Task 2: Use Terraform Plan to Preview Changes
+Subtask 2.1: Create Initial Infrastructure Configuration
+Create a basic Terraform configuration that manages local files:
+
+cat > main.tf << 'EOF'
+# Create a local file resource
+resource "local_file" "welcome_file" {
+  filename = "${path.module}/welcome.txt"
+  content  = "Welcome to Terraform Lab 8!\nThis file was created by Terraform.\nTimestamp: ${timestamp()}"
+}
+
+# Create a directory structure
+resource "local_file" "config_file" {
+  filename = "${path.module}/configs/app.conf"
+  content  = <<-EOT
+    [application]
+    name = terraform-demo
+    version = 1.0.0
+    environment = development
+    
+    [database]
+    host = localhost
+    port = 5432
+    name = demo_db
+  EOT
+}
+
+# Create a JSON configuration file
+resource "local_file" "json_config" {
+  filename = "${path.module}/configs/settings.json"
+  content = jsonencode({
+    app_name    = "terraform-lab"
+    debug_mode  = true
+    max_connections = 100
+    features = [
+      "logging",
+      "monitoring",
+      "caching"
+    ]
+  })
+}
+EOF
+Subtask 2.2: Initialize Terraform
+Initialize the Terraform working directory:
+
+terraform init
+Verify the initialization was successful by checking the created files:
+
+ls -la
+ls -la .terraform/
+Subtask 2.3: Run Your First Terraform Plan
+Execute terraform plan to preview what changes will be made:
+
+terraform plan
+Analyze the output carefully. You should see:
+
+3 resources to add
+0 resources to change
+0 resources to destroy
+Subtask 2.4: Save Plan Output for Review
+Save the plan to a file for detailed analysis:
+
+terraform plan -out=tfplan.out
+You can also save the plan in human-readable format:
+
+terraform plan > logs/initial-plan.log
+cat logs/initial-plan.log
+Subtask 2.5: Analyze Plan Output
+Create a script to help analyze plan outputs:
+
+cat > analyze_plan.sh << 'EOF'
+#!/bin/bash
+
+echo "=== Terraform Plan Analysis ==="
+echo "Date: $(date)"
+echo "================================"
+
+if [ -f "logs/initial-plan.log" ]; then
+    echo "Resources to be added:"
+    grep -c "will be created" logs/initial-plan.log
+    
+    echo -e "\nResources to be modified:"
+    grep -c "will be updated" logs/initial-plan.log
+    
+    echo -e "\nResources to be destroyed:"
+    grep -c "will be destroyed" logs/initial-plan.log
+    
+    echo -e "\nDetailed changes:"
+    grep -E "(will be created|will be updated|will be destroyed)" logs/initial-plan.log
+else
+    echo "No plan log file found!"
+fi
+EOF
+
+chmod +x analyze_plan.sh
+./analyze_plan.sh
+Task 3: Apply Changes and Validate Infrastructure Updates
+Subtask 3.1: Apply the Initial Configuration
+Apply the Terraform configuration to create the infrastructure:
+
+terraform apply
+When prompted, type yes to confirm the changes.
+
+Subtask 3.2: Verify Created Resources
+Check that all files were created as expected:
+
+# List all created files
+find . -name "*.txt" -o -name "*.conf" -o -name "*.json" | grep -v .terraform
+
+# Display contents of created files
+echo "=== Welcome File ==="
+cat welcome.txt
+
+echo -e "\n=== Config File ==="
+cat configs/app.conf
+
+echo -e "\n=== JSON Settings ==="
+cat configs/settings.json
+Subtask 3.3: Check Terraform State
+Examine the current state of your infrastructure:
+
+# Show current state
+terraform show
+
+# List resources in state
+terraform state list
+
+# Get detailed information about a specific resource
+terraform state show local_file.welcome_file
+Subtask 3.4: Create a Backup of Current State
+Always backup your state before making changes:
+
+cp terraform.tfstate backups/terraform.tfstate.backup-$(date +%Y%m%d-%H%M%S)
+ls -la backups/
+Subtask 3.5: Validate Infrastructure
+Use Terraform's built-in validation:
+
+# Validate configuration syntax
+terraform validate
+
+# Format configuration files
+terraform fmt
+
+# Check for configuration drift
+terraform plan -detailed-exitcode
+echo "Exit code: $?"
+Note: Exit code 0 means no changes, exit code 2 means changes detected.
+
+Task 4: Test Change Detection by Modifying Resources
+Subtask 4.1: Modify Configuration Files
+Update the main configuration to test change detection:
+
+cat > main.tf << 'EOF'
+# Create a local file resource (MODIFIED)
+resource "local_file" "welcome_file" {
+  filename = "${path.module}/welcome.txt"
+  content  = "Welcome to Terraform Lab 8 - UPDATED!\nThis file was created and modified by Terraform.\nTimestamp: ${timestamp()}\nLab Status: In Progress"
+}
+
+# Create a directory structure (MODIFIED)
+resource "local_file" "config_file" {
+  filename = "${path.module}/configs/app.conf"
+  content  = <<-EOT
+    [application]
+    name = terraform-demo
+    version = 2.0.0
+    environment = production
+    
+    [database]
+    host = localhost
+    port = 5432
+    name = demo_db
+    
+    [cache]
+    enabled = true
+    ttl = 3600
+  EOT
+}
+
+# Create a JSON configuration file (MODIFIED)
+resource "local_file" "json_config" {
+  filename = "${path.module}/configs/settings.json"
+  content = jsonencode({
+    app_name    = "terraform-lab-advanced"
+    debug_mode  = false
+    max_connections = 200
+    features = [
+      "logging",
+      "monitoring",
+      "caching",
+      "security"
+    ]
+    new_feature = "auto-scaling"
+  })
+}
+
+# Add a new resource
+resource "local_file" "readme_file" {
+  filename = "${path.module}/README.md"
+  content  = <<-EOT
+    # Terraform Lab 8 Demo
+    
+    This directory contains files managed by Terraform.
+    
+    ## Files Created:
+    - welcome.txt: Welcome message
+    - configs/app.conf: Application configuration
+    - configs/settings.json: JSON settings
+    
+    ## Lab Objectives:
+    - Learn terraform plan
+    - Learn terraform apply
+    - Test change detection
+    
+    Generated on: ${timestamp()}
+  EOT
+}
+EOF
+Subtask 4.2: Plan the Changes
+Run terraform plan to see what changes will be made:
+
+terraform plan > logs/modification-plan.log
+terraform plan
+Subtask 4.3: Analyze the Detected Changes
+Create a detailed analysis of the changes:
+
+cat > change_analysis.sh << 'EOF'
+#!/bin/bash
+
+echo "=== Change Detection Analysis ==="
+echo "Date: $(date)"
+echo "================================="
+
+# Count different types of changes
+ADDITIONS=$(grep -c "will be created" logs/modification-plan.log 2>/dev/null || echo "0")
+MODIFICATIONS=$(grep -c "will be updated in-place" logs/modification-plan.log 2>/dev/null || echo "0")
+DESTRUCTIONS=$(grep -c "will be destroyed" logs/modification-plan.log 2>/dev/null || echo "0")
+
+echo "Resources to be added: $ADDITIONS"
+echo "Resources to be modified: $MODIFICATIONS"
+echo "Resources to be destroyed: $DESTRUCTIONS"
+
+echo -e "\nDetailed change summary:"
+if [ -f "logs/modification-plan.log" ]; then
+    grep -E "(will be created|will be updated|will be destroyed)" logs/modification-plan.log
+else
+    echo "No modification plan found!"
+fi
+
+echo -e "\nChange impact assessment:"
+TOTAL_CHANGES=$((ADDITIONS + MODIFICATIONS + DESTRUCTIONS))
+echo "Total changes: $TOTAL_CHANGES"
+
+if [ $TOTAL_CHANGES -eq 0 ]; then
+    echo "Status: No changes detected - infrastructure is up to date"
+elif [ $TOTAL_CHANGES -le 3 ]; then
+    echo "Status: Low impact changes"
+elif [ $TOTAL_CHANGES -le 6 ]; then
+    echo "Status: Medium impact changes"
+else
+    echo "Status: High impact changes - review carefully"
+fi
+EOF
+
+chmod +x change_analysis.sh
+./change_analysis.sh
+Subtask 4.4: Apply the Changes
+Apply the modifications:
+
+# Save current state before applying
+cp terraform.tfstate backups/terraform.tfstate.pre-modification
+
+# Apply changes
+terraform apply -auto-approve
+
+# Verify changes were applied
+echo "=== Checking modified files ==="
+cat welcome.txt
+echo -e "\n=== Checking new README ==="
+cat README.md
+Subtask 4.5: Test Manual File Modification Detection
+Manually modify a file that Terraform manages and see how it detects drift:
+
+# Manually modify the welcome file
+echo "This line was added manually!" >> welcome.txt
+
+# Check for drift
+echo "=== Checking for configuration drift ==="
+terraform plan
+
+# Show the difference
+echo -e "\n=== Current file content ==="
+cat welcome.txt
+Subtask 4.6: Restore Configuration
+Restore the file to its intended state:
+
+terraform apply -auto-approve
+
+echo "=== File restored by Terraform ==="
+cat welcome.txt
+Task 5: Advanced Plan and Apply Operations
+Subtask 5.1: Target Specific Resources
+Learn to target specific resources for changes:
+
+# Plan changes for only one resource
+terraform plan -target=local_file.readme_file
+
+# Apply changes to specific resource only
+terraform apply -target=local_file.welcome_file -auto-approve
+Subtask 5.2: Use Variables in Configuration
+Create a variables file to make configuration more flexible:
+
+cat > variables.tf << 'EOF'
+variable "app_name" {
+  description = "Name of the application"
+  type        = string
+  default     = "terraform-lab"
+}
+
+variable "environment" {
+  description = "Environment name"
+  type        = string
+  default     = "development"
+}
+
+variable "debug_mode" {
+  description = "Enable debug mode"
+  type        = bool
+  default     = true
+}
+
+variable "max_connections" {
+  description = "Maximum number of connections"
+  type        = number
+  default     = 100
+}
+EOF
+Update main.tf to use variables:
+
+cat > main.tf << 'EOF'
+# Create a local file resource using variables
+resource "local_file" "welcome_file" {
+  filename = "${path.module}/welcome.txt"
+  content  = "Welcome to ${var.app_name}!\nEnvironment: ${var.environment}\nDebug Mode: ${var.debug_mode}\nTimestamp: ${timestamp()}"
+}
+
+# Create a directory structure using variables
+resource "local_file" "config_file" {
+  filename = "${path.module}/configs/app.conf"
+  content  = <<-EOT
+    [application]
+    name = ${var.app_name}
+    environment = ${var.environment}
+    
+    [database]
+    host = localhost
+    port = 5432
+    name = ${var.app_name}_db
+    max_connections = ${var.max_connections}
+  EOT
+}
+
+# Create a JSON configuration file using variables
+resource "local_file" "json_config" {
+  filename = "${path.module}/configs/settings.json"
+  content = jsonencode({
+    app_name        = var.app_name
+    environment     = var.environment
+    debug_mode      = var.debug_mode
+    max_connections = var.max_connections
+    features = [
+      "logging",
+      "monitoring",
+      "caching"
+    ]
+  })
+}
+
+resource "local_file" "readme_file" {
+  filename = "${path.module}/README.md"
+  content  = <<-EOT
+    # ${var.app_name} - ${var.environment}
+    
+    This directory contains files managed by Terraform.
+    
+    ## Configuration:
+    - Application: ${var.app_name}
+    - Environment: ${var.environment}
+    - Debug Mode: ${var.debug_mode}
+    - Max Connections: ${var.max_connections}
+    
+    Generated on: ${timestamp()}
+  EOT
+}
+EOF
+Subtask 5.3: Plan with Variable Values
+Create a terraform.tfvars file:
+
+cat > terraform.tfvars << 'EOF'
+app_name = "advanced-terraform-lab"
+environment = "production"
+debug_mode = false
+max_connections = 500
+EOF
+Plan and apply with the new variables:
+
+terraform plan -var-file="terraform.tfvars"
+terraform apply -var-file="terraform.tfvars" -auto-approve
+Subtask 5.4: Create a Comprehensive Monitoring Script
+Create a script to monitor your Terraform operations:
+
+cat > terraform_monitor.sh << 'EOF'
+#!/bin/bash
+
+LOG_FILE="logs/terraform-monitor-$(date +%Y%m%d-%H%M%S).log"
+
+echo "=== Terraform Infrastructure Monitor ===" | tee -a $LOG_FILE
+echo "Started at: $(date)" | tee -a $LOG_FILE
+echo "=========================================" | tee -a $LOG_FILE
+
+# Check Terraform version
+echo -e "\n1. Terraform Version:" | tee -a $LOG_FILE
+terraform version | tee -a $LOG_FILE
+
+# Validate configuration
+echo -e "\n2. Configuration Validation:" | tee -a $LOG_FILE
+if terraform validate; then
+    echo "✓ Configuration is valid" | tee -a $LOG_FILE
+else
+    echo "✗ Configuration has errors" | tee -a $LOG_FILE
+fi
+
+# Check formatting
+echo -e "\n3. Configuration Formatting:" | tee -a $LOG_FILE
+if terraform fmt -check; then
+    echo "✓ Configuration is properly formatted" | tee -a $LOG_FILE
+else
+    echo "! Configuration formatting issues detected" | tee -a $LOG_FILE
+    terraform fmt
+    echo "✓ Configuration formatted" | tee -a $LOG_FILE
+fi
+
+# Plan check
+echo -e "\n4. Infrastructure Plan:" | tee -a $LOG_FILE
+terraform plan -detailed-exitcode > /dev/null 2>&1
+PLAN_EXIT_CODE=$?
+
+case $PLAN_EXIT_CODE in
+    0)
+        echo "✓ No changes needed - infrastructure is up to date" | tee -a $LOG_FILE
+        ;;
+    1)
+        echo "✗ Plan failed - check configuration" | tee -a $LOG_FILE
+        ;;
+    2)
+        echo "! Changes detected - review plan before applying" | tee -a $LOG_FILE
+        terraform plan | tee -a $LOG_FILE
+        ;;
+esac
+
+# State information
+echo -e "\n5. Current State:" | tee -a $LOG_FILE
+RESOURCE_COUNT=$(terraform state list 2>/dev/null | wc -l)
+echo "Resources in state: $RESOURCE_COUNT" | tee -a $LOG_FILE
+
+if [ $RESOURCE_COUNT -gt 0 ]; then
+    echo "Resources:" | tee -a $LOG_FILE
+    terraform state list | sed 's/^/  - /' | tee -a $LOG_FILE
+fi
+
+# File verification
+echo -e "\n6. Managed Files Verification:" | tee -a $LOG_FILE
+MANAGED_FILES=("welcome.txt" "configs/app.conf" "configs/settings.json" "README.md")
+
+for file in "${MANAGED_FILES[@]}"; do
+    if [ -f "$file" ]; then
+        echo "✓ $file exists" | tee -a $LOG_FILE
+    else
+        echo "✗ $file missing" | tee -a $LOG_FILE
+    fi
+done
+
+echo -e "\n=========================================" | tee -a $LOG_FILE
+echo "Monitor completed at: $(date)" | tee -a $LOG_FILE
+echo "Log saved to: $LOG_FILE" | tee -a $LOG_FILE
+EOF
+
+chmod +x terraform_monitor.sh
+./terraform_monitor.sh
+Task 6: Cleanup and Best Practices
+Subtask 6.1: Plan Destruction
+Before destroying resources, always plan the destruction:
+
+terraform plan -destroy > logs/destroy-plan.log
+terraform plan -destroy
+Subtask 6.2: Create Cleanup Script
+Create a script for safe cleanup:
+
+cat > cleanup.sh << 'EOF'
+#!/bin/bash
+
+echo "=== Terraform Lab Cleanup ==="
+echo "Date: $(date)"
+echo "=============================="
+
+# Backup current state
+echo "1. Creating final backup..."
+cp terraform.tfstate backups/terraform.tfstate.final-backup-$(date +%Y%m%d-%H%M%S)
+
+# Show what will be destroyed
+echo -e "\n2. Planning destruction..."
+terraform plan -destroy
+
+# Ask for confirmation
+echo -e "\n3. Confirmation required:"
+read -p "Do you want to destroy all resources? (yes/no): " CONFIRM
+
+if [ "$CONFIRM" = "yes" ]; then
+    echo "Destroying resources..."
+    terraform destroy -auto-approve
+    
+    echo -e "\n4. Cleanup verification:"
+    if [ $(terraform state list | wc -l) -eq 0 ]; then
+        echo "✓ All resources destroyed successfully"
+    else
+        echo "✗ Some resources may still exist"
+        terraform state list
+    fi
+    
+    echo -e "\n5. File cleanup:"
+    # Remove generated files (but keep configs and logs)
+    rm -f welcome.txt README.md
+    rm -f configs/app.conf configs/settings.json
+    echo "✓ Generated files removed"
+    
+else
+    echo "Cleanup cancelled by user"
+fi
+
+echo -e "\nCleanup completed at: $(date)"
+EOF
+
+chmod +x cleanup.sh
+Subtask 6.3: Document Best Practices
+Create a best practices document:
+
+cat > BEST_PRACTICES.md << 'EOF'
+# Terraform Plan and Apply Best Practices
+
+## Planning Phase
+1. **Always run terraform plan first**
+   - Review all changes before applying
+   - Save plans to files for documentation
+   - Use -detailed-exitcode for automation
+
+2. **Validate configurations**
+   - Run terraform validate before planning
+   - Use terraform fmt to maintain consistent formatting
+   - Check for syntax errors early
+
+## Apply Phase
+1. **Backup state files**
+   - Always backup terraform.tfstate before major changes
+   - Use remote state for team environments
+   - Version control your configurations
+
+2. **Use targeted applies when needed**
+   - Use -target for specific resource changes
+   - Be cautious with partial applies
+   - Understand resource dependencies
+
+## Change Management
+1. **Monitor for drift**
+   - Regularly run terraform plan to detect changes
+   - Investigate unexpected drift
+   - Document manual changes
+
+2. **Use variables and modules**
+   - Make configurations reusable
+   - Separate environment-specific values
+   - Follow naming conventions
+
+## Safety Measures
+1. **Test in non-production first**
+   - Use separate environments
+   - Validate changes thoroughly
+   - Have rollback procedures
+
+2. **Monitor and log**
+   - Keep detailed logs of all operations
+   - Monitor resource states
+   - Set up alerts for failures
+
+## Common Issues and Solutions
+1. **State lock issues**
+   - Check for stuck locks
+   - Use force-unlock carefully
+   - Coordinate team access
+
+2. **Resource conflicts**
+   - Check for naming conflicts
+   - Verify resource dependencies
+   - Use unique identifiers
+
+Generated on: $(date)
+EOF
+Troubleshooting Common Issues
+Issue 1: Permission Denied Errors
+If you encounter permission issues:
+
+# Check file permissions
+ls -la terraform*
+
+# Fix permissions if needed
+chmod 644 *.tf
+chmod 755 *.sh
+Issue 2: State Lock Issues
+If state is locked:
+
+# Check for lock info
+terraform force-unlock <LOCK_ID>
+
+# Only use if you're sure no other process is running
+Issue 3: Plan Shows Unexpected Changes
+If plan shows changes you didn't make:
+
+# Check for manual modifications
+terraform show
+
+# Compare with expected state
+terraform plan -detailed-exitcode
+Issue 4: Apply Fails
+If apply operations fail:
+
+# Check the error message carefully
+terraform apply
+
+# Try applying specific resources
+terraform apply -target=<resource_name>
+
+# Check state consistency
+terraform state list
+Conclusion
+In this comprehensive lab, you have successfully learned and practiced the essential Terraform operations of plan and apply. Here's what you accomplished:
+
+Key Achievements
+Mastered terraform plan: You learned how to preview infrastructure changes safely before applying them, understanding the importance of the planning phase in infrastructure management.
+
+Executed terraform apply: You successfully applied configurations to create and modify infrastructure resources, validating that changes were implemented correctly.
+
+Tested change detection: You experienced how Terraform detects configuration drift and handles modifications, both planned and unplanned.
+
+Implemented best practices: You created monitoring scripts, backup procedures, and documentation that reflect real-world infrastructure management practices.
+
+Handled advanced scenarios: You worked with variables, targeted operations, and complex change scenarios that you'll encounter in production environments.
+
+Why This Matters
+The skills you've developed in this lab are fundamental to safe infrastructure management:
+
+Risk Mitigation: Using terraform plan prevents costly mistakes by showing exactly what will change before implementation
+Change Control: The plan-apply workflow provides a controlled, auditable process for infrastructure changes
+Drift Detection: Understanding how Terraform detects and handles configuration drift is crucial for maintaining infrastructure consistency
+Automation Ready: The scripts and procedures you've created form the foundation for automated infrastructure pipelines
+Next Steps
+With these foundational skills, you're prepared to:
+
+Work with more complex Terraform configurations
+Implement infrastructure in team environments
+Set up automated CI/CD pipelines for infrastructure
+Manage production infrastructure safely and efficiently
+The methodical approach of planning before applying, combined with proper monitoring and documentation, will serve you well as you advance to more complex infrastructure management scenarios.
