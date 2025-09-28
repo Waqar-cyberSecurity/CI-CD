@@ -1,0 +1,379 @@
+Lab 16: Managing Resources with Terraform CLI
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Use terraform taint to mark resources for recreation
+Manipulate Terraform state using terraform state commands
+Apply changes to individual resources using resource targeting
+Remove specific resources using terraform destroy with targeting
+Understand the relationship between Terraform state and actual infrastructure
+Practice advanced Terraform CLI operations for resource management
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Linux command line operations
+Familiarity with Terraform basics (resources, providers, state)
+Knowledge of infrastructure as code concepts
+Understanding of file editing using text editors like nano or vim
+Lab Environment
+Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated Linux machine. The provided machine is bare metal with no pre-installed tools, so you will install all required tools during the lab exercises.
+
+Task 1: Environment Setup and Initial Infrastructure
+Subtask 1.1: Install Required Tools
+First, update your system and install necessary packages:
+
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y wget unzip curl
+Subtask 1.2: Install Terraform
+Download and install the latest version of Terraform:
+
+wget https://releases.hashicorp.com/terraform/1.6.6/terraform_1.6.6_linux_amd64.zip
+unzip terraform_1.6.6_linux_amd64.zip
+sudo mv terraform /usr/local/bin/
+terraform version
+Subtask 1.3: Create Lab Directory Structure
+Set up your working directory:
+
+mkdir -p ~/terraform-lab16
+cd ~/terraform-lab16
+Subtask 1.4: Create Initial Terraform Configuration
+Create a main configuration file with multiple resources:
+
+nano main.tf
+Add the following content:
+
+terraform {
+  required_providers {
+    local = {
+      source  = "hashicorp/local"
+      version = "~> 2.4"
+    }
+    null = {
+      source  = "hashicorp/null"
+      version = "~> 3.2"
+    }
+  }
+}
+
+# Local file resources
+resource "local_file" "app_config" {
+  filename = "${path.module}/app-config.txt"
+  content  = <<-EOT
+    Application Configuration
+    Environment: Development
+    Version: 1.0.0
+    Database: localhost:5432
+    Cache: redis://localhost:6379
+  EOT
+}
+
+resource "local_file" "database_config" {
+  filename = "${path.module}/database-config.txt"
+  content  = <<-EOT
+    Database Configuration
+    Host: localhost
+    Port: 5432
+    Database: myapp_dev
+    Username: developer
+    SSL: enabled
+  EOT
+}
+
+resource "local_file" "nginx_config" {
+  filename = "${path.module}/nginx.conf"
+  content  = <<-EOT
+    server {
+        listen 80;
+        server_name localhost;
+        
+        location / {
+            proxy_pass http://localhost:3000;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+        }
+    }
+  EOT
+}
+
+# Null resources for demonstration
+resource "null_resource" "app_setup" {
+  provisioner "local-exec" {
+    command = "echo 'Application setup completed' > app-setup.log"
+  }
+  
+  depends_on = [local_file.app_config]
+}
+
+resource "null_resource" "database_setup" {
+  provisioner "local-exec" {
+    command = "echo 'Database setup completed at $(date)' > database-setup.log"
+  }
+  
+  depends_on = [local_file.database_config]
+}
+Subtask 1.5: Initialize and Apply Initial Configuration
+Initialize Terraform and create the initial infrastructure:
+
+terraform init
+terraform plan
+terraform apply -auto-approve
+Verify the created resources:
+
+ls -la *.txt *.conf *.log
+cat app-config.txt
+cat database-config.txt
+Task 2: Resource Targeting and State Manipulation
+Subtask 2.1: Explore Terraform State
+First, examine the current state:
+
+terraform state list
+Get detailed information about a specific resource:
+
+terraform state show local_file.app_config
+terraform state show null_resource.app_setup
+Subtask 2.2: Practice Resource Targeting
+Create a new configuration file to modify specific resources:
+
+nano variables.tf
+Add the following content:
+
+variable "app_version" {
+  description = "Application version"
+  type        = string
+  default     = "1.0.0"
+}
+
+variable "environment" {
+  description = "Environment name"
+  type        = string
+  default     = "development"
+}
+Update the main.tf file to use variables:
+
+nano main.tf
+Modify the app_config resource:
+
+resource "local_file" "app_config" {
+  filename = "${path.module}/app-config.txt"
+  content  = <<-EOT
+    Application Configuration
+    Environment: ${var.environment}
+    Version: ${var.app_version}
+    Database: localhost:5432
+    Cache: redis://localhost:6379
+    Updated: ${timestamp()}
+  EOT
+}
+Subtask 2.3: Apply Changes to Specific Resources
+Apply changes only to the app_config resource:
+
+terraform plan -target=local_file.app_config
+terraform apply -target=local_file.app_config -auto-approve
+Verify the change:
+
+cat app-config.txt
+Apply changes with variable overrides:
+
+terraform apply -target=local_file.app_config -var="app_version=1.1.0" -var="environment=staging" -auto-approve
+Check the updated content:
+
+cat app-config.txt
+Subtask 2.4: Using Terraform Taint
+Mark a resource as tainted to force recreation:
+
+terraform taint null_resource.database_setup
+Check the plan to see what will be recreated:
+
+terraform plan
+Apply the changes to recreate the tainted resource:
+
+terraform apply -auto-approve
+Verify the database setup log was recreated with a new timestamp:
+
+cat database-setup.log
+Subtask 2.5: Advanced State Operations
+Move a resource in the state:
+
+terraform state mv local_file.nginx_config local_file.web_server_config
+Verify the state change:
+
+terraform state list
+Update the configuration to match the new resource name:
+
+nano main.tf
+Change the resource name from nginx_config to web_server_config:
+
+resource "local_file" "web_server_config" {
+  filename = "${path.module}/nginx.conf"
+  content  = <<-EOT
+    server {
+        listen 80;
+        server_name localhost;
+        
+        location / {
+            proxy_pass http://localhost:3000;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+        }
+    }
+  EOT
+}
+Run terraform plan to ensure no changes are needed:
+
+terraform plan
+Task 3: Resource Removal and Cleanup
+Subtask 3.1: Remove Individual Resources
+Remove a specific resource using destroy with targeting:
+
+terraform destroy -target=null_resource.app_setup -auto-approve
+Verify the resource was removed:
+
+terraform state list
+ls -la app-setup.log
+Subtask 3.2: Remove Resources from State Without Destroying
+Remove a resource from state without destroying the actual file:
+
+terraform state rm local_file.database_config
+Verify the resource is removed from state but file still exists:
+
+terraform state list
+ls -la database-config.txt
+Subtask 3.3: Import Resources Back to State
+Import the removed resource back to state:
+
+terraform import local_file.database_config ./database-config.txt
+Verify the resource is back in state:
+
+terraform state list
+terraform state show local_file.database_config
+Subtask 3.4: Create Additional Resources for Cleanup Demo
+Add more resources to demonstrate cleanup:
+
+nano cleanup-demo.tf
+Add the following content:
+
+resource "local_file" "temp_file_1" {
+  filename = "${path.module}/temp1.txt"
+  content  = "Temporary file 1 for cleanup demonstration"
+}
+
+resource "local_file" "temp_file_2" {
+  filename = "${path.module}/temp2.txt"
+  content  = "Temporary file 2 for cleanup demonstration"
+}
+
+resource "null_resource" "cleanup_demo" {
+  provisioner "local-exec" {
+    command = "echo 'Cleanup demo resource created' > cleanup-demo.log"
+  }
+}
+Apply the new resources:
+
+terraform apply -auto-approve
+Subtask 3.5: Selective Resource Destruction
+Destroy only the temporary files:
+
+terraform destroy -target=local_file.temp_file_1 -target=local_file.temp_file_2 -auto-approve
+Verify selective destruction:
+
+ls -la temp*.txt
+terraform state list
+Subtask 3.6: Complete Infrastructure Cleanup
+Finally, destroy all remaining resources:
+
+terraform destroy -auto-approve
+Verify all managed resources are removed:
+
+ls -la *.txt *.conf *.log
+terraform state list
+Task 4: Advanced Resource Management Scenarios
+Subtask 4.1: Resource Dependencies and Targeting
+Create a new configuration with complex dependencies:
+
+nano advanced-demo.tf
+Add the following content:
+
+resource "local_file" "base_config" {
+  filename = "${path.module}/base.conf"
+  content  = "Base configuration file"
+}
+
+resource "local_file" "app_specific_config" {
+  filename = "${path.module}/app.conf"
+  content  = "App configuration depends on: ${local_file.base_config.filename}"
+}
+
+resource "null_resource" "service_start" {
+  provisioner "local-exec" {
+    command = "echo 'Service started with configs: ${local_file.base_config.filename}, ${local_file.app_specific_config.filename}' > service.log"
+  }
+  
+  depends_on = [
+    local_file.base_config,
+    local_file.app_specific_config
+  ]
+}
+Apply the configuration:
+
+terraform apply -auto-approve
+Subtask 4.2: Understanding Dependency Impact
+Try to destroy only the base config and observe the plan:
+
+terraform plan -destroy -target=local_file.base_config
+Notice how Terraform handles dependencies. Apply the targeted destruction:
+
+terraform destroy -target=local_file.base_config -auto-approve
+Check what happened to dependent resources:
+
+terraform plan
+cat service.log
+Subtask 4.3: State Backup and Recovery
+Create a state backup:
+
+cp terraform.tfstate terraform.tfstate.backup
+Make some changes and create a problematic state:
+
+terraform taint null_resource.service_start
+terraform apply -auto-approve
+Restore from backup if needed:
+
+cp terraform.tfstate.backup terraform.tfstate
+terraform plan
+Subtask 4.4: Final Cleanup
+Remove all resources and clean up the workspace:
+
+terraform destroy -auto-approve
+rm -f *.tf *.txt *.conf *.log *.backup
+ls -la
+Troubleshooting Tips
+Common Issues and Solutions
+Issue: Terraform state lock errors Solution:
+
+terraform force-unlock <LOCK_ID>
+Issue: Resource not found in state Solution: Use terraform import to add existing resources to state
+
+Issue: Dependency conflicts during targeted operations Solution: Include dependent resources in the target list or use -refresh=false flag
+
+Issue: State file corruption Solution: Restore from backup or use terraform refresh to rebuild state
+
+Best Practices Demonstrated
+Always backup state files before major operations
+Use resource targeting carefully to avoid breaking dependencies
+Understand the difference between removing from state vs. destroying resources
+Use terraform plan before any destructive operations
+Keep track of resource dependencies when using targeted operations
+Conclusion
+In this lab, you have successfully learned advanced Terraform CLI resource management techniques. You practiced:
+
+Resource targeting to apply changes to specific resources without affecting others
+State manipulation using terraform state commands to move, remove, and import resources
+Resource tainting to force recreation of specific resources
+Selective destruction to remove only targeted resources
+Dependency management understanding how Terraform handles resource relationships
+These skills are essential for managing complex infrastructure deployments where you need fine-grained control over resource lifecycle management. Understanding these advanced CLI operations allows you to:
+
+Troubleshoot infrastructure issues more effectively
+Perform maintenance operations without full infrastructure recreation
+Manage large-scale deployments with precision
+Handle state file issues and recovery scenarios
+The techniques you learned in this lab are crucial for production Terraform usage, where careful resource management can prevent downtime and reduce deployment risks. Practice these commands in safe environments before applying them to production infrastructure.
