@@ -1,0 +1,783 @@
+Lab 15: Migration and Refactoring with Terraform
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Import existing infrastructure resources into Terraform state using terraform import
+Apply moved and replace strategies to refactor existing Terraform resources
+Plan and execute migration of services from one region to another
+Understand best practices for infrastructure migration and refactoring
+Handle state management during complex infrastructure changes
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Terraform concepts (resources, providers, state)
+Familiarity with Linux command line operations
+Understanding of cloud infrastructure concepts
+Knowledge of Docker containers (we'll simulate cloud resources)
+Basic text editing skills using vi/nano
+Lab Environment Setup
+Note: Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated Linux machine. The provided machine is bare metal with no pre-installed tools, so you'll install all required tools during the lab.
+
+Task 1: Environment Preparation and Tool Installation
+Subtask 1.1: Install Required Tools
+First, let's install Terraform and Docker to simulate our cloud infrastructure:
+
+# Update system packages
+sudo apt update && sudo apt upgrade -y
+
+# Install required dependencies
+sudo apt install -y wget unzip curl software-properties-common
+
+# Install Docker
+sudo apt install -y docker.io
+sudo systemctl start docker
+sudo systemctl enable docker
+sudo usermod -aG docker $USER
+
+# Install Terraform
+wget https://releases.hashicorp.com/terraform/1.6.6/terraform_1.6.6_linux_amd64.zip
+unzip terraform_1.6.6_linux_amd64.zip
+sudo mv terraform /usr/local/bin/
+rm terraform_1.6.6_linux_amd64.zip
+
+# Verify installations
+terraform version
+docker --version
+Subtask 1.2: Create Lab Directory Structure
+# Create main lab directory
+mkdir -p ~/terraform-migration-lab
+cd ~/terraform-migration-lab
+
+# Create subdirectories for different scenarios
+mkdir -p existing-infra
+mkdir -p terraform-managed
+mkdir -p migration-target
+mkdir -p backup
+
+# Create initial files
+touch existing-infra/docker-compose.yml
+touch terraform-managed/main.tf
+touch migration-target/main.tf
+Subtask 1.3: Set Up Simulated Existing Infrastructure
+We'll use Docker containers to simulate existing cloud infrastructure:
+
+cd ~/terraform-migration-lab/existing-infra
+
+# Create docker-compose.yml for existing infrastructure
+cat > docker-compose.yml << 'EOF'
+version: '3.8'
+services:
+  web-server-1:
+    image: nginx:alpine
+    container_name: legacy-web-1
+    ports:
+      - "8080:80"
+    environment:
+      - ENV=production
+    labels:
+      - "region=us-east-1"
+      - "tier=web"
+    networks:
+      - legacy-network
+
+  database-1:
+    image: postgres:13
+    container_name: legacy-db-1
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=appdb
+      - POSTGRES_USER=appuser
+      - POSTGRES_PASSWORD=secretpass
+    labels:
+      - "region=us-east-1"
+      - "tier=database"
+    networks:
+      - legacy-network
+
+  cache-server:
+    image: redis:alpine
+    container_name: legacy-cache-1
+    ports:
+      - "6379:6379"
+    labels:
+      - "region=us-east-1"
+      - "tier=cache"
+    networks:
+      - legacy-network
+
+networks:
+  legacy-network:
+    driver: bridge
+    name: legacy-network
+EOF
+
+# Start the existing infrastructure
+docker-compose up -d
+
+# Verify containers are running
+docker ps
+Task 2: Import Existing Infrastructure into Terraform
+Subtask 2.1: Create Terraform Configuration for Import
+cd ~/terraform-migration-lab/terraform-managed
+
+# Create provider configuration
+cat > providers.tf << 'EOF'
+terraform {
+  required_providers {
+    docker = {
+      source  = "kreuzwerker/docker"
+      version = "~> 3.0"
+    }
+  }
+}
+
+provider "docker" {
+  host = "unix:///var/run/docker.sock"
+}
+EOF
+
+# Create main configuration file
+cat > main.tf << 'EOF'
+# Network resource
+resource "docker_network" "legacy_network" {
+  name   = "legacy-network"
+  driver = "bridge"
+}
+
+# Web server container
+resource "docker_container" "web_server_1" {
+  name  = "legacy-web-1"
+  image = "nginx:alpine"
+  
+  ports {
+    internal = 80
+    external = 8080
+  }
+  
+  env = [
+    "ENV=production"
+  ]
+  
+  labels {
+    label = "region"
+    value = "us-east-1"
+  }
+  
+  labels {
+    label = "tier"
+    value = "web"
+  }
+  
+  networks_advanced {
+    name = docker_network.legacy_network.name
+  }
+}
+
+# Database container
+resource "docker_container" "database_1" {
+  name  = "legacy-db-1"
+  image = "postgres:13"
+  
+  ports {
+    internal = 5432
+    external = 5432
+  }
+  
+  env = [
+    "POSTGRES_DB=appdb",
+    "POSTGRES_USER=appuser",
+    "POSTGRES_PASSWORD=secretpass"
+  ]
+  
+  labels {
+    label = "region"
+    value = "us-east-1"
+  }
+  
+  labels {
+    label = "tier"
+    value = "database"
+  }
+  
+  networks_advanced {
+    name = docker_network.legacy_network.name
+  }
+}
+
+# Cache server container
+resource "docker_container" "cache_server" {
+  name  = "legacy-cache-1"
+  image = "redis:alpine"
+  
+  ports {
+    internal = 6379
+    external = 6379
+  }
+  
+  labels {
+    label = "region"
+    value = "us-east-1"
+  }
+  
+  labels {
+    label = "tier"
+    value = "cache"
+  }
+  
+  networks_advanced {
+    name = docker_network.legacy_network.name
+  }
+}
+EOF
+Subtask 2.2: Initialize Terraform and Import Resources
+# Initialize Terraform
+terraform init
+
+# Import the network first (networks must exist before containers)
+terraform import docker_network.legacy_network legacy-network
+
+# Import containers
+terraform import docker_container.web_server_1 legacy-web-1
+terraform import docker_container.database_1 legacy-db-1
+terraform import docker_container.cache_server legacy-cache-1
+
+# Check the current state
+terraform show
+Subtask 2.3: Verify Import Success
+# Plan to see if configuration matches imported resources
+terraform plan
+
+# If there are differences, note them for refactoring
+echo "Import completed. Checking for configuration drift..."
+Task 3: Apply Moved and Replace Strategies for Refactoring
+Subtask 3.1: Refactor Resource Names Using Moved Blocks
+Let's refactor our resource names to follow better naming conventions:
+
+# Create a new configuration with better naming
+cat > refactored-main.tf << 'EOF'
+# Network resource with better naming
+resource "docker_network" "app_network" {
+  name   = "legacy-network"
+  driver = "bridge"
+}
+
+# Web tier containers
+resource "docker_container" "web_tier" {
+  name  = "legacy-web-1"
+  image = "nginx:alpine"
+  
+  ports {
+    internal = 80
+    external = 8080
+  }
+  
+  env = [
+    "ENV=production"
+  ]
+  
+  labels {
+    label = "region"
+    value = "us-east-1"
+  }
+  
+  labels {
+    label = "tier"
+    value = "web"
+  }
+  
+  networks_advanced {
+    name = docker_network.app_network.name
+  }
+}
+
+# Database tier container
+resource "docker_container" "db_tier" {
+  name  = "legacy-db-1"
+  image = "postgres:13"
+  
+  ports {
+    internal = 5432
+    external = 5432
+  }
+  
+  env = [
+    "POSTGRES_DB=appdb",
+    "POSTGRES_USER=appuser",
+    "POSTGRES_PASSWORD=secretpass"
+  ]
+  
+  labels {
+    label = "region"
+    value = "us-east-1"
+  }
+  
+  labels {
+    label = "tier"
+    value = "database"
+  }
+  
+  networks_advanced {
+    name = docker_network.app_network.name
+  }
+}
+
+# Cache tier container
+resource "docker_container" "cache_tier" {
+  name  = "legacy-cache-1"
+  image = "redis:alpine"
+  
+  ports {
+    internal = 6379
+    external = 6379
+  }
+  
+  labels {
+    label = "region"
+    value = "us-east-1"
+  }
+  
+  labels {
+    label = "tier"
+    value = "cache"
+  }
+  
+  networks_advanced {
+    name = docker_network.app_network.name
+  }
+}
+
+# Moved blocks to handle refactoring
+moved {
+  from = docker_network.legacy_network
+  to   = docker_network.app_network
+}
+
+moved {
+  from = docker_container.web_server_1
+  to   = docker_container.web_tier
+}
+
+moved {
+  from = docker_container.database_1
+  to   = docker_container.db_tier
+}
+
+moved {
+  from = docker_container.cache_server
+  to   = docker_container.cache_tier
+}
+EOF
+
+# Replace the main configuration
+mv main.tf main.tf.backup
+mv refactored-main.tf main.tf
+Subtask 3.2: Apply the Moved Configuration
+# Plan the changes to see the moves
+terraform plan
+
+# Apply the moves (should show no infrastructure changes, only state moves)
+terraform apply -auto-approve
+
+# Verify the state has been updated
+terraform state list
+Subtask 3.3: Demonstrate Replace Strategy
+Now let's upgrade our web server image using the replace strategy:
+
+# Create a backup of current state
+terraform state pull > ../backup/terraform.tfstate.backup
+
+# Update the web server configuration to use a newer image
+cat > main.tf << 'EOF'
+# Network resource with better naming
+resource "docker_network" "app_network" {
+  name   = "legacy-network"
+  driver = "bridge"
+}
+
+# Web tier containers - UPGRADED IMAGE
+resource "docker_container" "web_tier" {
+  name  = "legacy-web-1"
+  image = "nginx:1.25-alpine"  # Upgraded from nginx:alpine
+  
+  ports {
+    internal = 80
+    external = 8080
+  }
+  
+  env = [
+    "ENV=production"
+  ]
+  
+  labels {
+    label = "region"
+    value = "us-east-1"
+  }
+  
+  labels {
+    label = "tier"
+    value = "web"
+  }
+  
+  networks_advanced {
+    name = docker_network.app_network.name
+  }
+}
+
+# Database tier container
+resource "docker_container" "db_tier" {
+  name  = "legacy-db-1"
+  image = "postgres:13"
+  
+  ports {
+    internal = 5432
+    external = 5432
+  }
+  
+  env = [
+    "POSTGRES_DB=appdb",
+    "POSTGRES_USER=appuser",
+    "POSTGRES_PASSWORD=secretpass"
+  ]
+  
+  labels {
+    label = "region"
+    value = "us-east-1"
+  }
+  
+  labels {
+    label = "tier"
+    value = "database"
+  }
+  
+  networks_advanced {
+    name = docker_network.app_network.name
+  }
+}
+
+# Cache tier container
+resource "docker_container" "cache_tier" {
+  name  = "legacy-cache-1"
+  image = "redis:alpine"
+  
+  ports {
+    internal = 6379
+    external = 6379
+  }
+  
+  labels {
+    label = "region"
+    value = "us-east-1"
+  }
+  
+  labels {
+    label = "tier"
+    value = "cache"
+  }
+  
+  networks_advanced {
+    name = docker_network.app_network.name
+  }
+}
+EOF
+
+# Use replace to force recreation of the web container
+terraform plan -replace="docker_container.web_tier"
+
+# Apply the replacement
+terraform apply -replace="docker_container.web_tier" -auto-approve
+
+# Verify the container was recreated with new image
+docker inspect legacy-web-1 | grep Image
+Task 4: Plan and Execute Migration to New Region
+Subtask 4.1: Create Migration Target Configuration
+cd ~/terraform-migration-lab/migration-target
+
+# Copy provider configuration
+cp ../terraform-managed/providers.tf .
+
+# Create configuration for new region (us-west-2)
+cat > main.tf << 'EOF'
+# New network for us-west-2 region
+resource "docker_network" "app_network_west" {
+  name   = "app-network-west"
+  driver = "bridge"
+}
+
+# Web tier in new region
+resource "docker_container" "web_tier_west" {
+  name  = "app-web-west-1"
+  image = "nginx:1.25-alpine"
+  
+  ports {
+    internal = 80
+    external = 8081  # Different port to avoid conflicts
+  }
+  
+  env = [
+    "ENV=production"
+  ]
+  
+  labels {
+    label = "region"
+    value = "us-west-2"  # New region
+  }
+  
+  labels {
+    label = "tier"
+    value = "web"
+  }
+  
+  networks_advanced {
+    name = docker_network.app_network_west.name
+  }
+}
+
+# Database tier in new region
+resource "docker_container" "db_tier_west" {
+  name  = "app-db-west-1"
+  image = "postgres:15"  # Upgraded version
+  
+  ports {
+    internal = 5432
+    external = 5433  # Different port to avoid conflicts
+  }
+  
+  env = [
+    "POSTGRES_DB=appdb",
+    "POSTGRES_USER=appuser",
+    "POSTGRES_PASSWORD=secretpass"
+  ]
+  
+  labels {
+    label = "region"
+    value = "us-west-2"
+  }
+  
+  labels {
+    label = "tier"
+    value = "database"
+  }
+  
+  networks_advanced {
+    name = docker_network.app_network_west.name
+  }
+}
+
+# Cache tier in new region
+resource "docker_container" "cache_tier_west" {
+  name  = "app-cache-west-1"
+  image = "redis:7-alpine"  # Upgraded version
+  
+  ports {
+    internal = 6379
+    external = 6380  # Different port to avoid conflicts
+  }
+  
+  labels {
+    label = "region"
+    value = "us-west-2"
+  }
+  
+  labels {
+    label = "tier"
+    value = "cache"
+  }
+  
+  networks_advanced {
+    name = docker_network.app_network_west.name
+  }
+}
+EOF
+Subtask 4.2: Execute Migration Plan
+# Initialize the new region configuration
+terraform init
+
+# Plan the migration
+terraform plan
+
+# Apply the new infrastructure
+terraform apply -auto-approve
+
+# Verify new infrastructure is running
+docker ps | grep west
+Subtask 4.3: Create Migration Script
+Create a comprehensive migration script:
+
+cat > migration-script.sh << 'EOF'
+#!/bin/bash
+
+echo "=== Infrastructure Migration Script ==="
+echo "This script demonstrates a blue-green migration pattern"
+
+# Function to check service health
+check_service_health() {
+    local port=$1
+    local service_name=$2
+    
+    echo "Checking $service_name on port $port..."
+    if curl -s http://localhost:$port > /dev/null 2>&1; then
+        echo "✓ $service_name is healthy"
+        return 0
+    else
+        echo "✗ $service_name is not responding"
+        return 1
+    fi
+}
+
+# Check old region services
+echo "=== Checking Old Region (us-east-1) Services ==="
+check_service_health 8080 "Web Service (East)"
+
+# Check new region services
+echo "=== Checking New Region (us-west-2) Services ==="
+check_service_health 8081 "Web Service (West)"
+
+# Simulate traffic switch
+echo "=== Simulating Traffic Switch ==="
+echo "In a real scenario, you would:"
+echo "1. Update load balancer configuration"
+echo "2. Update DNS records"
+echo "3. Monitor application metrics"
+echo "4. Rollback if issues detected"
+
+# Database migration simulation
+echo "=== Database Migration Simulation ==="
+echo "1. Create database backup from old region"
+echo "2. Restore backup to new region"
+echo "3. Verify data integrity"
+echo "4. Update application connection strings"
+
+echo "=== Migration Status ==="
+echo "Old Region Infrastructure: Active"
+echo "New Region Infrastructure: Active"
+echo "Traffic: Ready to switch"
+echo "Database: Ready for migration"
+EOF
+
+chmod +x migration-script.sh
+./migration-script.sh
+Subtask 4.4: Validate Migration Success
+# Test both regions are accessible
+echo "Testing old region web service..."
+curl -s http://localhost:8080 | head -5
+
+echo "Testing new region web service..."
+curl -s http://localhost:8081 | head -5
+
+# Compare infrastructure states
+echo "=== Infrastructure Comparison ==="
+echo "Old Region Containers:"
+docker ps --filter "label=region=us-east-1" --format "table {{.Names}}\t{{.Image}}\t{{.Ports}}"
+
+echo "New Region Containers:"
+docker ps --filter "label=region=us-west-2" --format "table {{.Names}}\t{{.Image}}\t{{.Ports}}"
+Task 5: Cleanup and Decommission Old Infrastructure
+Subtask 5.1: Create Decommission Plan
+cd ~/terraform-migration-lab/terraform-managed
+
+# Create a plan to destroy old infrastructure
+terraform plan -destroy
+
+# Save the destroy plan
+terraform plan -destroy -out=destroy.tfplan
+Subtask 5.2: Execute Controlled Decommission
+# Before destroying, create final backup
+terraform state pull > ../backup/final-state-backup.json
+
+# Destroy old infrastructure (simulate decommission)
+echo "In production, you would:"
+echo "1. Verify all traffic is on new region"
+echo "2. Backup all data"
+echo "3. Update monitoring and alerting"
+echo "4. Document the migration"
+
+# For demonstration, we'll keep both regions running
+echo "Both regions maintained for demonstration purposes"
+Troubleshooting Common Issues
+Issue 1: Import Failures
+# If import fails, check resource exists
+docker ps -a | grep legacy
+
+# Check resource configuration matches exactly
+terraform show
+Issue 2: State Conflicts
+# If state conflicts occur, backup and refresh
+terraform state pull > state-backup.json
+terraform refresh
+Issue 3: Port Conflicts
+# Check for port conflicts
+netstat -tlnp | grep :8080
+netstat -tlnp | grep :8081
+
+# Kill conflicting processes if needed
+sudo fuser -k 8080/tcp
+Lab Verification and Testing
+Verification Checklist
+# Create verification script
+cat > verify-lab.sh << 'EOF'
+#!/bin/bash
+
+echo "=== Lab 15 Verification Script ==="
+
+# Check Terraform installation
+echo "1. Checking Terraform installation..."
+terraform version
+
+# Check Docker installation
+echo "2. Checking Docker installation..."
+docker --version
+
+# Verify imported resources
+echo "3. Checking imported resources..."
+cd ~/terraform-migration-lab/terraform-managed
+terraform state list
+
+# Verify migration target
+echo "4. Checking migration target..."
+cd ~/terraform-migration-lab/migration-target
+terraform state list
+
+# Check running containers
+echo "5. Checking running containers..."
+docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
+
+# Test connectivity
+echo "6. Testing service connectivity..."
+curl -s http://localhost:8080 > /dev/null && echo "✓ East region web service accessible"
+curl -s http://localhost:8081 > /dev/null && echo "✓ West region web service accessible"
+
+echo "=== Verification Complete ==="
+EOF
+
+chmod +x verify-lab.sh
+./verify-lab.sh
+Key Concepts Summary
+Terraform Import
+terraform import brings existing infrastructure under Terraform management
+Requires exact configuration matching for successful import
+State file is updated to track imported resources
+Moved Blocks
+moved blocks handle resource refactoring without destroying infrastructure
+Useful for renaming resources or reorganizing code structure
+Updates state file to reflect new resource addresses
+Replace Strategy
+-replace flag forces recreation of specific resources
+Useful for updating immutable properties or forcing updates
+Provides controlled way to replace infrastructure components
+Migration Best Practices
+Always backup state files before major changes
+Use blue-green deployment patterns for zero-downtime migrations
+Validate new infrastructure before decommissioning old resources
+Document migration procedures and rollback plans
+Conclusion
+In this lab, you have successfully:
+
+Imported existing infrastructure into Terraform management using the terraform import command
+Refactored resources using moved blocks to improve naming conventions and organization
+Applied replace strategies to upgrade infrastructure components safely
+Planned and executed a migration from one region to another using blue-green deployment patterns
+Validated migration success and prepared for decommissioning old infrastructure
+These skills are essential for managing real-world infrastructure where you need to bring existing resources under Terraform control, refactor legacy configurations, and migrate services between regions or providers. The techniques you've learned help ensure zero-downtime migrations and maintain infrastructure reliability during complex changes.
+
+The migration and refactoring capabilities of Terraform make it a powerful tool for infrastructure modernization projects, allowing teams to gradually improve their infrastructure while maintaining service availability and data integrity.
