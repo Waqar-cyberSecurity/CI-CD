@@ -1,0 +1,570 @@
+Lab 10: Testing and Quality Assurance with Terraform
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Install and configure tflint to analyze Terraform configurations for best practices and errors
+Use tfsec to identify security vulnerabilities in Terraform code
+Execute terraform validate to verify syntax correctness and configuration validity
+Implement a comprehensive quality assurance workflow for Infrastructure as Code
+Understand the importance of automated testing in infrastructure deployment
+Apply security scanning techniques to prevent misconfigurations
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Terraform syntax and concepts
+Familiarity with Linux command-line operations
+Knowledge of infrastructure as code principles
+Understanding of basic security concepts in cloud infrastructure
+Experience with package management in Linux
+Lab Environment
+Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated environment. The provided Linux machine is bare metal with no pre-installed tools, so you will install all required tools during the lab exercises.
+
+Task 1: Install tflint and Run Configuration Analysis
+Subtask 1.1: Install tflint
+tflint is a Terraform linter that helps identify errors, warnings, and best practice violations in your Terraform configurations.
+
+Update the system package manager:
+sudo apt update
+Install required dependencies:
+sudo apt install -y curl unzip wget
+Download and install tflint:
+# Download the latest tflint release
+curl -s https://api.github.com/repos/terraform-linters/tflint/releases/latest | grep browser_download_url | grep linux_amd64.zip | cut -d '"' -f 4 | wget -qi -
+
+# Extract the downloaded file
+unzip tflint_linux_amd64.zip
+
+# Move tflint to system path
+sudo mv tflint /usr/local/bin/
+
+# Make it executable
+sudo chmod +x /usr/local/bin/tflint
+
+# Verify installation
+tflint --version
+Subtask 1.2: Create Sample Terraform Configuration
+Create a sample Terraform configuration with intentional issues for testing purposes.
+
+Create a working directory:
+mkdir ~/terraform-qa-lab
+cd ~/terraform-qa-lab
+Create a main Terraform file with some issues:
+cat > main.tf << 'EOF'
+# Sample Terraform configuration with intentional issues
+terraform {
+  required_version = ">= 0.12"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 4.0"
+    }
+  }
+}
+
+provider "aws" {
+  region = "us-west-2"
+}
+
+# EC2 instance with issues
+resource "aws_instance" "web_server" {
+  ami           = "ami-0c02fb55956c7d316"  # Hardcoded AMI
+  instance_type = "t2.micro"
+  
+  # Security group allowing all traffic (security issue)
+  vpc_security_group_ids = [aws_security_group.web_sg.id]
+  
+  # Missing tags
+  user_data = <<-EOF
+    #!/bin/bash
+    yum update -y
+    yum install -y httpd
+    systemctl start httpd
+    systemctl enable httpd
+  EOF
+}
+
+# Security group with overly permissive rules
+resource "aws_security_group" "web_sg" {
+  name_prefix = "web-sg"
+  description = "Security group for web server"
+  
+  ingress {
+    from_port   = 0
+    to_port     = 65535
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]  # Security issue: too permissive
+  }
+  
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+# S3 bucket with potential issues
+resource "aws_s3_bucket" "data_bucket" {
+  bucket = "my-data-bucket-12345"  # Hardcoded bucket name
+}
+
+# Unused variable (will trigger warning)
+variable "unused_var" {
+  description = "This variable is not used anywhere"
+  type        = string
+  default     = "unused"
+}
+
+# Output without description
+output "instance_ip" {
+  value = aws_instance.web_server.public_ip
+}
+EOF
+Subtask 1.3: Initialize tflint Configuration
+Create tflint configuration file:
+cat > .tflint.hcl << 'EOF'
+plugin "aws" {
+  enabled = true
+  version = "0.24.1"
+  source  = "github.com/terraform-linters/tflint-ruleset-aws"
+}
+
+rule "terraform_deprecated_interpolation" {
+  enabled = true
+}
+
+rule "terraform_unused_declarations" {
+  enabled = true
+}
+
+rule "terraform_comment_syntax" {
+  enabled = true
+}
+
+rule "terraform_documented_outputs" {
+  enabled = true
+}
+
+rule "terraform_documented_variables" {
+  enabled = true
+}
+
+rule "terraform_naming_convention" {
+  enabled = true
+  format  = "snake_case"
+}
+EOF
+Initialize tflint:
+tflint --init
+Subtask 1.4: Run tflint Analysis
+Execute tflint on the configuration:
+tflint
+Run tflint with verbose output:
+tflint --format=compact
+Generate a detailed report:
+tflint --format=json > tflint-report.json
+cat tflint-report.json | python3 -m json.tool
+Task 2: Use tfsec to Check for Security Issues
+Subtask 2.1: Install tfsec
+tfsec is a static analysis security scanner for Terraform code that identifies potential security issues.
+
+Install tfsec:
+# Download and install tfsec
+curl -s https://api.github.com/repos/aquasecurity/tfsec/releases/latest | grep browser_download_url | grep linux-amd64 | cut -d '"' -f 4 | wget -qi -
+
+# Make it executable and move to system path
+chmod +x tfsec-linux-amd64
+sudo mv tfsec-linux-amd64 /usr/local/bin/tfsec
+
+# Verify installation
+tfsec --version
+Subtask 2.2: Run Security Analysis with tfsec
+Execute basic tfsec scan:
+tfsec .
+Run tfsec with detailed output:
+tfsec --format=json . > tfsec-report.json
+View the JSON report:
+cat tfsec-report.json | python3 -m json.tool
+Generate HTML report:
+tfsec --format=html . > tfsec-report.html
+Run tfsec with specific severity levels:
+# Show only high and critical severity issues
+tfsec --minimum-severity=HIGH .
+Run tfsec with custom checks:
+# Include all checks including experimental ones
+tfsec --include-ignored --include-passed .
+Subtask 2.3: Create Additional Security Test Cases
+Create a file with more security issues:
+cat > security-issues.tf << 'EOF'
+# Additional security issues for testing
+
+# RDS instance without encryption
+resource "aws_db_instance" "database" {
+  identifier = "mydb"
+  engine     = "mysql"
+  engine_version = "8.0"
+  instance_class = "db.t3.micro"
+  allocated_storage = 20
+  
+  db_name  = "myapp"
+  username = "admin"
+  password = "password123"  # Hardcoded password - security issue
+  
+  # Missing encryption
+  storage_encrypted = false
+  
+  # Public access enabled - security issue
+  publicly_accessible = true
+  
+  skip_final_snapshot = true
+}
+
+# S3 bucket without proper security
+resource "aws_s3_bucket" "insecure_bucket" {
+  bucket = "insecure-bucket-example"
+}
+
+resource "aws_s3_bucket_public_access_block" "insecure_bucket_pab" {
+  bucket = aws_s3_bucket.insecure_bucket.id
+  
+  # Allowing public access - security issue
+  block_public_acls       = false
+  block_public_policy     = false
+  ignore_public_acls      = false
+  restrict_public_buckets = false
+}
+
+# IAM policy with overly broad permissions
+resource "aws_iam_policy" "overly_permissive" {
+  name        = "overly-permissive-policy"
+  description = "Policy with too many permissions"
+  
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = "*"  # Security issue: wildcard permissions
+        Resource = "*"
+      }
+    ]
+  })
+}
+EOF
+Run tfsec on the new file:
+tfsec --include-passed .
+Task 3: Run terraform validate to Ensure Syntax Correctness
+Subtask 3.1: Install Terraform
+Install Terraform:
+# Add HashiCorp GPG key
+wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+
+# Add HashiCorp repository
+echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+
+# Update package list and install Terraform
+sudo apt update
+sudo apt install -y terraform
+
+# Verify installation
+terraform version
+Subtask 3.2: Initialize Terraform Configuration
+Initialize the Terraform working directory:
+terraform init
+Verify initialization was successful:
+ls -la .terraform/
+Subtask 3.3: Run Terraform Validation
+Execute basic validation:
+terraform validate
+Create a file with syntax errors for testing:
+cat > syntax-errors.tf << 'EOF'
+# File with intentional syntax errors
+
+resource "aws_instance" "broken_instance" {
+  ami           = "ami-0c02fb55956c7d316"
+  instance_type = "t2.micro"
+  
+  # Missing closing quote - syntax error
+  tags = {
+    Name = "broken-instance
+  }
+  
+  # Invalid attribute name
+  invalid_attribute = "this will cause an error"
+}
+
+# Missing resource type
+resource "broken_resource" {
+  name = "test"
+}
+
+# Invalid interpolation syntax
+output "broken_output" {
+  value = ${aws_instance.broken_instance.id}  # Old syntax
+}
+EOF
+Run validation on the configuration with errors:
+terraform validate
+Fix the syntax errors:
+cat > syntax-errors.tf << 'EOF'
+# Fixed syntax errors
+
+resource "aws_instance" "fixed_instance" {
+  ami           = "ami-0c02fb55956c7d316"
+  instance_type = "t2.micro"
+  
+  # Fixed closing quote
+  tags = {
+    Name = "fixed-instance"
+  }
+}
+
+# Fixed output with correct syntax
+output "fixed_output" {
+  value = aws_instance.fixed_instance.id
+}
+EOF
+Run validation again:
+terraform validate
+Subtask 3.4: Advanced Validation Techniques
+Validate with JSON output:
+terraform validate -json
+Create a comprehensive validation script:
+cat > validate-all.sh << 'EOF'
+#!/bin/bash
+
+echo "=== Terraform Quality Assurance Report ==="
+echo "Date: $(date)"
+echo "Directory: $(pwd)"
+echo ""
+
+echo "1. Running Terraform Format Check..."
+terraform fmt -check -diff
+echo ""
+
+echo "2. Running Terraform Validation..."
+terraform validate
+if [ $? -eq 0 ]; then
+    echo "✓ Terraform validation passed"
+else
+    echo "✗ Terraform validation failed"
+fi
+echo ""
+
+echo "3. Running tflint Analysis..."
+tflint
+echo ""
+
+echo "4. Running tfsec Security Scan..."
+tfsec --format=compact .
+echo ""
+
+echo "5. Generating Summary Reports..."
+echo "- tflint report: tflint-report.json"
+echo "- tfsec report: tfsec-report.json"
+echo "- HTML security report: tfsec-report.html"
+
+echo ""
+echo "=== Quality Assurance Complete ==="
+EOF
+
+chmod +x validate-all.sh
+Run the comprehensive validation:
+./validate-all.sh
+Task 4: Implement Quality Assurance Workflow
+Subtask 4.1: Create Pre-commit Hooks
+Install pre-commit (if available):
+# Install pip if not available
+sudo apt install -y python3-pip
+
+# Install pre-commit
+pip3 install pre-commit
+Create pre-commit configuration:
+cat > .pre-commit-config.yaml << 'EOF'
+repos:
+  - repo: https://github.com/antonbabenko/pre-commit-terraform
+    rev: v1.81.0
+    hooks:
+      - id: terraform_fmt
+      - id: terraform_validate
+      - id: terraform_tflint
+      - id: terraform_tfsec
+EOF
+Subtask 4.2: Create Quality Gates
+Create a quality gate script:
+cat > quality-gate.sh << 'EOF'
+#!/bin/bash
+
+# Quality Gate Script for Terraform
+set -e
+
+FAILED_CHECKS=0
+
+echo "🔍 Starting Terraform Quality Gate..."
+
+# Check 1: Terraform Format
+echo "📝 Checking Terraform formatting..."
+if ! terraform fmt -check -diff; then
+    echo "❌ Terraform formatting check failed"
+    FAILED_CHECKS=$((FAILED_CHECKS + 1))
+else
+    echo "✅ Terraform formatting check passed"
+fi
+
+# Check 2: Terraform Validation
+echo "🔧 Validating Terraform configuration..."
+if ! terraform validate; then
+    echo "❌ Terraform validation failed"
+    FAILED_CHECKS=$((FAILED_CHECKS + 1))
+else
+    echo "✅ Terraform validation passed"
+fi
+
+# Check 3: tflint
+echo "🔍 Running tflint analysis..."
+if ! tflint; then
+    echo "❌ tflint analysis failed"
+    FAILED_CHECKS=$((FAILED_CHECKS + 1))
+else
+    echo "✅ tflint analysis passed"
+fi
+
+# Check 4: tfsec
+echo "🔒 Running security scan with tfsec..."
+if ! tfsec --soft-fail .; then
+    echo "⚠️  Security issues found (soft fail)"
+    # Don't increment FAILED_CHECKS for soft fail
+else
+    echo "✅ Security scan passed"
+fi
+
+# Final result
+echo ""
+if [ $FAILED_CHECKS -eq 0 ]; then
+    echo "🎉 All quality gates passed! Configuration is ready for deployment."
+    exit 0
+else
+    echo "💥 $FAILED_CHECKS quality gate(s) failed. Please fix the issues before proceeding."
+    exit 1
+fi
+EOF
+
+chmod +x quality-gate.sh
+Run the quality gate:
+./quality-gate.sh
+Subtask 4.3: Generate Comprehensive Reports
+Create a report generation script:
+cat > generate-reports.sh << 'EOF'
+#!/bin/bash
+
+REPORT_DIR="qa-reports"
+mkdir -p $REPORT_DIR
+
+echo "📊 Generating comprehensive QA reports..."
+
+# Generate tflint report
+echo "Generating tflint report..."
+tflint --format=json > $REPORT_DIR/tflint-report.json
+tflint --format=compact > $REPORT_DIR/tflint-report.txt
+
+# Generate tfsec reports
+echo "Generating tfsec reports..."
+tfsec --format=json . > $REPORT_DIR/tfsec-report.json
+tfsec --format=html . > $REPORT_DIR/tfsec-report.html
+tfsec --format=csv . > $REPORT_DIR/tfsec-report.csv
+
+# Generate terraform validation report
+echo "Generating terraform validation report..."
+terraform validate -json > $REPORT_DIR/terraform-validate.json
+
+# Create summary report
+cat > $REPORT_DIR/summary.md << 'SUMMARY'
+# Terraform Quality Assurance Summary
+
+## Report Generation Date
+$(date)
+
+## Files Analyzed
+$(find . -name "*.tf" -type f | wc -l) Terraform files
+
+## Reports Generated
+- tflint-report.json: Detailed linting analysis
+- tflint-report.txt: Human-readable linting report
+- tfsec-report.json: Security analysis (JSON)
+- tfsec-report.html: Security analysis (HTML)
+- tfsec-report.csv: Security analysis (CSV)
+- terraform-validate.json: Syntax validation results
+
+## Quick Stats
+- Total .tf files: $(find . -name "*.tf" -type f | wc -l)
+- Total lines of code: $(find . -name "*.tf" -exec wc -l {} + | tail -1 | awk '{print $1}')
+
+SUMMARY
+
+echo "✅ Reports generated in $REPORT_DIR/"
+ls -la $REPORT_DIR/
+EOF
+
+chmod +x generate-reports.sh
+Generate the reports:
+./generate-reports.sh
+View the HTML security report (if GUI available):
+# Display the path to view in browser
+echo "Security report available at: $(pwd)/qa-reports/tfsec-report.html"
+Troubleshooting Common Issues
+Issue 1: tflint Plugin Installation Fails
+Problem: tflint fails to download AWS plugin
+
+Solution:
+
+# Manually specify plugin version
+cat > .tflint.hcl << 'EOF'
+plugin "aws" {
+  enabled = true
+  version = "0.24.1"
+  source  = "github.com/terraform-linters/tflint-ruleset-aws"
+}
+EOF
+
+# Clear cache and reinitialize
+rm -rf .tflint.d/
+tflint --init
+Issue 2: tfsec Shows Too Many False Positives
+Problem: tfsec reports issues that are acceptable for your use case
+
+Solution:
+
+# Create tfsec ignore file
+cat > .tfsec/config.yml << 'EOF'
+severity_overrides:
+  aws-s3-enable-bucket-encryption: LOW
+  aws-ec2-no-public-ingress-sgr: MEDIUM
+
+exclude:
+  - aws-s3-enable-bucket-logging
+EOF
+Issue 3: Terraform Validate Fails with Provider Issues
+Problem: Validation fails due to provider configuration
+
+Solution:
+
+# Skip provider validation for syntax checking
+terraform validate -no-color
+Lab Summary
+In this comprehensive lab, you have successfully:
+
+Installed and configured tflint to analyze Terraform configurations for best practices, identifying issues such as unused variables, deprecated syntax, and naming convention violations
+
+Implemented tfsec security scanning to detect potential security vulnerabilities including overly permissive security groups, unencrypted storage, hardcoded credentials, and excessive IAM permissions
+
+Used terraform validate to ensure syntax correctness and configuration validity, catching basic errors before deployment
+
+Created a comprehensive quality assurance workflow that combines multiple tools to provide thorough analysis of infrastructure code
+
+Generated detailed reports in multiple formats (JSON, HTML, CSV) for documentation and compliance purposes
+
+Established quality gates that can be integrated into CI/CD pipelines to prevent problematic code from reaching production
+
+This lab demonstrates the critical importance of implementing automated testing and quality assurance in Infrastructure as Code workflows. By using these tools together, you can significantly reduce the risk of deploying insecure or misconfigured infrastructure, improve code quality, and maintain consistency across your Terraform projects.
+
+The skills learned in this lab are essential for maintaining production-ready infrastructure code and implementing DevSecOps practices in cloud environments. These tools help catch issues early in the development cycle, reducing costs and security risks associated with infrastructure deployment.
