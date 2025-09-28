@@ -1,0 +1,874 @@
+Lab 17: Advanced Module Design and Automation
+Lab Objectives
+By the end of this lab, students will be able to:
+
+Design and implement complex, reusable Terraform modules for Kubernetes cluster deployment
+Implement automated testing for Terraform modules using Terratest
+Apply best practices for module documentation and versioning
+Create a complete CI/CD pipeline for infrastructure module testing
+Understand advanced module design patterns and dependency management
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of Terraform concepts (resources, providers, variables)
+Familiarity with Kubernetes fundamentals
+Basic knowledge of Go programming language
+Understanding of Git version control
+Experience with Linux command line operations
+Knowledge of YAML and JSON file formats
+Lab Environment Setup
+Note: Al Nafi provides Linux-based cloud machines for this lab. Simply click "Start Lab" to access your dedicated Linux environment. The provided machine is bare metal with no pre-installed tools, so you will install all required tools during the lab exercises.
+
+Task 1: Environment Preparation and Tool Installation
+Subtask 1.1: Install Required Tools
+First, update the system and install essential packages:
+
+# Update system packages
+sudo apt update && sudo apt upgrade -y
+
+# Install essential tools
+sudo apt install -y curl wget unzip git vim tree jq
+
+# Install Docker
+curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
+sudo usermod -aG docker $USER
+newgrp docker
+
+# Verify Docker installation
+docker --version
+Subtask 1.2: Install Terraform
+# Download and install Terraform
+wget https://releases.hashicorp.com/terraform/1.6.6/terraform_1.6.6_linux_amd64.zip
+unzip terraform_1.6.6_linux_amd64.zip
+sudo mv terraform /usr/local/bin/
+rm terraform_1.6.6_linux_amd64.zip
+
+# Verify Terraform installation
+terraform version
+Subtask 1.3: Install kubectl and kind
+# Install kubectl
+curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+rm kubectl
+
+# Install kind (Kubernetes in Docker)
+curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
+chmod +x ./kind
+sudo mv ./kind /usr/local/bin/kind
+
+# Verify installations
+kubectl version --client
+kind version
+Subtask 1.4: Install Go and Terratest Dependencies
+# Install Go
+wget https://go.dev/dl/go1.21.5.linux-amd64.tar.gz
+sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go1.21.5.linux-amd64.tar.gz
+rm go1.21.5.linux-amd64.tar.gz
+
+# Add Go to PATH
+echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
+echo 'export GOPATH=$HOME/go' >> ~/.bashrc
+echo 'export PATH=$PATH:$GOPATH/bin' >> ~/.bashrc
+source ~/.bashrc
+
+# Verify Go installation
+go version
+Task 2: Build an Advanced Kubernetes Cluster Module
+Subtask 2.1: Create Module Directory Structure
+# Create the main project directory
+mkdir -p ~/terraform-k8s-module
+cd ~/terraform-k8s-module
+
+# Create module directory structure
+mkdir -p {modules/k8s-cluster,examples/basic-cluster,test}
+mkdir -p modules/k8s-cluster/{templates,scripts}
+
+# Create initial directory tree
+tree .
+Subtask 2.2: Design the Main Module Files
+Create the main module configuration:
+
+# Create variables.tf for the module
+cat > modules/k8s-cluster/variables.tf << 'EOF'
+variable "cluster_name" {
+  description = "Name of the Kubernetes cluster"
+  type        = string
+  default     = "dev-cluster"
+  
+  validation {
+    condition     = length(var.cluster_name) > 0 && length(var.cluster_name) <= 63
+    error_message = "Cluster name must be between 1 and 63 characters."
+  }
+}
+
+variable "node_count" {
+  description = "Number of worker nodes in the cluster"
+  type        = number
+  default     = 2
+  
+  validation {
+    condition     = var.node_count >= 1 && var.node_count <= 10
+    error_message = "Node count must be between 1 and 10."
+  }
+}
+
+variable "kubernetes_version" {
+  description = "Kubernetes version to deploy"
+  type        = string
+  default     = "v1.28.0"
+}
+
+variable "node_image" {
+  description = "Docker image for Kubernetes nodes"
+  type        = string
+  default     = "kindest/node:v1.28.0"
+}
+
+variable "enable_ingress" {
+  description = "Enable NGINX Ingress Controller"
+  type        = bool
+  default     = true
+}
+
+variable "enable_monitoring" {
+  description = "Enable basic monitoring stack"
+  type        = bool
+  default     = false
+}
+
+variable "cluster_config" {
+  description = "Additional cluster configuration"
+  type = object({
+    api_server_port = optional(number, 6443)
+    pod_subnet      = optional(string, "10.244.0.0/16")
+    service_subnet  = optional(string, "10.96.0.0/12")
+  })
+  default = {}
+}
+
+variable "labels" {
+  description = "Labels to apply to cluster resources"
+  type        = map(string)
+  default     = {}
+}
+EOF
+Create the main module logic:
+
+# Create main.tf for the module
+cat > modules/k8s-cluster/main.tf << 'EOF'
+terraform {
+  required_version = ">= 1.0"
+  required_providers {
+    null = {
+      source  = "hashicorp/null"
+      version = "~> 3.2"
+    }
+    local = {
+      source  = "hashicorp/local"
+      version = "~> 2.4"
+    }
+  }
+}
+
+# Generate kind cluster configuration
+resource "local_file" "kind_config" {
+  filename = "${path.module}/kind-config-${var.cluster_name}.yaml"
+  content = templatefile("${path.module}/templates/kind-config.yaml.tpl", {
+    cluster_name    = var.cluster_name
+    node_count      = var.node_count
+    api_server_port = var.cluster_config.api_server_port
+    pod_subnet      = var.cluster_config.pod_subnet
+    service_subnet  = var.cluster_config.service_subnet
+  })
+}
+
+# Create the kind cluster
+resource "null_resource" "kind_cluster" {
+  triggers = {
+    config_hash = local_file.kind_config.content_md5
+    cluster_name = var.cluster_name
+  }
+
+  provisioner "local-exec" {
+    command = "${path.module}/scripts/create-cluster.sh"
+    environment = {
+      CLUSTER_NAME = var.cluster_name
+      CONFIG_FILE  = local_file.kind_config.filename
+      NODE_IMAGE   = var.node_image
+    }
+  }
+
+  provisioner "local-exec" {
+    when    = destroy
+    command = "kind delete cluster --name ${self.triggers.cluster_name} || true"
+  }
+
+  depends_on = [local_file.kind_config]
+}
+
+# Wait for cluster to be ready
+resource "null_resource" "wait_for_cluster" {
+  provisioner "local-exec" {
+    command = "kubectl wait --for=condition=Ready nodes --all --timeout=300s --context=kind-${var.cluster_name}"
+  }
+
+  depends_on = [null_resource.kind_cluster]
+}
+
+# Install NGINX Ingress Controller if enabled
+resource "null_resource" "nginx_ingress" {
+  count = var.enable_ingress ? 1 : 0
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml --context=kind-${var.cluster_name}
+      kubectl wait --namespace ingress-nginx --for=condition=ready pod --selector=app.kubernetes.io/component=controller --timeout=300s --context=kind-${var.cluster_name}
+    EOT
+  }
+
+  depends_on = [null_resource.wait_for_cluster]
+}
+
+# Install basic monitoring if enabled
+resource "null_resource" "monitoring" {
+  count = var.enable_monitoring ? 1 : 0
+
+  provisioner "local-exec" {
+    command = "${path.module}/scripts/install-monitoring.sh"
+    environment = {
+      CLUSTER_NAME = var.cluster_name
+    }
+  }
+
+  depends_on = [null_resource.wait_for_cluster]
+}
+
+# Generate kubeconfig for external access
+resource "null_resource" "kubeconfig" {
+  provisioner "local-exec" {
+    command = "kind get kubeconfig --name ${var.cluster_name} > ${path.root}/kubeconfig-${var.cluster_name}"
+  }
+
+  depends_on = [null_resource.kind_cluster]
+}
+EOF
+Subtask 2.3: Create Module Templates and Scripts
+Create the kind configuration template:
+
+# Create kind configuration template
+cat > modules/k8s-cluster/templates/kind-config.yaml.tpl << 'EOF'
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: ${cluster_name}
+networking:
+  apiServerPort: ${api_server_port}
+  podSubnet: "${pod_subnet}"
+  serviceSubnet: "${service_subnet}"
+nodes:
+- role: control-plane
+  kubeadmConfigPatches:
+  - |
+    kind: InitConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        node-labels: "ingress-ready=true"
+  extraPortMappings:
+  - containerPort: 80
+    hostPort: 80
+    protocol: TCP
+  - containerPort: 443
+    hostPort: 443
+    protocol: TCP
+%{ for i in range(node_count) ~}
+- role: worker
+%{ endfor ~}
+EOF
+Create the cluster creation script:
+
+# Create cluster creation script
+cat > modules/k8s-cluster/scripts/create-cluster.sh << 'EOF'
+#!/bin/bash
+set -e
+
+echo "Creating kind cluster: $CLUSTER_NAME"
+
+# Check if cluster already exists
+if kind get clusters | grep -q "^$CLUSTER_NAME$"; then
+    echo "Cluster $CLUSTER_NAME already exists, deleting..."
+    kind delete cluster --name "$CLUSTER_NAME"
+fi
+
+# Create the cluster
+kind create cluster --name "$CLUSTER_NAME" --config "$CONFIG_FILE" --image "$NODE_IMAGE"
+
+echo "Cluster $CLUSTER_NAME created successfully"
+
+# Verify cluster is accessible
+kubectl cluster-info --context="kind-$CLUSTER_NAME"
+EOF
+
+chmod +x modules/k8s-cluster/scripts/create-cluster.sh
+Create the monitoring installation script:
+
+# Create monitoring installation script
+cat > modules/k8s-cluster/scripts/install-monitoring.sh << 'EOF'
+#!/bin/bash
+set -e
+
+CONTEXT="kind-$CLUSTER_NAME"
+
+echo "Installing basic monitoring stack on cluster: $CLUSTER_NAME"
+
+# Create monitoring namespace
+kubectl create namespace monitoring --context="$CONTEXT" || true
+
+# Install metrics-server
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml --context="$CONTEXT"
+
+# Patch metrics-server for kind
+kubectl patch deployment metrics-server -n kube-system --context="$CONTEXT" --type='json' -p='[
+  {
+    "op": "add",
+    "path": "/spec/template/spec/containers/0/args/-",
+    "value": "--kubelet-insecure-tls"
+  }
+]'
+
+echo "Basic monitoring installed successfully"
+EOF
+
+chmod +x modules/k8s-cluster/scripts/install-monitoring.sh
+Subtask 2.4: Create Module Outputs
+# Create outputs.tf for the module
+cat > modules/k8s-cluster/outputs.tf << 'EOF'
+output "cluster_name" {
+  description = "Name of the created Kubernetes cluster"
+  value       = var.cluster_name
+}
+
+output "cluster_context" {
+  description = "Kubectl context name for the cluster"
+  value       = "kind-${var.cluster_name}"
+}
+
+output "kubeconfig_path" {
+  description = "Path to the kubeconfig file"
+  value       = "${path.root}/kubeconfig-${var.cluster_name}"
+}
+
+output "cluster_endpoint" {
+  description = "Kubernetes API server endpoint"
+  value       = "https://127.0.0.1:${var.cluster_config.api_server_port}"
+}
+
+output "ingress_enabled" {
+  description = "Whether NGINX Ingress Controller is enabled"
+  value       = var.enable_ingress
+}
+
+output "monitoring_enabled" {
+  description = "Whether monitoring stack is enabled"
+  value       = var.enable_monitoring
+}
+
+output "node_count" {
+  description = "Number of worker nodes in the cluster"
+  value       = var.node_count
+}
+
+output "cluster_info" {
+  description = "Comprehensive cluster information"
+  value = {
+    name             = var.cluster_name
+    context          = "kind-${var.cluster_name}"
+    kubernetes_version = var.kubernetes_version
+    node_count       = var.node_count
+    ingress_enabled  = var.enable_ingress
+    monitoring_enabled = var.enable_monitoring
+    api_server_port  = var.cluster_config.api_server_port
+  }
+}
+EOF
+Subtask 2.5: Create Module Documentation
+# Create README.md for the module
+cat > modules/k8s-cluster/README.md << 'EOF'
+# Kubernetes Cluster Module
+
+This Terraform module creates a local Kubernetes cluster using kind (Kubernetes in Docker) with optional components.
+
+## Features
+
+- Creates a multi-node Kubernetes cluster using kind
+- Configurable number of worker nodes
+- Optional NGINX Ingress Controller
+- Optional basic monitoring stack (metrics-server)
+- Customizable networking configuration
+- Automatic kubeconfig generation
+
+## Usage
+
+```hcl
+module "k8s_cluster" {
+  source = "./modules/k8s-cluster"
+
+  cluster_name        = "my-dev-cluster"
+  node_count         = 3
+  kubernetes_version = "v1.28.0"
+  enable_ingress     = true
+  enable_monitoring  = true
+
+  cluster_config = {
+    api_server_port = 6443
+    pod_subnet      = "10.244.0.0/16"
+    service_subnet  = "10.96.0.0/12"
+  }
+
+  labels = {
+    environment = "development"
+    team        = "platform"
+  }
+}
+Requirements
+Name	Version
+terraform	>= 1.0
+null	~> 3.2
+local	~> 2.4
+Providers
+Name	Version
+null	~> 3.2
+local	~> 2.4
+Inputs
+Name	Description	Type	Default	Required
+cluster_name	Name of the Kubernetes cluster	string	"dev-cluster"	no
+node_count	Number of worker nodes in the cluster	number	2	no
+kubernetes_version	Kubernetes version to deploy	string	"v1.28.0"	no
+node_image	Docker image for Kubernetes nodes	string	"kindest/node:v1.28.0"	no
+enable_ingress	Enable NGINX Ingress Controller	bool	true	no
+enable_monitoring	Enable basic monitoring stack	bool	false	no
+cluster_config	Additional cluster configuration	object	{}	no
+labels	Labels to apply to cluster resources	map(string)	{}	no
+Outputs
+Name	Description
+cluster_name	Name of the created Kubernetes cluster
+cluster_context	Kubectl context name for the cluster
+kubeconfig_path	Path to the kubeconfig file
+cluster_endpoint	Kubernetes API server endpoint
+ingress_enabled	Whether NGINX Ingress Controller is enabled
+monitoring_enabled	Whether monitoring stack is enabled
+node_count	Number of worker nodes in the cluster
+cluster_info	Comprehensive cluster information
+Examples
+See the examples/ directory for complete usage examples. EOF
+
+
+Create version constraints:
+
+```bash
+# Create versions.tf for the module
+cat > modules/k8s-cluster/versions.tf << 'EOF'
+terraform {
+  required_version = ">= 1.0"
+  
+  required_providers {
+    null = {
+      source  = "hashicorp/null"
+      version = "~> 3.2"
+    }
+    local = {
+      source  = "hashicorp/local"
+      version = "~> 2.4"
+    }
+  }
+}
+EOF
+Task 3: Implement Automated Testing with Terratest
+Subtask 3.1: Initialize Go Module for Testing
+# Navigate to test directory
+cd ~/terraform-k8s-module/test
+
+# Initialize Go module
+go mod init terraform-k8s-module-test
+
+# Install Terratest and dependencies
+go get github.com/gruntwork-io/terratest/modules/terraform
+go get github.com/gruntwork-io/terratest/modules/k8s
+go get github.com/gruntwork-io/terratest/modules/shell
+go get github.com/stretchr/testify/assert
+go get github.com/stretchr/testify/require
+Subtask 3.2: Create Basic Module Tests
+# Create basic module test
+cat > basic_test.go << 'EOF'
+package test
+
+import (
+    "fmt"
+    "path/filepath"
+    "testing"
+    "time"
+
+    "github.com/gruntwork-io/terratest/modules/k8s"
+    "github.com/gruntwork-io/terratest/modules/shell"
+    "github.com/gruntwork-io/terratest/modules/terraform"
+    "github.com/stretchr/testify/assert"
+    "github.com/stretchr/testify/require"
+)
+
+func TestBasicClusterCreation(t *testing.T) {
+    t.Parallel()
+
+    // Construct the terraform options with default retryable errors to handle the most common
+    // retryable errors in terraform testing.
+    terraformOptions := terraform.WithDefaultRetryableErrors(t, &terraform.Options{
+        // Set the path to the Terraform code that will be tested.
+        TerraformDir: "../examples/basic-cluster",
+
+        // Variables to pass to our Terraform code using -var options
+        Vars: map[string]interface{}{
+            "cluster_name": fmt.Sprintf("test-cluster-%d", time.Now().Unix()),
+            "node_count":   1,
+        },
+
+        // Disable colors in Terraform commands so its easier to parse stdout/stderr
+        NoColor: true,
+    })
+
+    // Clean up resources with "terraform destroy" at the end of the test.
+    defer terraform.Destroy(t, terraformOptions)
+
+    // Run "terraform init" and "terraform apply". Fail the test if there are any errors.
+    terraform.InitAndApply(t, terraformOptions)
+
+    // Run basic validation tests
+    validateClusterCreation(t, terraformOptions)
+}
+
+func validateClusterCreation(t *testing.T, terraformOptions *terraform.Options) {
+    // Get outputs from terraform
+    clusterName := terraform.Output(t, terraformOptions, "cluster_name")
+    clusterContext := terraform.Output(t, terraformOptions, "cluster_context")
+    kubeconfigPath := terraform.Output(t, terraformOptions, "kubeconfig_path")
+
+    // Validate outputs are not empty
+    assert.NotEmpty(t, clusterName)
+    assert.NotEmpty(t, clusterContext)
+    assert.NotEmpty(t, kubeconfigPath)
+
+    // Test kubectl connectivity
+    kubectlOptions := k8s.NewKubectlOptions(clusterContext, "", "default")
+    
+    // Wait for cluster to be ready
+    k8s.WaitUntilAllNodesReady(t, kubectlOptions, 10, 30*time.Second)
+
+    // Get cluster info
+    nodes := k8s.GetNodes(t, kubectlOptions)
+    require.True(t, len(nodes) >= 2, "Cluster should have at least 2 nodes (1 control plane + 1 worker)")
+
+    // Test that we can create a simple pod
+    testPodManifest := `
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-pod
+  namespace: default
+spec:
+  containers:
+  - name: test-container
+    image: nginx:alpine
+    ports:
+    - containerPort: 80
+`
+
+    // Apply the test pod
+    k8s.KubectlApplyFromString(t, kubectlOptions, testPodManifest)
+    defer k8s.KubectlDeleteFromString(t, kubectlOptions, testPodManifest)
+
+    // Wait for pod to be ready
+    k8s.WaitUntilPodAvailable(t, kubectlOptions, "test-pod", 10, 15*time.Second)
+
+    // Verify pod is running
+    pod := k8s.GetPod(t, kubectlOptions, "test-pod")
+    assert.Equal(t, "Running", string(pod.Status.Phase))
+}
+
+func TestClusterWithIngress(t *testing.T) {
+    t.Parallel()
+
+    terraformOptions := terraform.WithDefaultRetryableErrors(t, &terraform.Options{
+        TerraformDir: "../examples/basic-cluster",
+        Vars: map[string]interface{}{
+            "cluster_name":    fmt.Sprintf("ingress-test-%d", time.Now().Unix()),
+            "node_count":      2,
+            "enable_ingress":  true,
+        },
+        NoColor: true,
+    })
+
+    defer terraform.Destroy(t, terraformOptions)
+    terraform.InitAndApply(t, terraformOptions)
+
+    // Validate ingress controller is installed
+    validateIngressController(t, terraformOptions)
+}
+
+func validateIngressController(t *testing.T, terraformOptions *terraform.Options) {
+    clusterContext := terraform.Output(t, terraformOptions, "cluster_context")
+    kubectlOptions := k8s.NewKubectlOptions(clusterContext, "ingress-nginx", "")
+
+    // Wait for ingress controller to be ready
+    k8s.WaitUntilDeploymentAvailable(t, kubectlOptions, "ingress-nginx-controller", 20, 15*time.Second)
+
+    // Verify ingress controller pods are running
+    pods := k8s.ListPods(t, kubectlOptions, map[string]string{
+        "app.kubernetes.io/component": "controller",
+    })
+
+    require.True(t, len(pods) > 0, "Ingress controller pods should be running")
+    
+    for _, pod := range pods {
+        assert.Equal(t, "Running", string(pod.Status.Phase))
+    }
+}
+
+func TestClusterDestroy(t *testing.T) {
+    t.Parallel()
+
+    clusterName := fmt.Sprintf("destroy-test-%d", time.Now().Unix())
+    
+    terraformOptions := terraform.WithDefaultRetryableErrors(t, &terraform.Options{
+        TerraformDir: "../examples/basic-cluster",
+        Vars: map[string]interface{}{
+            "cluster_name": clusterName,
+            "node_count":   1,
+        },
+        NoColor: true,
+    })
+
+    // Create cluster
+    terraform.InitAndApply(t, terraformOptions)
+
+    // Verify cluster exists
+    cmd := shell.Command{
+        Command: "kind",
+        Args:    []string{"get", "clusters"},
+    }
+    output := shell.RunCommandAndGetOutput(t, cmd)
+    assert.Contains(t, output, clusterName)
+
+    // Destroy cluster
+    terraform.Destroy(t, terraformOptions)
+
+    // Verify cluster is destroyed
+    output = shell.RunCommandAndGetOutput(t, cmd)
+    assert.NotContains(t, output, clusterName)
+}
+EOF
+Subtask 3.3: Create Advanced Integration Tests
+# Create integration test file
+cat > integration_test.go << 'EOF'
+package test
+
+import (
+    "fmt"
+    "testing"
+    "time"
+
+    "github.com/gruntwork-io/terratest/modules/k8s"
+    "github.com/gruntwork-io/terratest/modules/terraform"
+    "github.com/stretchr/testify/assert"
+    "github.com/stretchr/testify/require"
+)
+
+func TestFullStackDeployment(t *testing.T) {
+    t.Parallel()
+
+    terraformOptions := terraform.WithDefaultRetryableErrors(t, &terraform.Options{
+        TerraformDir: "../examples/basic-cluster",
+        Vars: map[string]interface{}{
+            "cluster_name":       fmt.Sprintf("fullstack-%d", time.Now().Unix()),
+            "node_count":         3,
+            "enable_ingress":     true,
+            "enable_monitoring":  true,
+        },
+        NoColor: true,
+    })
+
+    defer terraform.Destroy(t, terraformOptions)
+    terraform.InitAndApply(t, terraformOptions)
+
+    // Validate full stack
+    validateFullStack(t, terraformOptions)
+}
+
+func validateFullStack(t *testing.T, terraformOptions *terraform.Options) {
+    clusterContext := terraform.Output(t, terraformOptions, "cluster_context")
+    
+    // Test default namespace
+    kubectlOptions := k8s.NewKubectlOptions(clusterContext, "default", "")
+    
+    // Wait for all nodes to be ready
+    k8s.WaitUntilAllNodesReady(t, kubectlOptions, 15, 30*time.Second)
+
+    // Validate node count
+    nodes := k8s.GetNodes(t, kubectlOptions)
+    require.Equal(t, 4, len(nodes), "Should have 4 nodes (1 control plane + 3 workers)")
+
+    // Test ingress controller
+    ingressOptions := k8s.NewKubectlOptions(clusterContext, "ingress-nginx", "")
+    k8s.WaitUntilDeploymentAvailable(t, ingressOptions, "ingress-nginx-controller", 20, 15*time.Second)
+
+    // Test metrics server
+    metricsOptions := k8s.NewKubectlOptions(clusterContext, "kube-system", "")
+    k8s.WaitUntilDeploymentAvailable(t, metricsOptions, "metrics-server", 15, 15*time.Second)
+
+    // Deploy a test application with ingress
+    deployTestApplication(t, kubectlOptions)
+}
+
+func deployTestApplication(t *testing.T, kubectlOptions *k8s.KubectlOptions) {
+    testAppManifest := `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-app
+  namespace: default
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: test-app
+  template:
+    metadata:
+      labels:
+        app: test-app
+    spec:
+      containers:
+      - name: test-app
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: test-app-service
+  namespace: default
+spec:
+  selector:
+    app: test-app
+  ports:
+  - port: 80
+    targetPort: 80
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: test-app-ingress
+  namespace: default
+  annotations:
+    kubernetes.io/ingress.class: nginx
+spec:
+  rules:
+  - host: test-app.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: test-app-service
+            port:
+              number: 80
+`
+
+    // Apply test application
+    k8s.KubectlApplyFromString(t, kubectlOptions, testAppManifest)
+    defer k8s.KubectlDeleteFromString(t, kubectlOptions, testAppManifest)
+
+    // Wait for deployment to be ready
+    k8s.WaitUntilDeploymentAvailable(t, kubectlOptions, "test-app", 10, 15*time.Second)
+
+    // Verify pods are running
+    pods := k8s.ListPods(t, kubectlOptions, map[string]string{"app": "test-app"})
+    require.Equal(t, 2, len(pods), "Should have 2 test app pods")
+
+    for _, pod := range pods {
+        assert.Equal(t, "Running", string(pod.Status.Phase))
+    }
+
+    // Verify service exists
+    service := k8s.GetService(t, kubectlOptions, "test-app-service")
+    assert.Equal(t, "test-app-service", service.Name)
+
+    // Verify ingress exists
+    ingress := k8s.GetIngress(t, kubectlOptions, "test-app-ingress")
+    assert.Equal(t, "test-app-ingress", ingress.Name)
+}
+
+func TestModuleValidation(t *testing.T) {
+    t.Parallel()
+
+    // Test invalid cluster name
+    terraformOptions := terraform.WithDefaultRetryableErrors(t, &terraform.Options{
+        TerraformDir: "../examples/basic-cluster",
+        Vars: map[string]interface{}{
+            "cluster_name": "", // Invalid empty name
+        },
+        NoColor: true,
+    })
+
+    // This should fail during plan phase
+    _, err := terraform.InitAndPlanE(t, terraformOptions)
+    require.Error(t, err, "Should fail with invalid cluster name")
+
+    // Test invalid node count
+    terraformOptions.Vars["cluster_name"] = "valid-name"
+    terraformOptions.Vars["node_count"] = 15 // Invalid count > 10
+
+    _, err = terraform.InitAndPlanE(t, terraformOptions)
+    require.Error(t, err, "Should fail with invalid node count")
+}
+EOF
+Subtask 3.4: Create Test Configuration and Makefile
+# Create test configuration
+cat > go.mod << 'EOF'
+module terraform-k8s-module-test
+
+go 1.21
+
+require (
+    github.com/gruntwork-io/terratest v0.46.8
+    github.com/stretchr/testify v1.8.4
+)
+EOF
+
+# Create Makefile for test automation
+cat > Makefile << 'EOF'
+.PHONY: test test-basic test-integration test-all clean fmt vet
+
+# Default target
+all: fmt vet test
+
+# Format Go code
+fmt:
+    go fmt ./...
+
+# Vet Go code
+vet:
+    go vet ./...
+
+# Run basic tests
+test-basic:
+    go test -v -timeout 30m -run TestBasicClusterCreation
+
+# Run integration tests
+test-integration:
+    go test -v -timeout 45m -run TestFullStackDeployment
+
+# Run validation tests
+test-validation:
+    go test -v -timeout 10m -run TestModuleValidation
+
+# Run all tests
+test
