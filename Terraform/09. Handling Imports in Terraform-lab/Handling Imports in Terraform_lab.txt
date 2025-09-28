@@ -1,0 +1,641 @@
+Lab 9: Handling Imports in Terraform
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Understand the concept of importing existing infrastructure into Terraform state
+Use the terraform import command to bring existing AWS resources under Terraform management
+Modify imported resources using Terraform configuration files
+Apply changes to imported resources while maintaining state consistency
+Troubleshoot common import-related issues and state management problems
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Terraform concepts (resources, state, providers)
+Familiarity with AWS services, particularly S3
+Experience with Linux command line operations
+Knowledge of HCL (HashiCorp Configuration Language) syntax
+Understanding of AWS CLI basics
+Lab Environment Setup
+Note: Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated Linux machine. The provided machine is bare metal with no pre-installed tools, so you will install all required tools during the lab.
+
+Task 1: Environment Preparation and Tool Installation
+Subtask 1.1: Install Required Tools
+First, update your system and install necessary dependencies:
+
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y curl unzip wget gnupg software-properties-common
+Subtask 1.2: Install Terraform
+Download and install the latest version of Terraform:
+
+# Download Terraform
+wget https://releases.hashicorp.com/terraform/1.6.6/terraform_1.6.6_linux_amd64.zip
+
+# Unzip and install
+unzip terraform_1.6.6_linux_amd64.zip
+sudo mv terraform /usr/local/bin/
+
+# Verify installation
+terraform version
+Subtask 1.3: Install AWS CLI
+Install AWS CLI v2 for managing AWS resources:
+
+# Download AWS CLI
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+
+# Unzip and install
+unzip awscliv2.zip
+sudo ./aws/install
+
+# Verify installation
+aws --version
+Subtask 1.4: Configure AWS Credentials
+Set up your AWS credentials (you can use AWS LocalStack for local testing):
+
+# Configure AWS credentials
+aws configure
+When prompted, enter:
+
+AWS Access Key ID: test
+AWS Secret Access Key: test
+Default region name: us-east-1
+Default output format: json
+Subtask 1.5: Install LocalStack (for local AWS simulation)
+Install LocalStack to simulate AWS services locally:
+
+# Install Python and pip
+sudo apt install -y python3 python3-pip
+
+# Install LocalStack
+pip3 install localstack
+
+# Add to PATH
+echo 'export PATH=$PATH:~/.local/bin' >> ~/.bashrc
+source ~/.bashrc
+
+# Verify installation
+localstack --version
+Task 2: Create Existing AWS Resources Outside Terraform
+Subtask 2.1: Start LocalStack
+Start LocalStack to simulate AWS services:
+
+# Start LocalStack in the background
+localstack start -d
+
+# Wait for services to be ready
+sleep 30
+
+# Verify LocalStack is running
+curl http://localhost:4566/health
+Subtask 2.2: Create S3 Bucket Using AWS CLI
+Create an S3 bucket that exists outside of Terraform management:
+
+# Set LocalStack endpoint
+export AWS_ENDPOINT_URL=http://localhost:4566
+
+# Create an S3 bucket
+aws s3 mb s3://my-existing-bucket --endpoint-url=$AWS_ENDPOINT_URL
+
+# Verify bucket creation
+aws s3 ls --endpoint-url=$AWS_ENDPOINT_URL
+Subtask 2.3: Add Some Content to the Bucket
+Add objects to make the bucket more realistic:
+
+# Create a test file
+echo "This is a test file created outside Terraform" > test-file.txt
+
+# Upload file to bucket
+aws s3 cp test-file.txt s3://my-existing-bucket/ --endpoint-url=$AWS_ENDPOINT_URL
+
+# List bucket contents
+aws s3 ls s3://my-existing-bucket/ --endpoint-url=$AWS_ENDPOINT_URL
+Subtask 2.4: Set Bucket Versioning
+Enable versioning on the bucket:
+
+# Enable versioning
+aws s3api put-bucket-versioning \
+  --bucket my-existing-bucket \
+  --versioning-configuration Status=Enabled \
+  --endpoint-url=$AWS_ENDPOINT_URL
+
+# Verify versioning status
+aws s3api get-bucket-versioning \
+  --bucket my-existing-bucket \
+  --endpoint-url=$AWS_ENDPOINT_URL
+Task 3: Set Up Terraform Project Structure
+Subtask 3.1: Create Project Directory
+Create a dedicated directory for your Terraform project:
+
+# Create project directory
+mkdir terraform-import-lab
+cd terraform-import-lab
+
+# Create subdirectories for organization
+mkdir -p configs outputs
+Subtask 3.2: Create Provider Configuration
+Create the main Terraform configuration file:
+
+cat > main.tf << 'EOF'
+terraform {
+  required_version = ">= 1.0"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+provider "aws" {
+  region                      = "us-east-1"
+  access_key                  = "test"
+  secret_key                  = "test"
+  skip_credentials_validation = true
+  skip_metadata_api_check     = true
+  skip_requesting_account_id  = true
+
+  endpoints {
+    s3 = "http://localhost:4566"
+  }
+}
+EOF
+Subtask 3.3: Initialize Terraform
+Initialize the Terraform working directory:
+
+# Initialize Terraform
+terraform init
+
+# Verify initialization
+ls -la .terraform/
+Task 4: Import Existing S3 Bucket into Terraform State
+Subtask 4.1: Create Resource Configuration for Import
+Before importing, create the resource configuration that matches the existing bucket:
+
+cat > s3-bucket.tf << 'EOF'
+resource "aws_s3_bucket" "imported_bucket" {
+  bucket = "my-existing-bucket"
+}
+
+resource "aws_s3_bucket_versioning" "imported_bucket_versioning" {
+  bucket = aws_s3_bucket.imported_bucket.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+EOF
+Subtask 4.2: Check Current Terraform State
+Verify that Terraform state is currently empty:
+
+# Check current state
+terraform state list
+
+# Show detailed state (should be empty)
+terraform show
+Subtask 4.3: Import the S3 Bucket
+Use the terraform import command to import the existing bucket:
+
+# Import the S3 bucket
+terraform import aws_s3_bucket.imported_bucket my-existing-bucket
+
+# Verify the import
+terraform state list
+Subtask 4.4: Import Bucket Versioning Configuration
+Import the versioning configuration separately:
+
+# Import bucket versioning
+terraform import aws_s3_bucket_versioning.imported_bucket_versioning my-existing-bucket
+
+# Check state again
+terraform state list
+Subtask 4.5: Verify Import Success
+Check that the resources are now in Terraform state:
+
+# Show imported resources
+terraform show
+
+# Check state details
+terraform state show aws_s3_bucket.imported_bucket
+terraform state show aws_s3_bucket_versioning.imported_bucket_versioning
+Task 5: Validate and Plan Changes
+Subtask 5.1: Run Terraform Plan
+Check if the imported configuration matches the actual resources:
+
+# Run terraform plan
+terraform plan
+Expected Output: The plan should show no changes if the configuration matches the existing resources perfectly.
+
+Subtask 5.2: Handle Configuration Drift
+If there are differences, update your configuration to match the actual resource state. For example, if tags are missing:
+
+cat > s3-bucket.tf << 'EOF'
+resource "aws_s3_bucket" "imported_bucket" {
+  bucket = "my-existing-bucket"
+
+  tags = {
+    Environment = "lab"
+    Purpose     = "terraform-import-demo"
+  }
+}
+
+resource "aws_s3_bucket_versioning" "imported_bucket_versioning" {
+  bucket = aws_s3_bucket.imported_bucket.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+EOF
+Subtask 5.3: Plan Again After Configuration Update
+# Run plan again to see the changes
+terraform plan
+
+# Save the plan to a file
+terraform plan -out=import-changes.tfplan
+Task 6: Modify Imported Resources Using Terraform
+Subtask 6.1: Add Additional S3 Bucket Configuration
+Enhance the bucket configuration with additional features:
+
+cat > s3-bucket.tf << 'EOF'
+resource "aws_s3_bucket" "imported_bucket" {
+  bucket = "my-existing-bucket"
+
+  tags = {
+    Environment = "lab"
+    Purpose     = "terraform-import-demo"
+    ManagedBy   = "terraform"
+  }
+}
+
+resource "aws_s3_bucket_versioning" "imported_bucket_versioning" {
+  bucket = aws_s3_bucket.imported_bucket.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "imported_bucket_encryption" {
+  bucket = aws_s3_bucket.imported_bucket.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "imported_bucket_pab" {
+  bucket = aws_s3_bucket.imported_bucket.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+EOF
+Subtask 6.2: Create Output Configuration
+Create outputs to display important information:
+
+cat > outputs.tf << 'EOF'
+output "bucket_name" {
+  description = "Name of the imported S3 bucket"
+  value       = aws_s3_bucket.imported_bucket.bucket
+}
+
+output "bucket_arn" {
+  description = "ARN of the imported S3 bucket"
+  value       = aws_s3_bucket.imported_bucket.arn
+}
+
+output "bucket_domain_name" {
+  description = "Domain name of the S3 bucket"
+  value       = aws_s3_bucket.imported_bucket.bucket_domain_name
+}
+
+output "versioning_status" {
+  description = "Versioning status of the bucket"
+  value       = aws_s3_bucket_versioning.imported_bucket_versioning.versioning_configuration[0].status
+}
+EOF
+Subtask 6.3: Plan the Changes
+Review what changes will be applied:
+
+# Plan the changes
+terraform plan
+
+# Review the plan carefully
+terraform plan -detailed-exitcode
+Subtask 6.4: Apply the Changes
+Apply the changes to modify the imported resource:
+
+# Apply changes
+terraform apply
+
+# When prompted, type 'yes' to confirm
+Subtask 6.5: Verify Changes Were Applied
+Verify that the changes were successfully applied:
+
+# Check bucket encryption
+aws s3api get-bucket-encryption \
+  --bucket my-existing-bucket \
+  --endpoint-url=$AWS_ENDPOINT_URL
+
+# Check public access block
+aws s3api get-public-access-block \
+  --bucket my-existing-bucket \
+  --endpoint-url=$AWS_ENDPOINT_URL
+
+# View Terraform outputs
+terraform output
+Task 7: Advanced Import Scenarios
+Subtask 7.1: Create Additional Resources to Import
+Create more AWS resources to practice importing:
+
+# Create another S3 bucket with different configuration
+aws s3 mb s3://another-existing-bucket --endpoint-url=$AWS_ENDPOINT_URL
+
+# Create a bucket policy
+cat > bucket-policy.json << 'EOF'
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyInsecureConnections",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:*",
+      "Resource": [
+        "arn:aws:s3:::another-existing-bucket",
+        "arn:aws:s3:::another-existing-bucket/*"
+      ],
+      "Condition": {
+        "Bool": {
+          "aws:SecureTransport": "false"
+        }
+      }
+    }
+  ]
+}
+EOF
+
+# Apply bucket policy
+aws s3api put-bucket-policy \
+  --bucket another-existing-bucket \
+  --policy file://bucket-policy.json \
+  --endpoint-url=$AWS_ENDPOINT_URL
+Subtask 7.2: Import Multiple Resources
+Add configuration for the new bucket and import it:
+
+cat >> s3-bucket.tf << 'EOF'
+
+resource "aws_s3_bucket" "second_imported_bucket" {
+  bucket = "another-existing-bucket"
+
+  tags = {
+    Environment = "lab"
+    Purpose     = "advanced-import-demo"
+    ManagedBy   = "terraform"
+  }
+}
+
+resource "aws_s3_bucket_policy" "second_bucket_policy" {
+  bucket = aws_s3_bucket.second_imported_bucket.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "DenyInsecureConnections"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:*"
+        Resource = [
+          aws_s3_bucket.second_imported_bucket.arn,
+          "${aws_s3_bucket.second_imported_bucket.arn}/*"
+        ]
+        Condition = {
+          Bool = {
+            "aws:SecureTransport" = "false"
+          }
+        }
+      }
+    ]
+  })
+}
+EOF
+Import the new resources:
+
+# Import the second bucket
+terraform import aws_s3_bucket.second_imported_bucket another-existing-bucket
+
+# Import the bucket policy
+terraform import aws_s3_bucket_policy.second_bucket_policy another-existing-bucket
+
+# Verify imports
+terraform state list
+Subtask 7.3: Handle Import Conflicts
+Sometimes imports may have conflicts. Let's simulate and resolve one:
+
+# Plan to see if there are any conflicts
+terraform plan
+
+# If there are conflicts, you might need to adjust the configuration
+# Apply the changes
+terraform apply
+Task 8: State Management and Troubleshooting
+Subtask 8.1: Examine Terraform State
+Learn to inspect and manage Terraform state:
+
+# List all resources in state
+terraform state list
+
+# Show detailed information about a specific resource
+terraform state show aws_s3_bucket.imported_bucket
+
+# Get state in JSON format
+terraform show -json > terraform-state.json
+
+# View the JSON state (first 50 lines)
+head -50 terraform-state.json
+Subtask 8.2: State Backup and Recovery
+Understand state backup mechanisms:
+
+# Create a manual backup of state
+cp terraform.tfstate terraform.tfstate.backup
+
+# List state backups
+ls -la terraform.tfstate*
+
+# Show state file size and modification time
+stat terraform.tfstate
+Subtask 8.3: Remove Resources from State (Without Destroying)
+Learn to remove resources from state without destroying them:
+
+# Remove a resource from state (this doesn't destroy the actual resource)
+terraform state rm aws_s3_bucket_public_access_block.imported_bucket_pab
+
+# Verify removal
+terraform state list
+
+# Check that the resource still exists in AWS
+aws s3api get-public-access-block \
+  --bucket my-existing-bucket \
+  --endpoint-url=$AWS_ENDPOINT_URL
+Subtask 8.4: Re-import Removed Resource
+Re-import the resource you just removed:
+
+# Re-import the public access block
+terraform import aws_s3_bucket_public_access_block.imported_bucket_pab my-existing-bucket
+
+# Verify it's back in state
+terraform state list
+Task 9: Best Practices and Cleanup
+Subtask 9.1: Document Your Import Process
+Create documentation for your import process:
+
+cat > IMPORT_PROCESS.md << 'EOF'
+# Terraform Import Process Documentation
+
+## Resources Imported
+1. aws_s3_bucket.imported_bucket (my-existing-bucket)
+2. aws_s3_bucket_versioning.imported_bucket_versioning
+3. aws_s3_bucket_server_side_encryption_configuration.imported_bucket_encryption
+4. aws_s3_bucket_public_access_block.imported_bucket_pab
+5. aws_s3_bucket.second_imported_bucket (another-existing-bucket)
+6. aws_s3_bucket_policy.second_bucket_policy
+
+## Import Commands Used
+```bash
+terraform import aws_s3_bucket.imported_bucket my-existing-bucket
+terraform import aws_s3_bucket_versioning.imported_bucket_versioning my-existing-bucket
+terraform import aws_s3_bucket.second_imported_bucket another-existing-bucket
+terraform import aws_s3_bucket_policy.second_bucket_policy another-existing-bucket
+Configuration Changes Made
+Added tags to all buckets
+Enabled server-side encryption
+Configured public access blocks
+Added bucket policy for secure transport
+Lessons Learned
+Always create resource configuration before importing
+Verify configuration matches actual resource state
+Test changes in non-production environment first
+Keep detailed documentation of import process EOF
+
+### Subtask 9.2: Validate Final Configuration
+
+Perform final validation of your Terraform configuration:
+
+```bash
+# Validate configuration syntax
+terraform validate
+
+# Format configuration files
+terraform fmt
+
+# Run final plan to ensure no unexpected changes
+terraform plan
+
+# Generate and review dependency graph
+terraform graph > dependency-graph.dot
+Subtask 9.3: Create Destroy Plan (Optional)
+Create a destroy plan to understand what would be removed:
+
+# Create destroy plan
+terraform plan -destroy -out=destroy.tfplan
+
+# Review destroy plan
+terraform show destroy.tfplan
+Subtask 9.4: Clean Up Resources
+Clean up the lab environment:
+
+# Destroy Terraform-managed resources
+terraform destroy
+
+# Stop LocalStack
+localstack stop
+
+# Remove project files (optional)
+cd ..
+rm -rf terraform-import-lab
+
+# Remove installed packages (optional)
+# sudo apt remove -y localstack terraform awscli
+Troubleshooting Common Issues
+Issue 1: Import Command Fails
+Problem: terraform import command returns an error.
+
+Solution:
+
+# Check if resource exists
+aws s3 ls --endpoint-url=$AWS_ENDPOINT_URL
+
+# Verify resource configuration syntax
+terraform validate
+
+# Check provider configuration
+terraform providers
+Issue 2: Configuration Doesn't Match Imported Resource
+Problem: terraform plan shows unexpected changes after import.
+
+Solution:
+
+# Get actual resource configuration
+aws s3api get-bucket-versioning --bucket my-existing-bucket --endpoint-url=$AWS_ENDPOINT_URL
+
+# Update Terraform configuration to match
+# Run terraform plan again to verify
+Issue 3: State File Corruption
+Problem: Terraform state file becomes corrupted.
+
+Solution:
+
+# Restore from backup
+cp terraform.tfstate.backup terraform.tfstate
+
+# Or refresh state from actual resources
+terraform refresh
+Issue 4: LocalStack Connection Issues
+Problem: Cannot connect to LocalStack services.
+
+Solution:
+
+# Check LocalStack status
+localstack status
+
+# Restart LocalStack if needed
+localstack stop
+localstack start -d
+
+# Verify endpoint connectivity
+curl http://localhost:4566/health
+Key Concepts Summary
+Terraform Import Process
+Resource Identification: Identify existing resources to import
+Configuration Creation: Write Terraform configuration matching existing resources
+Import Execution: Use terraform import command with correct resource identifiers
+State Verification: Verify resources are properly imported into state
+Configuration Alignment: Ensure configuration matches actual resource state
+Change Management: Apply any desired changes through Terraform
+Important Commands
+terraform import <resource_type>.<resource_name> <resource_id>
+terraform state list
+terraform state show <resource>
+terraform state rm <resource>
+terraform plan
+terraform apply
+Best Practices
+Always backup state before importing
+Create configuration before importing
+Test imports in non-production environments
+Document the import process
+Verify configuration matches actual resources
+Use consistent naming conventions
+Conclusion
+In this lab, you have successfully learned how to handle imports in Terraform by:
+
+Setting up a complete Terraform environment with LocalStack for AWS simulation
+Creating existing AWS resources outside of Terraform management
+Importing existing resources into Terraform state using the terraform import command
+Modifying imported resources through Terraform configuration and applying changes
+Managing Terraform state and troubleshooting common import issues
+Implementing best practices for resource imports and state management
+This knowledge is crucial for real-world scenarios where you need to bring existing infrastructure under Terraform management. The import functionality allows you to gradually adopt Infrastructure as Code practices without recreating existing resources, making it an essential skill for DevOps engineers and cloud architects.
+
+The hands-on experience with LocalStack also demonstrates how you can test Terraform configurations locally before applying them to actual cloud resources, which is invaluable for development and testing workflows
