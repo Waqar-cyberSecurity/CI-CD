@@ -1,0 +1,687 @@
+Lab 8: Docker Registry Integration
+Lab Objectives
+By the end of this lab, students will be able to:
+
+Create and configure a Docker Hub account for public image storage
+Push custom Docker images to Docker Hub registry
+Pull images from Docker Hub to local environments
+Set up and configure a local private Docker registry
+Push and pull images to/from a private registry
+Understand the differences between public and private registries
+Implement basic registry authentication and security practices
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of Docker containers and images
+Familiarity with Linux command line operations
+Knowledge of Docker image creation using Dockerfiles
+Understanding of basic networking concepts
+Experience with text editors (nano, vim, or similar)
+Lab Environment Setup
+Note: Al Nafi provides Linux-based cloud machines for this lab. Simply click "Start Lab" to access your dedicated Linux environment. The provided machine is bare metal with no pre-installed tools, so you will install all required software during the lab exercises.
+
+Task 1: Environment Preparation and Docker Installation
+Subtask 1.1: Update System and Install Docker
+First, we need to prepare our Linux environment and install Docker.
+
+# Update the package repository
+sudo apt update
+
+# Install required packages for Docker installation
+sudo apt install -y apt-transport-https ca-certificates curl gnupg lsb-release
+
+# Add Docker's official GPG key
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+
+# Add Docker repository
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# Update package repository again
+sudo apt update
+
+# Install Docker Engine
+sudo apt install -y docker-ce docker-ce-cli containerd.io
+
+# Add current user to docker group
+sudo usermod -aG docker $USER
+
+# Start and enable Docker service
+sudo systemctl start docker
+sudo systemctl enable docker
+Subtask 1.2: Verify Docker Installation
+# Log out and log back in, or use newgrp to apply group changes
+newgrp docker
+
+# Verify Docker installation
+docker --version
+
+# Test Docker with hello-world image
+docker run hello-world
+Subtask 1.3: Create a Sample Application
+Let's create a simple web application that we'll use throughout this lab.
+
+# Create a working directory
+mkdir ~/docker-registry-lab
+cd ~/docker-registry-lab
+
+# Create a simple HTML file
+cat > index.html << 'EOF'
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Docker Registry Lab</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; background-color: #f0f0f0; }
+        .container { background-color: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1 { color: #2196F3; }
+        .info { background-color: #e3f2fd; padding: 15px; border-radius: 5px; margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Welcome to Docker Registry Lab</h1>
+        <div class="info">
+            <p><strong>Lab:</strong> Docker Registry Integration</p>
+            <p><strong>Version:</strong> 1.0</p>
+            <p><strong>Status:</strong> Running in Container</p>
+        </div>
+        <p>This application demonstrates Docker registry integration capabilities.</p>
+    </div>
+</body>
+</html>
+EOF
+
+# Create a Dockerfile
+cat > Dockerfile << 'EOF'
+FROM nginx:alpine
+COPY index.html /usr/share/nginx/html/index.html
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
+EOF
+Subtask 1.4: Build the Sample Image
+# Build the Docker image
+docker build -t registry-lab-app:v1.0 .
+
+# Verify the image was created
+docker images
+
+# Test the application locally
+docker run -d -p 8080:80 --name test-app registry-lab-app:v1.0
+
+# Check if the application is running
+curl http://localhost:8080
+
+# Stop and remove the test container
+docker stop test-app
+docker rm test-app
+Task 2: Docker Hub Integration
+Subtask 2.1: Create Docker Hub Account
+Note: This step requires internet access and a web browser. If you don't have access to a browser from your lab environment, you can create the account from any device with internet access.
+
+Open a web browser and navigate to https://hub.docker.com
+Click on "Sign Up" button
+Fill in the required information:
+Username: Choose a unique username (remember this for later steps)
+Email: Provide a valid email address
+Password: Create a strong password
+Verify your email address if required
+Complete the account setup process
+Subtask 2.2: Login to Docker Hub from Command Line
+# Login to Docker Hub
+docker login
+
+# Enter your Docker Hub username and password when prompted
+# You should see "Login Succeeded" message
+Subtask 2.3: Tag Image for Docker Hub
+Before pushing to Docker Hub, we need to tag our image with the proper naming convention.
+
+# Tag the image for Docker Hub (replace 'yourusername' with your actual Docker Hub username)
+docker tag registry-lab-app:v1.0 yourusername/registry-lab-app:v1.0
+docker tag registry-lab-app:v1.0 yourusername/registry-lab-app:latest
+
+# Verify the tags
+docker images | grep registry-lab-app
+Subtask 2.4: Push Image to Docker Hub
+# Push the tagged image to Docker Hub
+docker push yourusername/registry-lab-app:v1.0
+docker push yourusername/registry-lab-app:latest
+
+# The push process will show progress for each layer
+Subtask 2.5: Verify Push and Pull from Docker Hub
+# Remove local images to test pulling
+docker rmi yourusername/registry-lab-app:v1.0
+docker rmi yourusername/registry-lab-app:latest
+docker rmi registry-lab-app:v1.0
+
+# Verify images are removed
+docker images
+
+# Pull the image from Docker Hub
+docker pull yourusername/registry-lab-app:latest
+
+# Verify the pull was successful
+docker images
+
+# Test the pulled image
+docker run -d -p 8080:80 --name hub-test yourusername/registry-lab-app:latest
+curl http://localhost:8080
+
+# Clean up
+docker stop hub-test
+docker rm hub-test
+Task 3: Setting Up a Local Private Registry
+Subtask 3.1: Install and Configure Private Registry
+# Create directories for registry data and configuration
+mkdir -p ~/registry-data
+mkdir -p ~/registry-config
+
+# Create registry configuration file
+cat > ~/registry-config/config.yml << 'EOF'
+version: 0.1
+log:
+  fields:
+    service: registry
+storage:
+  cache:
+    blobdescriptor: inmemory
+  filesystem:
+    rootdirectory: /var/lib/registry
+http:
+  addr: :5000
+  headers:
+    X-Content-Type-Options: [nosniff]
+health:
+  storagedriver:
+    enabled: true
+    interval: 10s
+    threshold: 3
+EOF
+Subtask 3.2: Start Private Registry Container
+# Run the private registry container
+docker run -d \
+  -p 5000:5000 \
+  --name local-registry \
+  --restart=always \
+  -v ~/registry-data:/var/lib/registry \
+  -v ~/registry-config/config.yml:/etc/docker/registry/config.yml \
+  registry:2
+
+# Verify the registry is running
+docker ps
+
+# Check registry health
+curl http://localhost:5000/v2/
+Subtask 3.3: Configure Docker for Insecure Registry
+Since our local registry doesn't have SSL certificates, we need to configure Docker to allow insecure connections.
+
+# Create or modify Docker daemon configuration
+sudo mkdir -p /etc/docker
+
+# Create daemon.json file
+sudo tee /etc/docker/daemon.json << 'EOF'
+{
+  "insecure-registries": ["localhost:5000", "127.0.0.1:5000"]
+}
+EOF
+
+# Restart Docker daemon
+sudo systemctl restart docker
+
+# Wait for Docker to restart
+sleep 10
+
+# Restart our registry container
+docker start local-registry
+
+# Verify configuration
+docker info | grep -A 5 "Insecure Registries"
+Task 4: Working with Private Registry
+Subtask 4.1: Tag Image for Private Registry
+# Tag the image for our private registry
+docker tag yourusername/registry-lab-app:latest localhost:5000/registry-lab-app:v1.0
+docker tag yourusername/registry-lab-app:latest localhost:5000/registry-lab-app:latest
+
+# Verify the tags
+docker images | grep registry-lab-app
+Subtask 4.2: Push Image to Private Registry
+# Push to private registry
+docker push localhost:5000/registry-lab-app:v1.0
+docker push localhost:5000/registry-lab-app:latest
+
+# Verify the push was successful by checking registry catalog
+curl http://localhost:5000/v2/_catalog
+
+# Check specific image tags
+curl http://localhost:5000/v2/registry-lab-app/tags/list
+Subtask 4.3: Pull from Private Registry
+# Remove local images to test private registry pull
+docker rmi localhost:5000/registry-lab-app:v1.0
+docker rmi localhost:5000/registry-lab-app:latest
+
+# Pull from private registry
+docker pull localhost:5000/registry-lab-app:latest
+
+# Verify the pull
+docker images
+
+# Test the image from private registry
+docker run -d -p 8081:80 --name private-test localhost:5000/registry-lab-app:latest
+curl http://localhost:8081
+
+# Clean up
+docker stop private-test
+docker rm private-test
+Subtask 4.4: Create Additional Images for Registry Testing
+Let's create a few more images to better understand registry operations.
+
+# Create a second version of our application
+cat > index-v2.html << 'EOF'
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Docker Registry Lab - Version 2</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; background-color: #e8f5e8; }
+        .container { background-color: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1 { color: #4CAF50; }
+        .info { background-color: #f1f8e9; padding: 15px; border-radius: 5px; margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Welcome to Docker Registry Lab - Version 2.0</h1>
+        <div class="info">
+            <p><strong>Lab:</strong> Docker Registry Integration</p>
+            <p><strong>Version:</strong> 2.0</p>
+            <p><strong>Status:</strong> Running in Container</p>
+            <p><strong>Registry:</strong> Private Registry</p>
+        </div>
+        <p>This is version 2.0 of our application, demonstrating version management in registries.</p>
+    </div>
+</body>
+</html>
+EOF
+
+# Create Dockerfile for version 2
+cat > Dockerfile-v2 << 'EOF'
+FROM nginx:alpine
+COPY index-v2.html /usr/share/nginx/html/index.html
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
+EOF
+
+# Build version 2
+docker build -f Dockerfile-v2 -t registry-lab-app:v2.0 .
+
+# Tag for both registries
+docker tag registry-lab-app:v2.0 yourusername/registry-lab-app:v2.0
+docker tag registry-lab-app:v2.0 localhost:5000/registry-lab-app:v2.0
+
+# Push to both registries
+docker push yourusername/registry-lab-app:v2.0
+docker push localhost:5000/registry-lab-app:v2.0
+Subtask 4.5: Registry Management and Inspection
+# List all repositories in private registry
+curl http://localhost:5000/v2/_catalog | python3 -m json.tool
+
+# List tags for our application
+curl http://localhost:5000/v2/registry-lab-app/tags/list | python3 -m json.tool
+
+# Get image manifest
+curl -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+  http://localhost:5000/v2/registry-lab-app/manifests/v2.0 | python3 -m json.tool
+
+# Check registry storage usage
+du -sh ~/registry-data
+
+# List files in registry storage
+find ~/registry-data -type f | head -10
+Task 5: Advanced Registry Operations
+Subtask 5.1: Registry Authentication Setup
+Let's add basic authentication to our private registry.
+
+# Stop the current registry
+docker stop local-registry
+docker rm local-registry
+
+# Install htpasswd utility
+sudo apt install -y apache2-utils
+
+# Create authentication directory
+mkdir -p ~/registry-auth
+
+# Create a user for registry access
+htpasswd -Bbn registryuser registrypass > ~/registry-auth/htpasswd
+
+# Verify the auth file
+cat ~/registry-auth/htpasswd
+Subtask 5.2: Start Authenticated Registry
+# Start registry with authentication
+docker run -d \
+  -p 5000:5000 \
+  --name secure-registry \
+  --restart=always \
+  -v ~/registry-data:/var/lib/registry \
+  -v ~/registry-auth:/auth \
+  -e "REGISTRY_AUTH=htpasswd" \
+  -e "REGISTRY_AUTH_HTPASSWD_REALM=Registry Realm" \
+  -e "REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd" \
+  registry:2
+
+# Verify registry is running
+docker ps
+
+# Test unauthenticated access (should fail)
+curl http://localhost:5000/v2/_catalog
+Subtask 5.3: Authenticate with Private Registry
+# Login to private registry
+docker login localhost:5000
+
+# Enter credentials:
+# Username: registryuser
+# Password: registrypass
+
+# Test authenticated access
+curl -u registryuser:registrypass http://localhost:5000/v2/_catalog
+
+# Push image to authenticated registry
+docker push localhost:5000/registry-lab-app:v2.0
+
+# Verify push
+curl -u registryuser:registrypass http://localhost:5000/v2/registry-lab-app/tags/list
+Subtask 5.4: Registry Cleanup and Maintenance
+# Create a script for registry maintenance
+cat > registry-cleanup.sh << 'EOF'
+#!/bin/bash
+
+echo "Registry Maintenance Script"
+echo "=========================="
+
+# Show registry catalog
+echo "Current repositories:"
+curl -s -u registryuser:registrypass http://localhost:5000/v2/_catalog | python3 -m json.tool
+
+# Show storage usage
+echo -e "\nStorage usage:"
+du -sh ~/registry-data
+
+# Show number of images
+echo -e "\nLocal images:"
+docker images | grep -E "(registry-lab-app|localhost:5000)" | wc -l
+
+echo -e "\nMaintenance complete!"
+EOF
+
+# Make script executable
+chmod +x registry-cleanup.sh
+
+# Run maintenance script
+./registry-cleanup.sh
+Task 6: Registry Comparison and Best Practices
+Subtask 6.1: Compare Registry Performance
+# Create a performance test script
+cat > registry-performance.sh << 'EOF'
+#!/bin/bash
+
+echo "Registry Performance Comparison"
+echo "==============================="
+
+# Test Docker Hub push/pull time
+echo "Testing Docker Hub..."
+time_start=$(date +%s)
+docker pull yourusername/registry-lab-app:v1.0 > /dev/null 2>&1
+time_end=$(date +%s)
+dockerhub_time=$((time_end - time_start))
+echo "Docker Hub pull time: ${dockerhub_time} seconds"
+
+# Test private registry push/pull time
+echo "Testing Private Registry..."
+time_start=$(date +%s)
+docker pull localhost:5000/registry-lab-app:v1.0 > /dev/null 2>&1
+time_end=$(date +%s)
+private_time=$((time_end - time_start))
+echo "Private Registry pull time: ${private_time} seconds"
+
+echo "Performance comparison complete!"
+EOF
+
+chmod +x registry-performance.sh
+./registry-performance.sh
+Subtask 6.2: Registry Security Best Practices
+# Create a security checklist script
+cat > registry-security-check.sh << 'EOF'
+#!/bin/bash
+
+echo "Registry Security Checklist"
+echo "=========================="
+
+# Check if registry is using authentication
+echo "1. Authentication Status:"
+if docker exec secure-registry env | grep -q "REGISTRY_AUTH"; then
+    echo "   ✓ Authentication is enabled"
+else
+    echo "   ✗ Authentication is not enabled"
+fi
+
+# Check if registry is accessible externally
+echo "2. Network Access:"
+if netstat -tlnp | grep -q ":5000.*0.0.0.0"; then
+    echo "   ⚠ Registry is accessible from all interfaces"
+else
+    echo "   ✓ Registry access is restricted"
+fi
+
+# Check registry logs for security events
+echo "3. Recent Registry Activity:"
+docker logs secure-registry --tail 5
+
+echo "Security check complete!"
+EOF
+
+chmod +x registry-security-check.sh
+./registry-security-check.sh
+Task 7: Troubleshooting and Monitoring
+Subtask 7.1: Common Issues and Solutions
+# Create troubleshooting script
+cat > registry-troubleshoot.sh << 'EOF'
+#!/bin/bash
+
+echo "Registry Troubleshooting Guide"
+echo "============================="
+
+# Check Docker daemon status
+echo "1. Docker Service Status:"
+systemctl is-active docker
+
+# Check registry container status
+echo "2. Registry Container Status:"
+docker ps | grep registry || echo "No registry containers running"
+
+# Check registry connectivity
+echo "3. Registry Connectivity:"
+if curl -s http://localhost:5000/v2/ > /dev/null; then
+    echo "   ✓ Registry is accessible"
+else
+    echo "   ✗ Registry is not accessible"
+fi
+
+# Check disk space
+echo "4. Disk Space:"
+df -h ~/registry-data
+
+# Check registry logs for errors
+echo "5. Recent Registry Logs:"
+if docker ps | grep -q secure-registry; then
+    docker logs secure-registry --tail 10 | grep -i error || echo "   No errors found"
+else
+    echo "   Registry container not running"
+fi
+
+echo "Troubleshooting complete!"
+EOF
+
+chmod +x registry-troubleshoot.sh
+./registry-troubleshoot.sh
+Subtask 7.2: Registry Monitoring Setup
+# Create monitoring script
+cat > registry-monitor.sh << 'EOF'
+#!/bin/bash
+
+echo "Registry Monitoring Dashboard"
+echo "============================"
+
+# Function to get registry stats
+get_registry_stats() {
+    local registry_url=$1
+    local auth=$2
+    
+    if [ -n "$auth" ]; then
+        repos=$(curl -s -u $auth $registry_url/v2/_catalog | python3 -c "import sys, json; print(len(json.load(sys.stdin)['repositories']))" 2>/dev/null || echo "0")
+    else
+        repos=$(curl -s $registry_url/v2/_catalog | python3 -c "import sys, json; print(len(json.load(sys.stdin)['repositories']))" 2>/dev/null || echo "0")
+    fi
+    echo $repos
+}
+
+# Monitor Docker Hub usage
+echo "Docker Hub Images: $(docker images | grep yourusername | wc -l)"
+
+# Monitor private registry
+echo "Private Registry Repositories: $(get_registry_stats http://localhost:5000 registryuser:registrypass)"
+
+# Monitor system resources
+echo "System Resources:"
+echo "  Memory Usage: $(free -h | awk '/^Mem:/ {print $3 "/" $2}')"
+echo "  Disk Usage: $(df -h ~/registry-data | awk 'NR==2 {print $3 "/" $2 " (" $5 ")"}')"
+
+# Monitor Docker daemon
+echo "Docker Status: $(systemctl is-active docker)"
+
+# Monitor registry containers
+echo "Registry Containers:"
+docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep registry
+
+echo "Monitoring complete!"
+EOF
+
+chmod +x registry-monitor.sh
+./registry-monitor.sh
+Task 8: Lab Cleanup and Summary
+Subtask 8.1: Create Lab Summary Report
+# Create final lab report
+cat > lab-summary-report.sh << 'EOF'
+#!/bin/bash
+
+echo "Docker Registry Integration Lab - Summary Report"
+echo "=============================================="
+echo "Date: $(date)"
+echo ""
+
+echo "1. DOCKER HUB INTEGRATION"
+echo "   - Account created and configured"
+echo "   - Images pushed: $(docker search yourusername/registry-lab-app 2>/dev/null | wc -l || echo "Check manually")"
+echo "   - Authentication: Configured"
+echo ""
+
+echo "2. PRIVATE REGISTRY SETUP"
+echo "   - Registry Status: $(docker ps | grep secure-registry > /dev/null && echo "Running" || echo "Stopped")"
+echo "   - Authentication: Enabled"
+echo "   - Storage Location: ~/registry-data"
+echo "   - Storage Usage: $(du -sh ~/registry-data | cut -f1)"
+echo ""
+
+echo "3. IMAGES CREATED AND MANAGED"
+docker images | grep -E "(registry-lab-app|localhost:5000)" | while read line; do
+    echo "   - $line"
+done
+echo ""
+
+echo "4. REGISTRY OPERATIONS COMPLETED"
+echo "   ✓ Docker Hub account creation"
+echo "   ✓ Image pushing to Docker Hub"
+echo "   ✓ Image pulling from Docker Hub"
+echo "   ✓ Private registry setup"
+echo "   ✓ Private registry authentication"
+echo "   ✓ Image versioning and tagging"
+echo "   ✓ Registry monitoring and troubleshooting"
+echo ""
+
+echo "5. SKILLS DEMONSTRATED"
+echo "   - Registry integration and management"
+echo "   - Image lifecycle management"
+echo "   - Authentication and security configuration"
+echo "   - Performance monitoring and troubleshooting"
+echo "   - Best practices implementation"
+
+echo ""
+echo "Lab completed successfully!"
+EOF
+
+chmod +x lab-summary-report.sh
+./lab-summary-report.sh
+Subtask 8.2: Optional Cleanup
+# Create cleanup script (run only if you want to remove everything)
+cat > cleanup-lab.sh << 'EOF'
+#!/bin/bash
+
+echo "Docker Registry Lab Cleanup"
+echo "=========================="
+
+read -p "Are you sure you want to clean up all lab resources? (y/N): " confirm
+if [[ $confirm != [yY] ]]; then
+    echo "Cleanup cancelled."
+    exit 0
+fi
+
+# Stop and remove containers
+echo "Stopping containers..."
+docker stop secure-registry 2>/dev/null
+docker rm secure-registry 2>/dev/null
+
+# Remove images (keep Docker Hub images for reference)
+echo "Removing local images..."
+docker rmi localhost:5000/registry-lab-app:v1.0 2>/dev/null
+docker rmi localhost:5000/registry-lab-app:v2.0 2>/dev/null
+docker rmi localhost:5000/registry-lab-app:latest 2>/dev/null
+docker rmi registry-lab-app:v1.0 2>/dev/null
+docker rmi registry-lab-app:v2.0 2>/dev/null
+
+# Remove registry data (optional)
+read -p "Remove registry data directory? (y/N): " remove_data
+if [[ $remove_data == [yY] ]]; then
+    rm -rf ~/registry-data
+    rm -rf ~/registry-auth
+    rm -rf ~/registry-config
+fi
+
+echo "Cleanup completed!"
+EOF
+
+chmod +x cleanup-lab.sh
+
+# Note: Don't run this automatically - let students decide
+echo "Cleanup script created. Run './cleanup-lab.sh' if you want to remove lab resources."
+Conclusion
+Congratulations! You have successfully completed the Docker Registry Integration lab. Throughout this comprehensive exercise, you have accomplished the following key objectives:
+
+Technical Skills Mastered:
+
+Docker Hub Integration: You created a Docker Hub account, learned proper image tagging conventions, and successfully pushed and pulled images to/from the public registry
+Private Registry Management: You set up a local private Docker registry, configured it with authentication, and managed image storage locally
+Image Lifecycle Management: You created multiple versions of applications, managed image tags, and understood version control in registry environments
+Security Implementation: You configured registry authentication, implemented security best practices, and learned about access control mechanisms
+Monitoring and Troubleshooting: You developed skills in registry monitoring, performance analysis, and troubleshooting common registry issues
+Real-World Applications: This lab simulates enterprise-level container management scenarios where organizations need both public and private registry solutions. The skills you've developed are directly applicable to:
+
+DevOps Pipelines: Integrating registries into CI/CD workflows
+Enterprise Container Management: Managing private container repositories for proprietary applications
+Multi-Environment Deployments: Using different registries for development, staging, and production environments
+Security Compliance: Implementing secure container distribution practices
+Key Takeaways:
+
+Docker registries are essential for container distribution and management
+Public registries like Docker Hub are excellent for open-source projects and learning
+Private registries provide security and control for enterprise applications
+Proper authentication and monitoring are crucial for production registry deployments
+Image versioning and tagging strategies are fundamental to effective container management
+The hands-on experience gained in this lab provides a solid foundation for advanced container orchestration topics and prepares you for real-world Docker registry management challenges. You now have the practical knowledge to implement registry solutions in professional development environments.
