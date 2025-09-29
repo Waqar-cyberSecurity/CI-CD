@@ -1,0 +1,338 @@
+Lab 2: Docker Architecture Overview
+Lab Objectives
+By the end of this lab, students will be able to:
+
+Understand the core components of Docker architecture including Docker Daemon and Docker CLI
+Differentiate between interactive and detached container execution modes
+Execute container lifecycle management commands effectively
+Analyze the relationship between Docker client and server components
+Manage container states using start, stop, and exec commands
+Demonstrate practical knowledge of Docker's client-server architecture
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of Linux command line operations
+Familiarity with terminal/command prompt usage
+Basic knowledge of containerization concepts
+Understanding of process management in Linux
+Lab Environment Setup
+Note: Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated Linux machine. The provided machine is bare metal with no pre-installed tools, so you will install Docker during the lab exercises.
+
+Task 1: Install and Explore Docker Architecture Components
+Subtask 1.1: Install Docker on Linux Machine
+First, we need to install Docker on our Linux machine.
+
+# Update package index
+sudo apt update
+
+# Install required packages
+sudo apt install -y apt-transport-https ca-certificates curl gnupg lsb-release
+
+# Add Docker's official GPG key
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+
+# Set up the stable repository
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# Update package index again
+sudo apt update
+
+# Install Docker Engine
+sudo apt install -y docker-ce docker-ce-cli containerd.io
+
+# Add current user to docker group to run docker without sudo
+sudo usermod -aG docker $USER
+
+# Apply group changes
+newgrp docker
+Subtask 1.2: Verify Docker Installation and Architecture
+Verify that Docker is installed correctly and explore its architecture:
+
+# Check Docker version
+docker --version
+
+# Display detailed Docker system information
+docker system info
+
+# Check Docker service status
+sudo systemctl status docker
+
+# View Docker daemon process
+ps aux | grep dockerd
+Subtask 1.3: Explore Docker Daemon (dockerd)
+The Docker daemon is the persistent process that manages Docker containers.
+
+# Check if Docker daemon is running
+sudo systemctl is-active docker
+
+# View Docker daemon logs
+sudo journalctl -u docker.service --no-pager | tail -20
+
+# Check Docker daemon configuration
+sudo cat /etc/docker/daemon.json 2>/dev/null || echo "Default daemon configuration in use"
+
+# View Docker daemon socket
+ls -la /var/run/docker.sock
+Subtask 1.4: Explore Docker CLI (docker)
+The Docker CLI is the primary interface for interacting with Docker.
+
+# Display Docker CLI help
+docker --help
+
+# List available Docker commands
+docker help
+
+# Check Docker client configuration
+docker version --format '{{.Client.Version}}'
+
+# Display Docker CLI configuration location
+echo $HOME/.docker
+Task 2: Run Docker Containers in Different Modes
+Subtask 2.1: Run Container in Interactive Mode
+Interactive mode allows you to interact with the container directly through the terminal.
+
+# Pull Ubuntu image
+docker pull ubuntu:latest
+
+# Run container in interactive mode
+docker run -it ubuntu:latest /bin/bash
+Once inside the container, execute these commands:
+
+# Check current user
+whoami
+
+# Check operating system
+cat /etc/os-release
+
+# List running processes
+ps aux
+
+# Create a test file
+echo "Hello from interactive container" > /tmp/test.txt
+
+# Read the file
+cat /tmp/test.txt
+
+# Exit the container
+exit
+Subtask 2.2: Run Container in Detached Mode
+Detached mode runs containers in the background.
+
+# Run nginx container in detached mode
+docker run -d --name web-server -p 8080:80 nginx:latest
+
+# Verify container is running
+docker ps
+
+# Check container logs
+docker logs web-server
+
+# Test the web server
+curl http://localhost:8080
+Subtask 2.3: Compare Interactive vs Detached Modes
+# Run another interactive container (in a new terminal if needed)
+docker run -it --name interactive-test ubuntu:latest /bin/bash
+# Type 'exit' to leave
+
+# Run another detached container
+docker run -d --name detached-test nginx:latest
+
+# List all containers (running and stopped)
+docker ps -a
+
+# Compare the status of both containers
+docker ps --filter "name=interactive-test"
+docker ps --filter "name=detached-test"
+Task 3: Container Lifecycle Management Commands
+Subtask 3.1: Using docker start Command
+The docker start command starts stopped containers.
+
+# Create a container that exits immediately
+docker run --name lifecycle-test ubuntu:latest echo "Container created"
+
+# Check container status
+docker ps -a --filter "name=lifecycle-test"
+
+# Start the stopped container
+docker start lifecycle-test
+
+# Start container and attach to it
+docker start -a lifecycle-test
+
+# Start container in interactive mode
+docker run --name interactive-lifecycle -it ubuntu:latest /bin/bash
+# Exit the container by typing 'exit'
+
+# Restart the interactive container
+docker start -ai interactive-lifecycle
+# Exit again
+Subtask 3.2: Using docker exec Command
+The docker exec command runs commands in running containers.
+
+# Ensure nginx container is running
+docker start web-server
+
+# Execute command in running container
+docker exec web-server ls -la /usr/share/nginx/html
+
+# Execute interactive bash session in running container
+docker exec -it web-server /bin/bash
+Inside the nginx container, execute:
+
+# Check nginx processes
+ps aux | grep nginx
+
+# View nginx configuration
+cat /etc/nginx/nginx.conf | head -20
+
+# Create custom index page
+echo "<h1>Modified by docker exec</h1>" > /usr/share/nginx/html/index.html
+
+# Exit the container
+exit
+Verify the changes:
+
+# Test the modified web server
+curl http://localhost:8080
+Subtask 3.3: Using docker stop Command
+The docker stop command gracefully stops running containers.
+
+# List running containers
+docker ps
+
+# Stop the web server container
+docker stop web-server
+
+# Verify container is stopped
+docker ps
+docker ps -a --filter "name=web-server"
+
+# Stop multiple containers
+docker run -d --name test1 nginx:latest
+docker run -d --name test2 nginx:latest
+
+# Stop multiple containers at once
+docker stop test1 test2
+
+# Force stop a container (if needed)
+docker run -d --name force-test nginx:latest
+docker kill force-test
+Subtask 3.4: Complete Lifecycle Management Demonstration
+# Create a comprehensive lifecycle test
+docker run -d --name lifecycle-demo -p 9090:80 nginx:latest
+
+# Check initial status
+echo "=== Initial Status ==="
+docker ps --filter "name=lifecycle-demo"
+
+# Stop the container
+echo "=== Stopping Container ==="
+docker stop lifecycle-demo
+docker ps -a --filter "name=lifecycle-demo"
+
+# Start the container again
+echo "=== Starting Container ==="
+docker start lifecycle-demo
+docker ps --filter "name=lifecycle-demo"
+
+# Execute command in running container
+echo "=== Executing Command ==="
+docker exec lifecycle-demo nginx -t
+
+# View container logs
+echo "=== Container Logs ==="
+docker logs lifecycle-demo --tail 10
+
+# Final cleanup
+docker stop lifecycle-demo
+docker rm lifecycle-demo
+Task 4: Docker Architecture Analysis
+Subtask 4.1: Analyze Docker Client-Server Communication
+# Show Docker system events in real-time (run in background)
+docker events &
+EVENTS_PID=$!
+
+# Perform various Docker operations to generate events
+docker run --name event-test ubuntu:latest echo "Testing events"
+docker start event-test
+docker stop event-test
+docker rm event-test
+
+# Stop events monitoring
+kill $EVENTS_PID
+Subtask 4.2: Examine Docker API Communication
+# Check Docker API version
+docker version --format '{{.Server.APIVersion}}'
+
+# Display Docker system information in JSON format
+docker system info --format '{{json .}}'
+
+# Show Docker disk usage
+docker system df
+
+# Display detailed space usage
+docker system df -v
+Subtask 4.3: Container Resource Analysis
+# Run a container with resource monitoring
+docker run -d --name resource-test --memory=100m --cpus=0.5 nginx:latest
+
+# Monitor container resource usage
+docker stats resource-test --no-stream
+
+# Inspect container configuration
+docker inspect resource-test | grep -A 10 -B 10 "Memory\|Cpu"
+
+# Clean up
+docker stop resource-test
+docker rm resource-test
+Troubleshooting Common Issues
+Issue 1: Docker Daemon Not Running
+# Check daemon status
+sudo systemctl status docker
+
+# Start Docker daemon if stopped
+sudo systemctl start docker
+
+# Enable Docker to start on boot
+sudo systemctl enable docker
+Issue 2: Permission Denied Errors
+# Add user to docker group
+sudo usermod -aG docker $USER
+
+# Apply group changes
+newgrp docker
+
+# Verify group membership
+groups $USER
+Issue 3: Container Port Conflicts
+# Check which ports are in use
+netstat -tulpn | grep :8080
+
+# Use different port mapping
+docker run -d -p 8081:80 nginx:latest
+Lab Cleanup
+Clean up all resources created during this lab:
+
+# Stop all running containers
+docker stop $(docker ps -q) 2>/dev/null || echo "No running containers"
+
+# Remove all containers
+docker rm $(docker ps -aq) 2>/dev/null || echo "No containers to remove"
+
+# Remove unused images
+docker image prune -f
+
+# Display final system status
+docker system df
+Conclusion
+In this lab, you have successfully:
+
+Installed and configured Docker on a Linux machine from scratch
+Explored Docker architecture components including the Docker daemon (dockerd) and Docker CLI
+Demonstrated the difference between interactive and detached container modes, understanding when to use each approach
+Mastered container lifecycle management using docker start, docker exec, and docker stop commands
+Analyzed Docker's client-server architecture and how components communicate
+Gained hands-on experience with real-world container management scenarios
+This knowledge is fundamental for anyone working with containerized applications. Understanding Docker architecture enables you to troubleshoot issues, optimize container performance, and make informed decisions about container deployment strategies. The skills learned in this lab form the foundation for more advanced Docker topics such as container orchestration, networking, and production deployments.
+
+The practical experience gained through managing container lifecycles and understanding the underlying architecture will be invaluable as you progress to more complex containerization scenarios in enterprise environments.
