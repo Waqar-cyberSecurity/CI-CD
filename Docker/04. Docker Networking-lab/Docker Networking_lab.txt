@@ -1,0 +1,477 @@
+Lab 4: Docker Networking
+Learning Objectives
+By the end of this lab, students will be able to:
+
+Understand different Docker network types and their use cases
+Create and manage containers on bridge, host, and overlay networks
+Configure port mapping for external access to containerized applications
+Implement container-to-container communication using DNS-based resolution
+Troubleshoot common Docker networking issues
+Apply networking best practices for containerized applications
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of Linux command line operations
+Familiarity with Docker fundamentals (containers, images, basic commands)
+Knowledge of networking concepts (IP addresses, ports, DNS)
+Understanding of web applications and HTTP protocols
+Lab Environment Setup
+Al Nafi Cloud Machine: This lab uses Al Nafi's Linux-based cloud machines. Simply click Start Lab to access your dedicated Linux environment. The provided machine is bare metal with no pre-installed tools, so you will install Docker and other required tools during the lab.
+
+Important Note: All tasks in this lab will be performed on a single Linux machine. No additional machines or remote hosts are required.
+
+Task 1: Environment Preparation and Docker Installation
+Subtask 1.1: Install Docker
+First, we need to install Docker on our Linux machine.
+
+# Update the package index
+sudo apt update
+
+# Install required packages
+sudo apt install -y apt-transport-https ca-certificates curl gnupg lsb-release
+
+# Add Docker's official GPG key
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+
+# Add Docker repository
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# Update package index again
+sudo apt update
+
+# Install Docker Engine
+sudo apt install -y docker-ce docker-ce-cli containerd.io
+
+# Add current user to docker group
+sudo usermod -aG docker $USER
+
+# Start and enable Docker service
+sudo systemctl start docker
+sudo systemctl enable docker
+Subtask 1.2: Verify Docker Installation
+# Log out and log back in, or use newgrp to apply group changes
+newgrp docker
+
+# Verify Docker installation
+docker --version
+docker info
+
+# Test Docker with hello-world container
+docker run hello-world
+Subtask 1.3: Install Additional Tools
+# Install network utilities for testing
+sudo apt install -y net-tools curl wget
+
+# Install Docker Compose (for overlay network demonstration)
+sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+sudo chmod +x /usr/local/bin/docker-compose
+
+# Verify installation
+docker-compose --version
+Task 2: Exploring Docker Network Types
+Subtask 2.1: Understanding Default Networks
+Docker creates several default networks. Let's explore them:
+
+# List all Docker networks
+docker network ls
+
+# Inspect the default bridge network
+docker network inspect bridge
+
+# Check network configuration on the host
+ip addr show docker0
+Key Concept: The bridge network is Docker's default network driver. Containers on the same bridge network can communicate with each other using IP addresses.
+
+Subtask 2.2: Create Custom Bridge Network
+# Create a custom bridge network
+docker network create --driver bridge my-bridge-network
+
+# Inspect the custom network
+docker network inspect my-bridge-network
+
+# List networks to see the new network
+docker network ls
+Task 3: Working with Bridge Networks
+Subtask 3.1: Deploy Containers on Bridge Network
+Let's create a simple web application scenario with a web server and a database:
+
+# Create a custom bridge network for our application
+docker network create --driver bridge app-network
+
+# Run a MySQL database container
+docker run -d \
+  --name mysql-db \
+  --network app-network \
+  -e MYSQL_ROOT_PASSWORD=rootpassword \
+  -e MYSQL_DATABASE=testdb \
+  -e MYSQL_USER=testuser \
+  -e MYSQL_PASSWORD=testpass \
+  mysql:8.0
+
+# Run a simple web application (nginx) container
+docker run -d \
+  --name web-app \
+  --network app-network \
+  -p 8080:80 \
+  nginx:latest
+
+# Verify containers are running
+docker ps
+Subtask 3.2: Test Container-to-Container Communication
+# Test communication from web-app to mysql-db using container name
+docker exec -it web-app ping mysql-db
+
+# Install mysql client in the web-app container for testing
+docker exec -it web-app apt update
+docker exec -it web-app apt install -y mysql-client
+
+# Test database connection using DNS name
+docker exec -it web-app mysql -h mysql-db -u testuser -ptestpass -e "SHOW DATABASES;"
+Key Concept: Containers on the same custom bridge network can communicate using container names as hostnames through Docker's built-in DNS resolution.
+
+Subtask 3.3: Inspect Network Details
+# Check which containers are connected to the network
+docker network inspect app-network
+
+# View container network settings
+docker inspect web-app | grep -A 20 "NetworkSettings"
+
+# Check port mappings
+docker port web-app
+Task 4: Host Network Configuration
+Subtask 4.1: Deploy Container with Host Network
+The host network removes network isolation between the container and the Docker host.
+
+# Run a container using host network
+docker run -d \
+  --name host-web \
+  --network host \
+  nginx:latest
+
+# Check if the container is accessible directly on host ports
+curl http://localhost:80
+
+# Compare with bridge network container
+curl http://localhost:8080
+Subtask 4.2: Analyze Host Network Behavior
+# Inspect host network
+docker network inspect host
+
+# Check container processes and ports
+docker exec -it host-web netstat -tlnp
+
+# Compare with bridge network container
+docker exec -it web-app netstat -tlnp
+Important Note: In host network mode, the container shares the host's network stack. Port mapping (-p) is not needed and not allowed.
+
+Task 5: Overlay Network Setup
+Subtask 5.1: Initialize Docker Swarm
+Overlay networks require Docker Swarm mode:
+
+# Initialize Docker Swarm (single-node cluster)
+docker swarm init
+
+# Verify swarm status
+docker node ls
+
+# Check available networks (overlay networks will appear)
+docker network ls
+Subtask 5.2: Create Overlay Network
+# Create an overlay network
+docker network create \
+  --driver overlay \
+  --attachable \
+  my-overlay-network
+
+# Inspect the overlay network
+docker network inspect my-overlay-network
+
+# List all networks
+docker network ls
+Subtask 5.3: Deploy Services on Overlay Network
+# Create a service using the overlay network
+docker service create \
+  --name overlay-web \
+  --network my-overlay-network \
+  --publish 9090:80 \
+  --replicas 2 \
+  nginx:latest
+
+# Create another service for testing communication
+docker service create \
+  --name overlay-app \
+  --network my-overlay-network \
+  --replicas 1 \
+  alpine:latest \
+  sleep 3600
+
+# Check service status
+docker service ls
+docker service ps overlay-web
+docker service ps overlay-app
+Subtask 5.4: Test Overlay Network Communication
+# Get container IDs for overlay-app service
+CONTAINER_ID=$(docker ps --filter "name=overlay-app" --format "{{.ID}}")
+
+# Test communication between services using service names
+docker exec -it $CONTAINER_ID ping overlay-web
+
+# Install curl for HTTP testing
+docker exec -it $CONTAINER_ID apk add --no-cache curl
+
+# Test HTTP communication
+docker exec -it $CONTAINER_ID curl http://overlay-web:80
+Task 6: Port Exposure and External Access
+Subtask 6.1: Understanding Port Mapping
+# Create a simple web server with custom content
+mkdir -p /tmp/webdata
+echo "<h1>Hello from Docker Container!</h1><p>Container: $(hostname)</p>" > /tmp/webdata/index.html
+
+# Run container with port mapping
+docker run -d \
+  --name port-demo \
+  --network bridge \
+  -p 8081:80 \
+  -v /tmp/webdata:/usr/share/nginx/html \
+  nginx:latest
+
+# Test external access
+curl http://localhost:8081
+
+# Check port mapping details
+docker port port-demo
+netstat -tlnp | grep 8081
+Subtask 6.2: Multiple Port Mappings
+# Run a container with multiple port mappings
+docker run -d \
+  --name multi-port-app \
+  -p 8082:80 \
+  -p 8443:443 \
+  -p 9000:9000 \
+  nginx:latest
+
+# Verify all port mappings
+docker port multi-port-app
+
+# Test accessibility
+curl http://localhost:8082
+Subtask 6.3: Dynamic Port Assignment
+# Run container with dynamic port assignment
+docker run -d \
+  --name dynamic-port \
+  -P \
+  nginx:latest
+
+# Check assigned ports
+docker port dynamic-port
+
+# Get the assigned port and test
+ASSIGNED_PORT=$(docker port dynamic-port 80 | cut -d: -f2)
+curl http://localhost:$ASSIGNED_PORT
+Task 7: Advanced Container Communication
+Subtask 7.1: Multi-Container Application Setup
+Let's create a complete application stack with DNS-based communication:
+
+# Create application network
+docker network create --driver bridge fullstack-network
+
+# Deploy Redis cache
+docker run -d \
+  --name redis-cache \
+  --network fullstack-network \
+  redis:alpine
+
+# Deploy PostgreSQL database
+docker run -d \
+  --name postgres-db \
+  --network fullstack-network \
+  -e POSTGRES_DB=appdb \
+  -e POSTGRES_USER=appuser \
+  -e POSTGRES_PASSWORD=apppass \
+  postgres:13
+
+# Deploy a simple Python web application
+cat > /tmp/app.py << 'EOF'
+from flask import Flask, jsonify
+import redis
+import psycopg2
+import os
+
+app = Flask(__name__)
+
+@app.route('/')
+def hello():
+    return jsonify({
+        "message": "Hello from Flask!",
+        "redis_status": test_redis(),
+        "postgres_status": test_postgres()
+    })
+
+def test_redis():
+    try:
+        r = redis.Redis(host='redis-cache', port=6379, decode_responses=True)
+        r.set('test', 'connection_ok')
+        return r.get('test')
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+def test_postgres():
+    try:
+        conn = psycopg2.connect(
+            host='postgres-db',
+            database='appdb',
+            user='appuser',
+            password='apppass'
+        )
+        cur = conn.cursor()
+        cur.execute('SELECT version()')
+        version = cur.fetchone()[0]
+        conn.close()
+        return "Connected successfully"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
+EOF
+
+# Create Dockerfile for the Python app
+cat > /tmp/Dockerfile << 'EOF'
+FROM python:3.9-slim
+WORKDIR /app
+RUN pip install flask redis psycopg2-binary
+COPY app.py .
+EXPOSE 5000
+CMD ["python", "app.py"]
+EOF
+
+# Build the application image
+docker build -t flask-app /tmp/
+
+# Deploy the Flask application
+docker run -d \
+  --name flask-web \
+  --network fullstack-network \
+  -p 5000:5000 \
+  flask-app
+Subtask 7.2: Test Multi-Container Communication
+# Wait for containers to start
+sleep 10
+
+# Test the application
+curl http://localhost:5000
+
+# Check container logs
+docker logs flask-web
+
+# Test individual service connectivity
+docker exec -it flask-web ping redis-cache
+docker exec -it flask-web ping postgres-db
+Subtask 7.3: Network Troubleshooting
+# Check network connectivity details
+docker network inspect fullstack-network
+
+# Test DNS resolution from within containers
+docker exec -it flask-web nslookup redis-cache
+docker exec -it flask-web nslookup postgres-db
+
+# Check listening ports in containers
+docker exec -it redis-cache netstat -tlnp
+docker exec -it postgres-db netstat -tlnp
+Task 8: Network Security and Isolation
+Subtask 8.1: Network Isolation Testing
+# Create two isolated networks
+docker network create isolated-network-1
+docker network create isolated-network-2
+
+# Deploy containers on different networks
+docker run -d --name app1 --network isolated-network-1 alpine:latest sleep 3600
+docker run -d --name app2 --network isolated-network-2 alpine:latest sleep 3600
+
+# Test isolation (this should fail)
+docker exec -it app1 ping app2
+
+# Connect app1 to the second network
+docker network connect isolated-network-2 app1
+
+# Now test communication (this should work)
+docker exec -it app1 ping app2
+Subtask 8.2: Network Cleanup and Management
+# List all containers and their networks
+docker ps --format "table {{.Names}}\t{{.Networks}}"
+
+# Remove containers
+docker stop $(docker ps -aq)
+docker rm $(docker ps -aq)
+
+# Remove custom networks
+docker network rm isolated-network-1 isolated-network-2 fullstack-network app-network my-bridge-network
+
+# Clean up Docker Swarm (if needed)
+docker service rm overlay-web overlay-app
+docker network rm my-overlay-network
+docker swarm leave --force
+
+# Verify cleanup
+docker network ls
+Troubleshooting Common Issues
+Issue 1: Container Cannot Resolve DNS Names
+Problem: Container cannot ping other containers by name.
+
+Solution:
+
+# Check if containers are on the same network
+docker network inspect <network-name>
+
+# Ensure using custom bridge network (not default bridge)
+docker network create my-network
+docker run --network my-network <image>
+Issue 2: Port Already in Use
+Problem: Error binding port when starting container.
+
+Solution:
+
+# Check what's using the port
+sudo netstat -tlnp | grep <port-number>
+
+# Use a different port or stop the conflicting service
+docker run -p <different-port>:80 <image>
+Issue 3: Overlay Network Not Working
+Problem: Services cannot communicate on overlay network.
+
+Solution:
+
+# Ensure Docker Swarm is initialized
+docker swarm init
+
+# Make overlay network attachable
+docker network create --driver overlay --attachable <network-name>
+Lab Summary and Key Takeaways
+In this comprehensive Docker networking lab, you have successfully:
+
+What You Accomplished
+Installed and configured Docker on a Linux system from scratch
+Explored different network types: bridge, host, and overlay networks
+Created custom bridge networks for container isolation and communication
+Implemented port mapping for external access to containerized applications
+Set up container-to-container communication using DNS-based resolution
+Deployed multi-container applications with proper network architecture
+Configured overlay networks using Docker Swarm for distributed applications
+Applied network security principles through isolation and controlled connectivity
+Why This Matters
+Docker networking is fundamental to building scalable, secure containerized applications. The skills you've learned enable you to:
+
+Design robust microservices architectures where services communicate reliably
+Implement proper security boundaries between application components
+Scale applications across multiple hosts using overlay networks
+Troubleshoot connectivity issues in containerized environments
+Apply DevOps best practices for container orchestration and deployment
+Real-World Applications
+These networking concepts are essential for:
+
+Microservices deployments in production environments
+Container orchestration with Kubernetes and Docker Swarm
+CI/CD pipelines that require isolated testing environments
+Cloud-native application development with proper service discovery
+Enterprise container strategies with security and compliance requirements
+The hands-on experience gained in this lab provides a solid foundation for advanced container orchestration platforms and cloud-native development practices.
