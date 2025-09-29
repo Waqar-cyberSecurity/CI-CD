@@ -1,0 +1,409 @@
+Lab 5: Docker Volumes and Bind Mounts
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Understand the difference between Docker volumes and bind mounts
+Create and manage Docker volumes using command-line tools
+Implement bind mounts to connect host directories with containers
+Verify data persistence across container lifecycle operations
+Apply best practices for data management in containerized applications
+Troubleshoot common volume and bind mount issues
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Linux command line operations
+Familiarity with Docker containers and basic Docker commands
+Knowledge of file system concepts and directory structures
+Understanding of container lifecycle (create, start, stop, remove)
+Note: Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated Linux environment. The provided machine is bare metal with no pre-installed tools, so you will install Docker and other required tools during the lab exercises.
+
+Lab Environment Setup
+Task 1: Install Docker on the Linux Machine
+Subtask 1.1: Update the System Package Manager
+First, update your system's package manager to ensure you have the latest package information:
+
+sudo apt update
+sudo apt upgrade -y
+Subtask 1.2: Install Required Dependencies
+Install the necessary packages for Docker installation:
+
+sudo apt install -y apt-transport-https ca-certificates curl gnupg lsb-release
+Subtask 1.3: Add Docker's Official GPG Key
+Add Docker's official GPG key to verify package authenticity:
+
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+Subtask 1.4: Set Up Docker Repository
+Add the Docker repository to your system:
+
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+Subtask 1.5: Install Docker Engine
+Update the package database and install Docker:
+
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io
+Subtask 1.6: Start and Enable Docker Service
+Start the Docker service and enable it to start automatically on boot:
+
+sudo systemctl start docker
+sudo systemctl enable docker
+Subtask 1.7: Add User to Docker Group
+Add your current user to the docker group to run Docker commands without sudo:
+
+sudo usermod -aG docker $USER
+Note: You may need to log out and log back in for this change to take effect, or use the following command:
+
+newgrp docker
+Subtask 1.8: Verify Docker Installation
+Verify that Docker is installed and running correctly:
+
+docker --version
+docker run hello-world
+Main Lab Tasks
+Task 2: Understanding Docker Storage Options
+Subtask 2.1: Create Working Directories
+Create directories on your host system for organizing lab files:
+
+mkdir -p ~/docker-lab/volumes
+mkdir -p ~/docker-lab/bind-mounts
+mkdir -p ~/docker-lab/host-data
+cd ~/docker-lab
+Subtask 2.2: Examine Current Docker Storage
+Check existing Docker storage components:
+
+docker volume ls
+docker system df
+Task 3: Working with Docker Volumes
+Subtask 3.1: Create a Named Volume
+Create your first Docker volume using the docker volume create command:
+
+docker volume create my-data-volume
+Verify the volume was created:
+
+docker volume ls
+docker volume inspect my-data-volume
+Subtask 3.2: Use Volume in a Container
+Run a container that uses the created volume:
+
+docker run -it --name volume-test-1 -v my-data-volume:/data ubuntu:20.04 bash
+Inside the container, create some test data:
+
+echo "This is persistent data from container 1" > /data/test-file.txt
+echo "Volume test data" > /data/volume-data.txt
+ls -la /data/
+cat /data/test-file.txt
+exit
+Subtask 3.3: Verify Data Persistence
+Remove the first container and create a new one using the same volume:
+
+docker rm volume-test-1
+docker run -it --name volume-test-2 -v my-data-volume:/data ubuntu:20.04 bash
+Inside the new container, verify the data persists:
+
+ls -la /data/
+cat /data/test-file.txt
+cat /data/volume-data.txt
+echo "Data from container 2" >> /data/test-file.txt
+cat /data/test-file.txt
+exit
+Subtask 3.4: Create Multiple Volumes
+Create additional volumes for different purposes:
+
+docker volume create app-logs
+docker volume create app-config
+docker volume create database-data
+List all volumes:
+
+docker volume ls
+Subtask 3.5: Use Multiple Volumes in One Container
+Run a container with multiple volume mounts:
+
+docker run -it --name multi-volume-test \
+  -v app-logs:/var/log/app \
+  -v app-config:/etc/app \
+  -v database-data:/var/lib/database \
+  ubuntu:20.04 bash
+Inside the container, create data in different mounted volumes:
+
+echo "Application started at $(date)" > /var/log/app/app.log
+echo "config_value=production" > /etc/app/config.ini
+echo "database_version=1.0" > /var/lib/database/version.txt
+
+# Verify all files
+ls -la /var/log/app/
+ls -la /etc/app/
+ls -la /var/lib/database/
+exit
+Task 4: Working with Bind Mounts
+Subtask 4.1: Prepare Host Directory
+Create and populate a directory on the host system:
+
+cd ~/docker-lab/host-data
+echo "This file exists on the host" > host-file.txt
+echo "Shared configuration data" > config.conf
+mkdir logs
+echo "Initial log entry" > logs/application.log
+Subtask 4.2: Create Bind Mount
+Run a container with a bind mount connecting the host directory:
+
+docker run -it --name bind-mount-test \
+  -v ~/docker-lab/host-data:/app/data \
+  ubuntu:20.04 bash
+Inside the container, examine the mounted data:
+
+ls -la /app/data/
+cat /app/data/host-file.txt
+cat /app/data/config.conf
+
+# Modify existing file and create new file
+echo "Modified from container" >> /app/data/host-file.txt
+echo "Container created this file" > /app/data/container-file.txt
+echo "New log entry from container" >> /app/data/logs/application.log
+exit
+Subtask 4.3: Verify Bind Mount Changes on Host
+Check the host directory to see changes made from the container:
+
+cd ~/docker-lab/host-data
+ls -la
+cat host-file.txt
+cat container-file.txt
+cat logs/application.log
+Subtask 4.4: Demonstrate Real-time Synchronization
+Open a new terminal session (or use screen/tmux) and start monitoring the host directory:
+
+# In terminal 1 - monitor changes
+cd ~/docker-lab/host-data
+watch -n 1 'ls -la && echo "--- File Contents ---" && cat host-file.txt 2>/dev/null'
+In the main terminal, run a container and make changes:
+
+# In terminal 2 - make changes
+docker run -it --name realtime-test \
+  -v ~/docker-lab/host-data:/app/data \
+  ubuntu:20.04 bash
+Inside the container:
+
+# Add timestamp entries every few seconds
+for i in {1..5}; do
+  echo "Entry $i at $(date)" >> /app/data/host-file.txt
+  sleep 3
+done
+exit
+Stop the watch command in terminal 1 with Ctrl+C.
+
+Task 5: Advanced Volume Operations
+Subtask 5.1: Volume Backup and Restore
+Create a container to backup volume data:
+
+docker run --rm \
+  -v my-data-volume:/source \
+  -v ~/docker-lab/volumes:/backup \
+  ubuntu:20.04 \
+  tar czf /backup/my-data-backup.tar.gz -C /source .
+Verify the backup was created:
+
+ls -la ~/docker-lab/volumes/
+Create a new volume and restore the backup:
+
+docker volume create restored-volume
+
+docker run --rm \
+  -v restored-volume:/target \
+  -v ~/docker-lab/volumes:/backup \
+  ubuntu:20.04 \
+  tar xzf /backup/my-data-backup.tar.gz -C /target
+Verify the restored data:
+
+docker run --rm -v restored-volume:/data ubuntu:20.04 ls -la /data
+docker run --rm -v restored-volume:/data ubuntu:20.04 cat /data/test-file.txt
+Subtask 5.2: Volume Inspection and Management
+Get detailed information about volumes:
+
+docker volume inspect my-data-volume
+docker volume inspect restored-volume
+Check volume usage:
+
+docker system df -v
+Subtask 5.3: Read-Only Mounts
+Demonstrate read-only volume mounts:
+
+# Create read-only bind mount
+docker run -it --name readonly-test \
+  -v ~/docker-lab/host-data:/app/data:ro \
+  ubuntu:20.04 bash
+Inside the container, try to modify files (this should fail):
+
+ls -la /app/data/
+cat /app/data/host-file.txt
+
+# This should fail with permission denied
+echo "This should fail" >> /app/data/host-file.txt
+
+# This should also fail
+touch /app/data/new-file.txt
+exit
+Task 6: Data Persistence Verification
+Subtask 6.1: Container Lifecycle Testing
+Create a database-like scenario to test persistence:
+
+# Start a container with volume
+docker run -d --name persistence-test \
+  -v database-data:/var/lib/data \
+  ubuntu:20.04 \
+  bash -c 'while true; do echo "$(date): Database running" >> /var/lib/data/db.log; sleep 5; done'
+Let it run for a moment, then check the logs:
+
+sleep 15
+docker exec persistence-test cat /var/lib/data/db.log
+Subtask 6.2: Stop and Restart Container
+Stop the container and restart it:
+
+docker stop persistence-test
+docker start persistence-test
+sleep 10
+docker exec persistence-test cat /var/lib/data/db.log
+Subtask 6.3: Remove and Recreate Container
+Remove the container completely and create a new one with the same volume:
+
+docker stop persistence-test
+docker rm persistence-test
+
+# Create new container with same volume
+docker run -d --name new-persistence-test \
+  -v database-data:/var/lib/data \
+  ubuntu:20.04 \
+  bash -c 'echo "$(date): New container started" >> /var/lib/data/db.log; cat /var/lib/data/db.log'
+Check that old data persists:
+
+docker logs new-persistence-test
+Task 7: Cleanup and Best Practices
+Subtask 7.1: Clean Up Containers
+Stop and remove all test containers:
+
+docker stop $(docker ps -aq) 2>/dev/null || true
+docker rm $(docker ps -aq) 2>/dev/null || true
+Subtask 7.2: Volume Management
+List all volumes and their usage:
+
+docker volume ls
+docker system df -v
+Remove unused volumes (be careful with this command):
+
+# Remove specific volumes
+docker volume rm restored-volume
+
+# Remove all unused volumes (use with caution)
+docker volume prune -f
+Subtask 7.3: Best Practices Summary
+Create a summary file documenting best practices:
+
+cat > ~/docker-lab/volume-best-practices.md << 'EOF'
+# Docker Volume Best Practices
+
+## When to Use Volumes vs Bind Mounts
+
+### Use Volumes When:
+- Data needs to persist beyond container lifecycle
+- Multiple containers need to share data
+- You want Docker to manage the storage location
+- Working with databases or application data
+- Need better performance on Docker Desktop
+
+### Use Bind Mounts When:
+- You need to share configuration files from host
+- Development environments where you edit files on host
+- You need full control over the host directory structure
+- Sharing source code during development
+
+## Security Considerations
+- Use read-only mounts when containers only need to read data
+- Be careful with bind mounts as they can access host filesystem
+- Regularly backup important volume data
+- Use named volumes instead of anonymous volumes for important data
+
+## Performance Tips
+- Volumes generally perform better than bind mounts
+- Avoid mounting large directories unnecessarily
+- Use .dockerignore to exclude unnecessary files in build context
+EOF
+
+cat ~/docker-lab/volume-best-practices.md
+Troubleshooting Common Issues
+Issue 1: Permission Denied Errors
+If you encounter permission issues with bind mounts:
+
+# Check file ownership
+ls -la ~/docker-lab/host-data/
+
+# Fix ownership if needed
+sudo chown -R $USER:$USER ~/docker-lab/host-data/
+Issue 2: Volume Not Found
+If Docker cannot find a volume:
+
+# List all volumes
+docker volume ls
+
+# Inspect specific volume
+docker volume inspect volume-name
+
+# Recreate if necessary
+docker volume create volume-name
+Issue 3: Container Cannot Write to Volume
+Check if the volume is mounted as read-only:
+
+# Remove :ro flag if present
+docker run -v volume-name:/path container-name
+
+# Instead of
+docker run -v volume-name:/path:ro container-name
+Issue 4: Disk Space Issues
+Monitor Docker disk usage:
+
+docker system df
+docker system df -v
+
+# Clean up if needed
+docker system prune -f
+docker volume prune -f
+Lab Verification
+Verification Checklist
+Ensure you have completed all tasks by verifying:
+
+Docker Installation: Docker is installed and running
+
+docker --version
+docker info
+Volume Creation: Named volumes were created successfully
+
+docker volume ls | grep -E "(my-data-volume|app-logs|app-config|database-data)"
+Data Persistence: Data persists across container restarts
+
+docker run --rm -v my-data-volume:/data ubuntu:20.04 ls -la /data
+Bind Mounts: Host directory changes are reflected in containers
+
+ls -la ~/docker-lab/host-data/
+Cleanup: Unnecessary containers and volumes are removed
+
+docker ps -a
+docker volume ls
+Conclusion
+In this comprehensive lab, you have successfully learned how to work with Docker volumes and bind mounts. You accomplished the following key objectives:
+
+Technical Skills Gained:
+
+Created and managed Docker volumes using command-line tools
+Implemented bind mounts to connect host directories with containers
+Verified data persistence across container lifecycle operations
+Performed backup and restore operations on volume data
+Applied security best practices with read-only mounts
+Practical Applications:
+
+Understanding when to use volumes versus bind mounts
+Managing persistent data for database containers
+Sharing configuration files between host and containers
+Implementing development workflows with real-time file synchronization
+Why This Matters: Data persistence is crucial in containerized applications. Without proper volume management, all data would be lost when containers are removed. The skills you learned enable you to:
+
+Build robust, production-ready containerized applications
+Implement proper data backup and recovery strategies
+Create development environments that integrate seamlessly with your host system
+Ensure data integrity and availability in containerized services
+These foundational concepts are essential for anyone working with Docker in development, testing, or production environments. The ability to properly manage persistent data is what transforms containers from simple, ephemeral processes into powerful, stateful applications that can handle real-world workloads.
