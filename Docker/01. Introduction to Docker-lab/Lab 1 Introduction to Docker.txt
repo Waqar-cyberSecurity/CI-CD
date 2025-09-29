@@ -1,0 +1,268 @@
+Lab 1: Introduction to Docker
+Lab Objectives
+By the end of this lab, students will be able to:
+
+Understand the fundamental concepts of containerization and Docker
+Install Docker on a Linux system
+Run and manage basic Docker containers
+Execute essential Docker commands for container lifecycle management
+Verify Docker installation and container operations
+Understand the difference between images and containers
+Navigate Docker's basic workflow and terminology
+Prerequisites
+Before starting this lab, students should have:
+
+Basic familiarity with Linux command line operations
+Understanding of file system navigation (cd, ls, pwd commands)
+Knowledge of package management concepts
+Basic understanding of software installation processes
+Familiarity with terminal/command prompt usage
+Lab Environment Setup
+Al Nafi Cloud Machine: This lab uses Al Nafi's provided Linux-based cloud machines. Simply click Start Lab to access your dedicated Linux environment. The provided machine is a clean, bare-metal Linux installation with no pre-installed tools, so you will install Docker and all required components during this lab exercise.
+
+Important Note: All tasks in this lab will be performed on a single Linux machine. No additional virtual machines, remote hosts, or secondary environments are required.
+
+Task 1: Install Docker
+Subtask 1.1: Update System Packages
+Before installing Docker, ensure your system packages are up to date.
+
+sudo apt update
+sudo apt upgrade -y
+Explanation: This command updates the package list and upgrades existing packages to their latest versions, ensuring compatibility with Docker installation.
+
+Subtask 1.2: Install Required Dependencies
+Install packages that allow apt to use repositories over HTTPS:
+
+sudo apt install -y apt-transport-https ca-certificates curl gnupg lsb-release
+Key Components:
+
+apt-transport-https: Enables secure repository access
+ca-certificates: Provides certificate authority certificates
+curl: Command-line tool for data transfer
+gnupg: GNU Privacy Guard for secure communications
+Subtask 1.3: Add Docker's Official GPG Key
+Add Docker's official GPG key to verify package authenticity:
+
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+Subtask 1.4: Set Up Docker Repository
+Add the Docker repository to your system's package sources:
+
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+Subtask 1.5: Install Docker Engine
+Update the package index and install Docker:
+
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+Components Installed:
+
+docker-ce: Docker Community Edition engine
+docker-ce-cli: Command-line interface for Docker
+containerd.io: Container runtime
+docker-compose-plugin: Docker Compose functionality
+Subtask 1.6: Verify Docker Installation
+Check if Docker is installed and running:
+
+sudo systemctl status docker
+If Docker is not running, start it:
+
+sudo systemctl start docker
+sudo systemctl enable docker
+Subtask 1.7: Add User to Docker Group
+Add your current user to the docker group to run Docker commands without sudo:
+
+sudo usermod -aG docker $USER
+Important: Log out and log back in for this change to take effect, or use:
+
+newgrp docker
+Task 2: Run a Sample Docker Container
+Subtask 2.1: Test Docker Installation with Hello World
+Run the classic Docker hello-world container to verify installation:
+
+docker run hello-world
+Expected Output: You should see a message explaining that Docker is working correctly, including information about what happened when you ran the command.
+
+Subtask 2.2: Understand the Hello World Process
+The hello-world command performs these actions:
+
+Image Pull: Downloads the hello-world image from Docker Hub
+Container Creation: Creates a new container from the image
+Container Execution: Runs the container and displays the message
+Container Exit: The container stops after displaying the message
+Subtask 2.3: Run an Interactive Container
+Run an Ubuntu container interactively:
+
+docker run -it ubuntu:latest /bin/bash
+Command Breakdown:
+
+-i: Interactive mode (keeps STDIN open)
+-t: Allocates a pseudo-TTY (terminal)
+ubuntu:latest: Uses the latest Ubuntu image
+/bin/bash: Runs bash shell inside the container
+Inside the container, try these commands:
+
+ls
+pwd
+cat /etc/os-release
+exit
+Task 3: Master Basic Docker Commands
+Subtask 3.1: List Running Containers
+View currently running containers:
+
+docker ps
+View all containers (running and stopped):
+
+docker ps -a
+Column Explanations:
+
+CONTAINER ID: Unique identifier for the container
+IMAGE: Docker image used to create the container
+COMMAND: Command executed when container started
+CREATED: When the container was created
+STATUS: Current status (running, exited, etc.)
+PORTS: Port mappings
+NAMES: Container name (auto-generated or specified)
+Subtask 3.2: Run a Long-Running Container
+Start a container that runs in the background:
+
+docker run -d --name my-nginx nginx:latest
+Command Options:
+
+-d: Detached mode (runs in background)
+--name: Assigns a custom name to the container
+nginx:latest: Uses the latest Nginx web server image
+Subtask 3.3: Inspect Container Details
+Get detailed information about a container:
+
+docker inspect my-nginx
+View container logs:
+
+docker logs my-nginx
+Subtask 3.4: Execute Commands in Running Containers
+Execute a command in the running Nginx container:
+
+docker exec -it my-nginx /bin/bash
+Inside the container, explore the Nginx configuration:
+
+ls /etc/nginx/
+cat /etc/nginx/nginx.conf
+exit
+Subtask 3.5: Stop and Start Containers
+Stop the running container:
+
+docker stop my-nginx
+Verify it's stopped:
+
+docker ps
+docker ps -a
+Start the container again:
+
+docker start my-nginx
+Subtask 3.6: Remove Containers
+Stop and remove the container:
+
+docker stop my-nginx
+docker rm my-nginx
+Verify removal:
+
+docker ps -a
+Subtask 3.7: Work with Docker Images
+List downloaded images:
+
+docker images
+Remove an image:
+
+docker rmi hello-world
+Pull a specific image:
+
+docker pull alpine:latest
+Task 4: Container Lifecycle Management
+Subtask 4.1: Create and Manage Multiple Containers
+Run multiple containers simultaneously:
+
+docker run -d --name web1 nginx:latest
+docker run -d --name web2 nginx:latest
+docker run -d --name database alpine:latest sleep 3600
+Subtask 4.2: Monitor Container Resources
+Check container resource usage:
+
+docker stats
+Press Ctrl+C to exit the stats view.
+
+Subtask 4.3: Container Port Mapping
+Run a container with port mapping:
+
+docker run -d --name web-server -p 8080:80 nginx:latest
+Port Mapping Explanation:
+
+-p 8080:80: Maps host port 8080 to container port 80
+Traffic to localhost:8080 will be forwarded to the container's port 80
+Test the web server (if curl is available):
+
+curl http://localhost:8080
+Subtask 4.4: Clean Up All Containers
+Stop all running containers:
+
+docker stop $(docker ps -q)
+Remove all containers:
+
+docker rm $(docker ps -aq)
+Command Explanation:
+
+$(docker ps -q): Returns only container IDs of running containers
+$(docker ps -aq): Returns container IDs of all containers
+Troubleshooting Common Issues
+Issue 1: Permission Denied
+Problem: Getting permission denied errors when running Docker commands.
+
+Solution: Ensure your user is in the docker group:
+
+sudo usermod -aG docker $USER
+newgrp docker
+Issue 2: Docker Service Not Running
+Problem: Docker commands fail because the service isn't running.
+
+Solution: Start the Docker service:
+
+sudo systemctl start docker
+sudo systemctl enable docker
+Issue 3: Port Already in Use
+Problem: Cannot bind to port because it's already in use.
+
+Solution: Use a different port or stop the conflicting service:
+
+docker run -d --name web-server -p 8081:80 nginx:latest
+Issue 4: Image Pull Failures
+Problem: Cannot download images from Docker Hub.
+
+Solution: Check internet connectivity and Docker Hub status:
+
+ping docker.com
+docker system info
+Key Concepts Summary
+Containerization
+Containerization is a lightweight virtualization method that packages applications and their dependencies into portable containers that can run consistently across different environments.
+
+Docker Images vs Containers
+Docker Image: A read-only template used to create containers
+Docker Container: A running instance of a Docker image
+Container Lifecycle
+Pull: Download image from registry
+Create: Create container from image
+Start: Begin container execution
+Stop: Halt container execution
+Remove: Delete container permanently
+Lab Conclusion
+In this lab, you have successfully:
+
+Installed Docker on a Linux system using the official repository method
+Verified Docker installation by running the hello-world container
+Learned essential Docker commands for container management
+Understood the difference between Docker images and containers
+Practiced container lifecycle operations including creation, execution, stopping, and removal
+Explored interactive and detached container execution modes
+Implemented port mapping for container networking
+Gained hands-on experience with Docker's command-line interface
+Why This Matters: Docker containerization is fundamental to modern software development and deployment. It enables consistent application behavior across different environments, simplifies dependency management, and forms the foundation for microservices architecture, cloud-native applications, and DevOps practices. The skills learned in this lab provide the groundwork for advanced container orchestration platforms like Kubernetes and container-based CI/CD pipelines.
+
+Next Steps: With this foundation, you can explore creating custom Docker images using Dockerfiles, implementing multi-container applications with Docker Compose, and integrating Docker into automated deployment workflows.
+
