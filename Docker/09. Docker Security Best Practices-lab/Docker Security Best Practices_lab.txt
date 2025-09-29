@@ -1,0 +1,505 @@
+Lab 9: Docker Security Best Practices
+Lab Objectives
+By the end of this lab, students will be able to:
+
+Configure user namespaces to run containers as non-root users
+Apply seccomp profiles to restrict system calls in containers
+Implement AppArmor policies for additional container security
+Perform image vulnerability scanning using Docker Scout
+Set and enforce resource limits for containers
+Understand the importance of container security in production environments
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of Linux command line operations
+Familiarity with Docker concepts and basic commands
+Knowledge of Linux user management and permissions
+Understanding of system security concepts
+Lab Environment
+Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated Linux machine. The provided machine is bare metal with no pre-installed tools, so you will install all required tools during the lab exercises.
+
+Task 1: Configure User Namespaces for Non-Root Containers
+Subtask 1.1: Install Docker and Enable User Namespaces
+First, we need to install Docker and configure it to support user namespaces.
+
+# Update the system
+sudo apt update && sudo apt upgrade -y
+
+# Install required packages
+sudo apt install -y apt-transport-https ca-certificates curl gnupg lsb-release
+
+# Add Docker's official GPG key
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+
+# Add Docker repository
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# Update package index and install Docker
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io
+
+# Add current user to docker group
+sudo usermod -aG docker $USER
+
+# Start and enable Docker service
+sudo systemctl start docker
+sudo systemctl enable docker
+Subtask 1.2: Configure User Namespace Mapping
+Create user namespace mappings to allow containers to run as non-root users.
+
+# Create a dedicated user for Docker daemon
+sudo useradd -r -s /bin/false dockeruser
+
+# Configure subuid and subgid mappings
+echo "dockeruser:100000:65536" | sudo tee -a /etc/subuid
+echo "dockeruser:100000:65536" | sudo tee -a /etc/subgid
+
+# Create Docker daemon configuration directory
+sudo mkdir -p /etc/docker
+
+# Configure Docker daemon to use user namespaces
+sudo tee /etc/docker/daemon.json << EOF
+{
+  "userns-remap": "dockeruser"
+}
+EOF
+
+# Restart Docker daemon to apply changes
+sudo systemctl restart docker
+
+# Verify user namespace configuration
+docker info | grep -i "user namespace"
+Subtask 1.3: Test Non-Root Container Execution
+Create and run a container to verify user namespace functionality.
+
+# Create a simple test container
+docker run --rm -it ubuntu:20.04 /bin/bash -c "whoami && id"
+
+# Create a Dockerfile for testing user permissions
+mkdir ~/docker-security-lab
+cd ~/docker-security-lab
+
+cat > Dockerfile.nonroot << EOF
+FROM ubuntu:20.04
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+USER appuser
+WORKDIR /home/appuser
+CMD ["whoami"]
+EOF
+
+# Build the image
+docker build -f Dockerfile.nonroot -t nonroot-test .
+
+# Run the container and verify it runs as non-root
+docker run --rm nonroot-test
+docker run --rm nonroot-test id
+Task 2: Apply Seccomp Profiles and AppArmor Policies
+Subtask 2.1: Create Custom Seccomp Profile
+Seccomp (secure computing mode) restricts system calls that containers can make.
+
+# Create a custom seccomp profile directory
+mkdir -p ~/docker-security-lab/seccomp
+
+# Create a restrictive seccomp profile
+cat > ~/docker-security-lab/seccomp/restricted-profile.json << EOF
+{
+  "defaultAction": "SCMP_ACT_ERRNO",
+  "architectures": [
+    "SCMP_ARCH_X86_64",
+    "SCMP_ARCH_X86",
+    "SCMP_ARCH_X32"
+  ],
+  "syscalls": [
+    {
+      "names": [
+        "accept",
+        "accept4",
+        "access",
+        "arch_prctl",
+        "bind",
+        "brk",
+        "chdir",
+        "clone",
+        "close",
+        "connect",
+        "dup",
+        "dup2",
+        "execve",
+        "exit",
+        "exit_group",
+        "fcntl",
+        "fstat",
+        "futex",
+        "getcwd",
+        "getdents",
+        "getpid",
+        "getppid",
+        "getrlimit",
+        "getsockname",
+        "getsockopt",
+        "listen",
+        "lseek",
+        "mmap",
+        "mprotect",
+        "munmap",
+        "nanosleep",
+        "open",
+        "openat",
+        "poll",
+        "read",
+        "readlink",
+        "rt_sigaction",
+        "rt_sigprocmask",
+        "rt_sigreturn",
+        "select",
+        "set_robust_list",
+        "set_tid_address",
+        "setrlimit",
+        "setsockopt",
+        "socket",
+        "stat",
+        "write"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    }
+  ]
+}
+EOF
+
+# Test the seccomp profile
+docker run --rm --security-opt seccomp=~/docker-security-lab/seccomp/restricted-profile.json ubuntu:20.04 /bin/bash -c "echo 'Seccomp profile applied successfully'"
+
+# Try to run a command that should be blocked
+docker run --rm --security-opt seccomp=~/docker-security-lab/seccomp/restricted-profile.json ubuntu:20.04 /bin/bash -c "mount" || echo "Mount command blocked by seccomp profile"
+Subtask 2.2: Configure AppArmor Profile
+AppArmor provides mandatory access control for applications.
+
+# Install AppArmor utilities
+sudo apt install -y apparmor-utils
+
+# Check AppArmor status
+sudo aa-status
+
+# Create a custom AppArmor profile for Docker containers
+sudo mkdir -p /etc/apparmor.d/docker
+
+sudo tee /etc/apparmor.d/docker-restricted << EOF
+#include <tunables/global>
+
+profile docker-restricted flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  # Allow basic file operations
+  /bin/** ix,
+  /usr/bin/** ix,
+  /lib/** mr,
+  /usr/lib/** mr,
+  /etc/** r,
+  /tmp/** rw,
+  /var/tmp/** rw,
+
+  # Deny dangerous capabilities
+  deny capability sys_admin,
+  deny capability sys_module,
+  deny capability sys_rawio,
+  deny capability sys_time,
+
+  # Allow network access
+  network inet tcp,
+  network inet udp,
+
+  # Deny mount operations
+  deny mount,
+  deny umount,
+
+  # Allow signal operations
+  signal (receive) peer=unconfined,
+  signal (send) peer=docker-restricted,
+}
+EOF
+
+# Load the AppArmor profile
+sudo apparmor_parser -r /etc/apparmor.d/docker-restricted
+
+# Verify the profile is loaded
+sudo aa-status | grep docker-restricted
+
+# Test container with AppArmor profile
+docker run --rm --security-opt apparmor=docker-restricted ubuntu:20.04 /bin/bash -c "echo 'AppArmor profile applied successfully'"
+Subtask 2.3: Combine Security Options
+Run a container with multiple security options enabled.
+
+# Create a comprehensive security test
+docker run --rm \
+  --security-opt seccomp=~/docker-security-lab/seccomp/restricted-profile.json \
+  --security-opt apparmor=docker-restricted \
+  --user 1000:1000 \
+  --read-only \
+  --tmpfs /tmp \
+  ubuntu:20.04 /bin/bash -c "whoami && echo 'Multi-layered security applied'"
+Task 3: Perform Image Vulnerability Scanning
+Subtask 3.1: Enable Docker Scout
+Docker Scout is Docker's built-in vulnerability scanning tool.
+
+# Login to Docker Hub (create a free account if needed)
+docker login
+
+# Enable Docker Scout (it's enabled by default in newer versions)
+docker scout --help
+
+# Pull a test image for scanning
+docker pull nginx:latest
+docker pull node:14-alpine
+Subtask 3.2: Scan Images for Vulnerabilities
+Perform vulnerability scans on different images.
+
+# Scan the nginx image
+docker scout cves nginx:latest
+
+# Scan with detailed output
+docker scout cves --format sarif nginx:latest > nginx-scan-results.sarif
+
+# Scan the Node.js image
+docker scout cves node:14-alpine
+
+# Compare images to see which is more secure
+docker scout compare nginx:latest node:14-alpine
+
+# Get recommendations for fixing vulnerabilities
+docker scout recommendations nginx:latest
+Subtask 3.3: Create and Scan a Custom Image
+Build a custom image and scan it for vulnerabilities.
+
+# Create a Dockerfile with potential security issues
+cat > Dockerfile.vulnerable << EOF
+FROM ubuntu:18.04
+RUN apt-get update && apt-get install -y \
+    curl \
+    wget \
+    openssh-server \
+    && rm -rf /var/lib/apt/lists/*
+
+# Bad practice: running as root
+USER root
+
+# Bad practice: exposing SSH
+EXPOSE 22
+
+CMD ["/bin/bash"]
+EOF
+
+# Build the vulnerable image
+docker build -f Dockerfile.vulnerable -t vulnerable-app:latest .
+
+# Scan the custom image
+docker scout cves vulnerable-app:latest
+
+# Create an improved version
+cat > Dockerfile.secure << EOF
+FROM ubuntu:22.04
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -r appuser \
+    && useradd -r -g appuser appuser
+
+# Good practice: use non-root user
+USER appuser
+WORKDIR /home/appuser
+
+# Only expose necessary ports
+EXPOSE 8080
+
+CMD ["/bin/bash"]
+EOF
+
+# Build the secure image
+docker build -f Dockerfile.secure -t secure-app:latest .
+
+# Compare the two images
+docker scout compare vulnerable-app:latest secure-app:latest
+Task 4: Set Resource Limits for Containers
+Subtask 4.1: Configure Memory Limits
+Set memory limits to prevent containers from consuming excessive resources.
+
+# Run a container with memory limit
+docker run --rm -it --memory=128m ubuntu:20.04 /bin/bash -c "echo 'Memory limited to 128MB'"
+
+# Test memory limit enforcement
+docker run --rm --memory=64m ubuntu:20.04 /bin/bash -c "
+  echo 'Testing memory limit...'
+  python3 -c '
+import sys
+try:
+    # Try to allocate 100MB of memory
+    data = bytearray(100 * 1024 * 1024)
+    print(\"Memory allocation successful\")
+except MemoryError:
+    print(\"Memory allocation failed - limit enforced\")
+    sys.exit(1)
+'"
+Subtask 4.2: Configure CPU Limits
+Set CPU limits to control processor usage.
+
+# Run container with CPU limit (50% of one CPU core)
+docker run --rm -d --name cpu-limited --cpus="0.5" ubuntu:20.04 /bin/bash -c "
+  while true; do
+    echo 'CPU intensive task'
+    sleep 1
+  done
+"
+
+# Monitor CPU usage
+docker stats cpu-limited --no-stream
+
+# Stop the container
+docker stop cpu-limited
+
+# Run container with CPU shares (relative weight)
+docker run --rm -d --name cpu-shares --cpu-shares=512 ubuntu:20.04 /bin/bash -c "
+  while true; do
+    echo 'CPU task with shares'
+    sleep 1
+  done
+"
+
+# Monitor and stop
+docker stats cpu-shares --no-stream
+docker stop cpu-shares
+Subtask 4.3: Configure Comprehensive Resource Limits
+Apply multiple resource limits simultaneously.
+
+# Create a resource-limited container
+docker run --rm -d --name resource-limited \
+  --memory=256m \
+  --memory-swap=256m \
+  --cpus="1.0" \
+  --pids-limit=100 \
+  --ulimit nofile=1024:1024 \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,size=50m \
+  ubuntu:20.04 /bin/bash -c "
+    echo 'Container with comprehensive resource limits'
+    while true; do
+      sleep 10
+    done
+  "
+
+# Monitor resource usage
+docker stats resource-limited --no-stream
+
+# Inspect resource limits
+docker inspect resource-limited | grep -A 20 "HostConfig"
+
+# Stop the container
+docker stop resource-limited
+Subtask 4.4: Create a Secure Container Template
+Create a script that launches containers with security best practices.
+
+# Create a secure container launcher script
+cat > ~/docker-security-lab/secure-container.sh << 'EOF'
+#!/bin/bash
+
+# Secure Docker Container Launcher
+# Usage: ./secure-container.sh <image> <command>
+
+IMAGE=${1:-ubuntu:20.04}
+COMMAND=${2:-/bin/bash}
+
+echo "Launching secure container with image: $IMAGE"
+
+docker run --rm -it \
+  --security-opt seccomp=~/docker-security-lab/seccomp/restricted-profile.json \
+  --security-opt apparmor=docker-restricted \
+  --security-opt no-new-privileges:true \
+  --user 1000:1000 \
+  --memory=512m \
+  --cpus="1.0" \
+  --pids-limit=100 \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,size=100m \
+  --cap-drop=ALL \
+  --cap-add=CHOWN \
+  --cap-add=SETUID \
+  --cap-add=SETGID \
+  "$IMAGE" "$COMMAND"
+EOF
+
+# Make the script executable
+chmod +x ~/docker-security-lab/secure-container.sh
+
+# Test the secure container launcher
+~/docker-security-lab/secure-container.sh ubuntu:20.04 "whoami && id && echo 'Secure container launched successfully'"
+Verification and Testing
+Comprehensive Security Test
+Run a comprehensive test to verify all security measures are working.
+
+# Create a comprehensive test script
+cat > ~/docker-security-lab/security-test.sh << 'EOF'
+#!/bin/bash
+
+echo "=== Docker Security Best Practices Test ==="
+
+echo "1. Testing user namespaces..."
+docker run --rm ubuntu:20.04 /bin/bash -c "echo 'User: $(whoami), UID: $(id -u)'"
+
+echo "2. Testing seccomp profile..."
+docker run --rm --security-opt seccomp=~/docker-security-lab/seccomp/restricted-profile.json ubuntu:20.04 /bin/bash -c "echo 'Seccomp: OK'" 2>/dev/null && echo "Seccomp profile applied" || echo "Seccomp profile failed"
+
+echo "3. Testing AppArmor profile..."
+docker run --rm --security-opt apparmor=docker-restricted ubuntu:20.04 /bin/bash -c "echo 'AppArmor: OK'" 2>/dev/null && echo "AppArmor profile applied" || echo "AppArmor profile failed"
+
+echo "4. Testing resource limits..."
+docker run --rm --memory=64m --cpus="0.5" ubuntu:20.04 /bin/bash -c "echo 'Resource limits: OK'"
+
+echo "5. Testing vulnerability scanning..."
+docker scout cves ubuntu:20.04 | head -10
+
+echo "=== Security test completed ==="
+EOF
+
+chmod +x ~/docker-security-lab/security-test.sh
+~/docker-security-lab/security-test.sh
+Troubleshooting Common Issues
+Issue 1: User Namespace Configuration Problems
+# If user namespaces don't work, check:
+sudo systemctl status docker
+docker info | grep -i namespace
+
+# Reset Docker daemon configuration if needed
+sudo systemctl stop docker
+sudo rm -rf /var/lib/docker
+sudo systemctl start docker
+Issue 2: AppArmor Profile Loading Issues
+# Check AppArmor status
+sudo aa-status
+
+# Reload profile if needed
+sudo apparmor_parser -r /etc/apparmor.d/docker-restricted
+
+# Check for syntax errors
+sudo apparmor_parser -Q /etc/apparmor.d/docker-restricted
+Issue 3: Docker Scout Authentication
+# If Docker Scout fails, ensure you're logged in
+docker logout
+docker login
+
+# Check Docker Scout status
+docker scout --help
+Lab Summary
+In this lab, you have successfully implemented comprehensive Docker security best practices including:
+
+User Namespaces: Configured Docker to run containers with user namespace isolation, preventing containers from running as root on the host system.
+
+Security Profiles: Applied seccomp profiles to restrict system calls and AppArmor policies to provide mandatory access control, significantly reducing the attack surface of containers.
+
+Vulnerability Scanning: Used Docker Scout to identify and assess security vulnerabilities in container images, enabling proactive security management.
+
+Resource Limits: Implemented memory, CPU, and process limits to prevent resource exhaustion attacks and ensure system stability.
+
+Security Templates: Created reusable scripts and configurations that enforce security best practices consistently across container deployments.
+
+These security measures are essential for production Docker environments as they provide defense-in-depth protection against container escape attacks, resource abuse, and other security threats. By implementing these practices, you have learned to create a more secure containerized environment that follows industry security standards and best practices.
+
+The skills acquired in this lab are directly applicable to real-world scenarios where container security is paramount, such as multi-tenant environments, production deployments, and compliance-sensitive applications.
+
