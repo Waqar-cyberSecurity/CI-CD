@@ -1,0 +1,307 @@
+Lab 1: Introduction to Kubernetes
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Understand the fundamental architecture and components of Kubernetes
+Install and configure Minikube on a Linux machine
+Set up and configure the kubectl command-line interface
+Execute basic kubectl commands to interact with a Kubernetes cluster
+Explore cluster nodes and pods using kubectl
+Understand the relationship between Kubernetes components in a practical environment
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Linux command line operations
+Familiarity with containerization concepts (Docker basics)
+Understanding of YAML file structure
+Basic networking knowledge
+Administrative privileges on the Linux machine
+Lab Environment
+Al Nafi Cloud Machine: This lab uses Al Nafi's Linux-based cloud machines. Simply click Start Lab to access your dedicated Linux environment. The provided machine is bare metal with no pre-installed tools, so you will install all required components during this lab exercise.
+
+System Requirements: The lab runs entirely on a single Linux machine with no need for additional virtual environments or remote hosts.
+
+Task 1: Understanding Kubernetes Architecture
+Subtask 1.1: Learn Kubernetes Components
+Before installing Kubernetes, let's understand its key components:
+
+Control Plane Components:
+
+API Server: The front-end for the Kubernetes control plane
+etcd: Consistent and highly-available key-value store for cluster data
+Scheduler: Assigns pods to nodes based on resource requirements
+Controller Manager: Runs controller processes
+Node Components:
+
+kubelet: Agent that runs on each node and manages containers
+kube-proxy: Network proxy that maintains network rules
+Container Runtime: Software responsible for running containers
+Subtask 1.2: Understand Kubernetes Objects
+Key Kubernetes objects you'll work with:
+
+Pod: Smallest deployable unit containing one or more containers
+Node: Worker machine in Kubernetes cluster
+Service: Abstraction that defines logical set of pods
+Deployment: Manages replica sets and pod updates
+Task 2: Install Kubernetes using Minikube
+Subtask 2.1: Update System and Install Dependencies
+First, update your Linux system and install required dependencies:
+
+# Update package manager
+sudo apt update && sudo apt upgrade -y
+
+# Install curl and wget
+sudo apt install -y curl wget apt-transport-https
+
+# Install Docker (required for Minikube)
+sudo apt install -y docker.io
+
+# Start and enable Docker service
+sudo systemctl start docker
+sudo systemctl enable docker
+
+# Add current user to docker group
+sudo usermod -aG docker $USER
+
+# Apply group changes (logout and login, or use newgrp)
+newgrp docker
+Subtask 2.2: Install Minikube
+Download and install the latest version of Minikube:
+
+# Download Minikube binary
+curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+
+# Install Minikube
+sudo install minikube-linux-amd64 /usr/local/bin/minikube
+
+# Verify installation
+minikube version
+Subtask 2.3: Start Minikube Cluster
+Initialize your Kubernetes cluster using Minikube:
+
+# Start Minikube with Docker driver
+minikube start --driver=docker
+
+# Check Minikube status
+minikube status
+
+# Get cluster information
+minikube ip
+Expected Output:
+
+minikube
+type: Control Plane
+host: Running
+kubelet: Running
+apiserver: Running
+kubeconfig: Configured
+Task 3: Set up the kubectl CLI
+Subtask 3.1: Install kubectl
+Download and install kubectl command-line tool:
+
+# Download kubectl binary
+curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+
+# Make kubectl executable
+chmod +x kubectl
+
+# Move kubectl to system PATH
+sudo mv kubectl /usr/local/bin/
+
+# Verify kubectl installation
+kubectl version --client
+Subtask 3.2: Configure kubectl
+Configure kubectl to communicate with your Minikube cluster:
+
+# Check if kubectl can connect to cluster
+kubectl cluster-info
+
+# Verify kubectl configuration
+kubectl config view
+
+# Check current context
+kubectl config current-context
+Expected Output for cluster-info:
+
+Kubernetes control plane is running at https://192.168.49.2:8443
+CoreDNS is running at https://192.168.49.2:8443/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+Task 4: Run Basic kubectl Commands
+Subtask 4.1: Explore Cluster Nodes
+Use kubectl to examine your cluster nodes:
+
+# List all nodes in the cluster
+kubectl get nodes
+
+# Get detailed information about nodes
+kubectl get nodes -o wide
+
+# Describe a specific node (replace 'minikube' with your node name if different)
+kubectl describe node minikube
+Expected Output for get nodes:
+
+NAME       STATUS   ROLES           AGE   VERSION
+minikube   Ready    control-plane   5m    v1.28.3
+Subtask 4.2: Explore Cluster Pods
+Examine pods running in your cluster:
+
+# List pods in default namespace
+kubectl get pods
+
+# List pods in all namespaces
+kubectl get pods --all-namespaces
+
+# List pods with more details
+kubectl get pods -o wide --all-namespaces
+Subtask 4.3: Explore System Components
+Check the system components running in kube-system namespace:
+
+# List all resources in kube-system namespace
+kubectl get all -n kube-system
+
+# Get specific system pods
+kubectl get pods -n kube-system
+
+# Describe a system pod (example: coredns)
+kubectl describe pod -n kube-system -l k8s-app=kube-dns
+Subtask 4.4: Create Your First Pod
+Create and manage a simple pod:
+
+# Create a simple nginx pod
+kubectl run my-first-pod --image=nginx --port=80
+
+# Check if pod is running
+kubectl get pods
+
+# Get detailed information about the pod
+kubectl describe pod my-first-pod
+
+# Check pod logs
+kubectl logs my-first-pod
+Subtask 4.5: Interact with Your Pod
+Access and test your pod:
+
+# Execute commands inside the pod
+kubectl exec -it my-first-pod -- /bin/bash
+
+# Inside the pod, check nginx status (then exit)
+# curl localhost
+# exit
+
+# Port forward to access the pod locally
+kubectl port-forward my-first-pod 8080:80 &
+
+# Test the connection (in another terminal or after stopping port-forward)
+curl http://localhost:8080
+
+# Stop port forwarding
+pkill -f "kubectl port-forward"
+Subtask 4.6: Clean Up Resources
+Remove the resources you created:
+
+# Delete the pod
+kubectl delete pod my-first-pod
+
+# Verify pod deletion
+kubectl get pods
+Task 5: Explore Additional kubectl Commands
+Subtask 5.1: Namespace Operations
+Work with Kubernetes namespaces:
+
+# List all namespaces
+kubectl get namespaces
+
+# Create a new namespace
+kubectl create namespace my-lab-namespace
+
+# List pods in specific namespace
+kubectl get pods -n my-lab-namespace
+
+# Set default namespace context
+kubectl config set-context --current --namespace=my-lab-namespace
+Subtask 5.2: Resource Information Commands
+Explore various kubectl information commands:
+
+# Get API resources
+kubectl api-resources
+
+# Get cluster events
+kubectl get events
+
+# Get cluster component status
+kubectl get componentstatuses
+
+# Check cluster version
+kubectl version
+Troubleshooting Tips
+Common Issues and Solutions
+Issue 1: Minikube fails to start
+
+# Check Docker status
+sudo systemctl status docker
+
+# Restart Docker if needed
+sudo systemctl restart docker
+
+# Delete and restart Minikube
+minikube delete
+minikube start --driver=docker
+Issue 2: kubectl connection refused
+
+# Check Minikube status
+minikube status
+
+# Update kubectl configuration
+minikube update-context
+
+# Restart Minikube if necessary
+minikube stop
+minikube start
+Issue 3: Permission denied errors
+
+# Ensure user is in docker group
+groups $USER
+
+# If not in docker group, add user and restart session
+sudo usermod -aG docker $USER
+newgrp docker
+Verification Steps
+Verify your lab completion by running these commands:
+
+# 1. Verify Minikube is running
+minikube status
+
+# 2. Verify kubectl connectivity
+kubectl cluster-info
+
+# 3. Verify node status
+kubectl get nodes
+
+# 4. Verify system pods are running
+kubectl get pods -n kube-system
+
+# 5. Create a test pod to verify functionality
+kubectl run verification-pod --image=busybox --command -- sleep 3600
+kubectl get pods
+kubectl delete pod verification-pod
+Lab Summary
+In this lab, you have successfully:
+
+Installed Minikube: Set up a local Kubernetes cluster using Minikube with Docker driver
+Configured kubectl: Installed and configured the Kubernetes command-line interface
+Explored cluster architecture: Examined nodes, pods, and system components
+Executed basic operations: Created, managed, and deleted Kubernetes resources
+Learned essential commands: Mastered fundamental kubectl commands for cluster interaction
+Key Takeaways
+Why This Matters:
+
+Foundation Skills: You now have hands-on experience with Kubernetes basics
+Local Development: Minikube provides a perfect environment for learning and testing
+Industry Relevance: kubectl commands you learned are used in production environments
+Scalable Knowledge: These fundamentals apply to larger, production Kubernetes clusters
+Next Steps:
+
+Practice creating different types of workloads (Deployments, Services)
+Explore Kubernetes networking and storage concepts
+Learn about Kubernetes configuration management with ConfigMaps and Secrets
+Study advanced kubectl commands and cluster administration
+Your Kubernetes journey has begun with a solid foundation in cluster setup and basic operations. The skills you've developed in this lab are essential for any Kubernetes practitioner and will serve as building blocks for more advanced container orchestration tasks.
