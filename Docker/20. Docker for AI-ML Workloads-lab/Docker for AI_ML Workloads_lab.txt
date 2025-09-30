@@ -1,0 +1,872 @@
+Lab 20: Docker for AI/ML Workloads
+Learning Objectives
+By the end of this lab, students will be able to:
+
+Install and configure Docker on a Linux system for AI/ML workloads
+Create and manage Docker containers for Python-based machine learning environments
+Build custom Docker images optimized for TensorFlow and Jupyter Notebooks
+Develop a complete Docker image for training AI models with sample datasets
+Deploy distributed machine learning jobs using Docker Compose
+Understand best practices for containerizing AI/ML workflows
+Troubleshoot common issues in containerized ML environments
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of Linux command line operations
+Familiarity with Python programming fundamentals
+Basic knowledge of machine learning concepts
+Understanding of containerization principles
+Experience with text editors (nano, vim, or similar)
+Note: Al Nafi provides Linux-based cloud machines for this lab. Simply click "Start Lab" to access your dedicated Linux environment. The provided machine is bare metal with no pre-installed tools, so you will install all required software during the lab exercises.
+
+Lab Environment Setup
+Task 1: Install Docker and Required Dependencies
+Subtask 1.1: Update System and Install Docker
+First, update your system and install Docker:
+
+# Update package index
+sudo apt update
+
+# Install required packages
+sudo apt install -y apt-transport-https ca-certificates curl gnupg lsb-release
+
+# Add Docker's official GPG key
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+
+# Add Docker repository
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# Update package index again
+sudo apt update
+
+# Install Docker Engine
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+
+# Add current user to docker group
+sudo usermod -aG docker $USER
+
+# Start and enable Docker service
+sudo systemctl start docker
+sudo systemctl enable docker
+Subtask 1.2: Verify Docker Installation
+# Check Docker version
+docker --version
+
+# Test Docker installation
+docker run hello-world
+
+# Check Docker Compose version
+docker compose version
+Subtask 1.3: Install Additional Tools
+# Install Python and pip for local development
+sudo apt install -y python3 python3-pip git wget
+
+# Install Docker Compose (standalone version for compatibility)
+sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+sudo chmod +x /usr/local/bin/docker-compose
+Task 2: Create Docker Containers for Python, TensorFlow, and Jupyter Notebooks
+Subtask 2.1: Create a Basic Python ML Container
+Create a directory structure for your ML project:
+
+# Create project directory
+mkdir -p ~/ml-docker-lab
+cd ~/ml-docker-lab
+
+# Create subdirectories
+mkdir -p python-ml tensorflow-ml jupyter-ml distributed-ml
+Create a Dockerfile for a basic Python ML environment:
+
+cd ~/ml-docker-lab/python-ml
+cat > Dockerfile << 'EOF'
+FROM python:3.9-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python ML libraries
+RUN pip install --no-cache-dir \
+    numpy==1.24.3 \
+    pandas==2.0.3 \
+    scikit-learn==1.3.0 \
+    matplotlib==3.7.2 \
+    seaborn==0.12.2
+
+# Copy application files
+COPY . /app
+
+# Set default command
+CMD ["python3"]
+EOF
+Create a sample Python ML script:
+
+cat > ml_example.py << 'EOF'
+import numpy as np
+import pandas as pd
+from sklearn.datasets import make_classification
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, classification_report
+import matplotlib.pyplot as plt
+
+def create_sample_dataset():
+    """Create a sample classification dataset"""
+    X, y = make_classification(
+        n_samples=1000,
+        n_features=20,
+        n_informative=10,
+        n_redundant=10,
+        n_clusters_per_class=1,
+        random_state=42
+    )
+    return X, y
+
+def train_model():
+    """Train a simple ML model"""
+    print("Creating sample dataset...")
+    X, y = create_sample_dataset()
+    
+    # Split the data
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
+    
+    print("Training Random Forest model...")
+    # Train model
+    model = RandomForestClassifier(n_estimators=100, random_state=42)
+    model.fit(X_train, y_train)
+    
+    # Make predictions
+    y_pred = model.predict(X_test)
+    
+    # Calculate accuracy
+    accuracy = accuracy_score(y_test, y_pred)
+    print(f"Model Accuracy: {accuracy:.4f}")
+    
+    # Print classification report
+    print("\nClassification Report:")
+    print(classification_report(y_test, y_pred))
+    
+    return model, accuracy
+
+if __name__ == "__main__":
+    print("Python ML Container - Sample Classification Task")
+    print("=" * 50)
+    model, accuracy = train_model()
+    print(f"\nTraining completed successfully!")
+    print(f"Final accuracy: {accuracy:.4f}")
+EOF
+Build and run the Python ML container:
+
+# Build the Docker image
+docker build -t python-ml:latest .
+
+# Run the container
+docker run --rm python-ml:latest python ml_example.py
+Subtask 2.2: Create a TensorFlow Container
+Navigate to the TensorFlow directory and create a specialized Dockerfile:
+
+cd ~/ml-docker-lab/tensorflow-ml
+cat > Dockerfile << 'EOF'
+FROM tensorflow/tensorflow:2.13.0
+
+# Set working directory
+WORKDIR /app
+
+# Install additional Python packages
+RUN pip install --no-cache-dir \
+    numpy==1.24.3 \
+    pandas==2.0.3 \
+    matplotlib==3.7.2 \
+    seaborn==0.12.2 \
+    scikit-learn==1.3.0
+
+# Copy application files
+COPY . /app
+
+# Set default command
+CMD ["python3"]
+EOF
+Create a TensorFlow example script:
+
+cat > tensorflow_example.py << 'EOF'
+import tensorflow as tf
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.datasets import make_regression
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+
+def create_regression_dataset():
+    """Create a sample regression dataset"""
+    X, y = make_regression(
+        n_samples=1000,
+        n_features=10,
+        noise=0.1,
+        random_state=42
+    )
+    return X, y
+
+def build_neural_network(input_dim):
+    """Build a simple neural network for regression"""
+    model = tf.keras.Sequential([
+        tf.keras.layers.Dense(64, activation='relu', input_shape=(input_dim,)),
+        tf.keras.layers.Dropout(0.2),
+        tf.keras.layers.Dense(32, activation='relu'),
+        tf.keras.layers.Dropout(0.2),
+        tf.keras.layers.Dense(16, activation='relu'),
+        tf.keras.layers.Dense(1)
+    ])
+    
+    model.compile(
+        optimizer='adam',
+        loss='mse',
+        metrics=['mae']
+    )
+    
+    return model
+
+def train_tensorflow_model():
+    """Train a TensorFlow model"""
+    print("TensorFlow Version:", tf.version.VERSION)
+    print("Creating regression dataset...")
+    
+    # Create dataset
+    X, y = create_regression_dataset()
+    
+    # Split and scale data
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
+    
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+    
+    print("Building neural network...")
+    model = build_neural_network(X_train.shape[1])
+    
+    print("Model Architecture:")
+    model.summary()
+    
+    print("\nTraining model...")
+    history = model.fit(
+        X_train_scaled, y_train,
+        epochs=50,
+        batch_size=32,
+        validation_split=0.2,
+        verbose=1
+    )
+    
+    # Evaluate model
+    test_loss, test_mae = model.evaluate(X_test_scaled, y_test, verbose=0)
+    print(f"\nTest Loss: {test_loss:.4f}")
+    print(f"Test MAE: {test_mae:.4f}")
+    
+    return model, history
+
+if __name__ == "__main__":
+    print("TensorFlow ML Container - Neural Network Regression")
+    print("=" * 55)
+    model, history = train_tensorflow_model()
+    print("\nTensorFlow model training completed successfully!")
+EOF
+Build and run the TensorFlow container:
+
+# Build the TensorFlow image
+docker build -t tensorflow-ml:latest .
+
+# Run the container
+docker run --rm tensorflow-ml:latest python tensorflow_example.py
+Subtask 2.3: Create a Jupyter Notebook Container
+Navigate to the Jupyter directory:
+
+cd ~/ml-docker-lab/jupyter-ml
+cat > Dockerfile << 'EOF'
+FROM jupyter/tensorflow-notebook:latest
+
+# Switch to root user to install packages
+USER root
+
+# Install additional system packages
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# Switch back to jovyan user
+USER jovyan
+
+# Install additional Python packages
+RUN pip install --no-cache-dir \
+    seaborn==0.12.2 \
+    plotly==5.15.0 \
+    scikit-learn==1.3.0 \
+    xgboost==1.7.6
+
+# Create notebooks directory
+RUN mkdir -p /home/jovyan/notebooks
+
+# Copy notebook files
+COPY notebooks/ /home/jovyan/notebooks/
+
+# Set working directory
+WORKDIR /home/jovyan/notebooks
+
+# Expose Jupyter port
+EXPOSE 8888
+
+# Start Jupyter Lab
+CMD ["start-notebook.sh", "--NotebookApp.token=''", "--NotebookApp.password=''"]
+EOF
+Create a notebooks directory and sample notebook:
+
+mkdir -p notebooks
+cat > notebooks/ml_analysis.ipynb << 'EOF'
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "# Machine Learning Analysis in Docker\n",
+    "\n",
+    "This notebook demonstrates ML workflows in a containerized environment."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import numpy as np\n",
+    "import pandas as pd\n",
+    "import matplotlib.pyplot as plt\n",
+    "import seaborn as sns\n",
+    "from sklearn.datasets import load_iris\n",
+    "from sklearn.model_selection import train_test_split\n",
+    "from sklearn.ensemble import RandomForestClassifier\n",
+    "from sklearn.metrics import classification_report, confusion_matrix\n",
+    "import tensorflow as tf\n",
+    "\n",
+    "print(\"Libraries imported successfully!\")\n",
+    "print(f\"TensorFlow version: {tf.__version__}\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Load and explore the Iris dataset\n",
+    "iris = load_iris()\n",
+    "df = pd.DataFrame(iris.data, columns=iris.feature_names)\n",
+    "df['target'] = iris.target\n",
+    "df['species'] = df['target'].map({0: 'setosa', 1: 'versicolor', 2: 'virginica'})\n",
+    "\n",
+    "print(\"Dataset shape:\", df.shape)\n",
+    "print(\"\\nFirst 5 rows:\")\n",
+    "df.head()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Create visualizations\n",
+    "plt.figure(figsize=(12, 8))\n",
+    "\n",
+    "# Pairplot\n",
+    "sns.pairplot(df, hue='species', diag_kind='hist')\n",
+    "plt.suptitle('Iris Dataset - Pairplot', y=1.02)\n",
+    "plt.show()\n",
+    "\n",
+    "# Correlation heatmap\n",
+    "plt.figure(figsize=(8, 6))\n",
+    "correlation_matrix = df.select_dtypes(include=[np.number]).corr()\n",
+    "sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', center=0)\n",
+    "plt.title('Feature Correlation Heatmap')\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Train a Random Forest model\n",
+    "X = iris.data\n",
+    "y = iris.target\n",
+    "\n",
+    "X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)\n",
+    "\n",
+    "# Train model\n",
+    "rf_model = RandomForestClassifier(n_estimators=100, random_state=42)\n",
+    "rf_model.fit(X_train, y_train)\n",
+    "\n",
+    "# Make predictions\n",
+    "y_pred = rf_model.predict(X_test)\n",
+    "\n",
+    "# Print results\n",
+    "print(\"Classification Report:\")\n",
+    "print(classification_report(y_test, y_pred, target_names=iris.target_names))\n",
+    "\n",
+    "# Confusion matrix\n",
+    "plt.figure(figsize=(8, 6))\n",
+    "cm = confusion_matrix(y_test, y_pred)\n",
+    "sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', \n",
+    "            xticklabels=iris.target_names, yticklabels=iris.target_names)\n",
+    "plt.title('Confusion Matrix')\n",
+    "plt.ylabel('True Label')\n",
+    "plt.xlabel('Predicted Label')\n",
+    "plt.show()"
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.8.8"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 4
+}
+EOF
+Build and run the Jupyter container:
+
+# Build the Jupyter image
+docker build -t jupyter-ml:latest .
+
+# Run the container with port mapping
+docker run -d --name jupyter-ml-container -p 8888:8888 jupyter-ml:latest
+
+# Check if container is running
+docker ps
+
+# Get the Jupyter URL (if token is needed)
+docker logs jupyter-ml-container
+Access Jupyter Lab by opening a web browser and navigating to http://localhost:8888.
+
+Task 3: Build a Docker Image for Training an AI Model
+Subtask 3.1: Create a Comprehensive AI Training Environment
+Navigate to a new directory for the AI training image:
+
+cd ~/ml-docker-lab
+mkdir -p ai-training
+cd ai-training
+Create a Dockerfile optimized for AI model training:
+
+cat > Dockerfile << 'EOF'
+FROM tensorflow/tensorflow:2.13.0-gpu
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    git \
+    wget \
+    curl \
+    unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python packages for AI/ML
+RUN pip install --no-cache-dir \
+    numpy==1.24.3 \
+    pandas==2.0.3 \
+    matplotlib==3.7.2 \
+    seaborn==0.12.2 \
+    scikit-learn==1.3.0 \
+    opencv-python==4.8.0.74 \
+    Pillow==10.0.0 \
+    requests==2.31.0 \
+    tqdm==4.65.0 \
+    wandb==0.15.8
+
+# Create directories for data, models, and logs
+RUN mkdir -p /app/data /app/models /app/logs /app/scripts
+
+# Copy training scripts
+COPY scripts/ /app/scripts/
+COPY data/ /app/data/
+
+# Set permissions
+RUN chmod +x /app/scripts/*.py
+
+# Default command
+CMD ["python3", "/app/scripts/train_model.py"]
+EOF
+Subtask 3.2: Create Training Scripts
+Create the scripts directory and training script:
+
+mkdir -p scripts data
+cat > scripts/train_model.py << 'EOF'
+#!/usr/bin/env python3
+
+import os
+import sys
+import json
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+from tensorflow import keras
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import classification_report, confusion_matrix
+import matplotlib.pyplot as plt
+import seaborn as sns
+from datetime import datetime
+import argparse
+
+class AIModelTrainer:
+    def __init__(self, config_path=None):
+        self.config = self.load_config(config_path)
+        self.model = None
+        self.history = None
+        self.scaler = StandardScaler()
+        
+    def load_config(self, config_path):
+        """Load training configuration"""
+        default_config = {
+            "model_name": "neural_classifier",
+            "epochs": 50,
+            "batch_size": 32,
+            "learning_rate": 0.001,
+            "validation_split": 0.2,
+            "random_state": 42,
+            "save_model": True,
+            "save_plots": True
+        }
+        
+        if config_path and os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                user_config = json.load(f)
+                default_config.update(user_config)
+        
+        return default_config
+    
+    def create_synthetic_dataset(self):
+        """Create a synthetic dataset for training"""
+        print("Creating synthetic dataset...")
+        
+        # Generate synthetic data
+        np.random.seed(self.config['random_state'])
+        n_samples = 10000
+        n_features = 20
+        
+        # Create features with different patterns for each class
+        X = np.random.randn(n_samples, n_features)
+        
+        # Create three classes with different characteristics
+        y = np.zeros(n_samples)
+        
+        # Class 0: High values in first 5 features
+        mask_0 = np.random.choice(n_samples, n_samples//3, replace=False)
+        X[mask_0, :5] += 2
+        y[mask_0] = 0
+        
+        # Class 1: High values in middle 5 features
+        remaining = np.setdiff1d(np.arange(n_samples), mask_0)
+        mask_1 = np.random.choice(remaining, len(remaining)//2, replace=False)
+        X[mask_1, 5:10] += 2
+        y[mask_1] = 1
+        
+        # Class 2: High values in last 5 features
+        mask_2 = np.setdiff1d(remaining, mask_1)
+        X[mask_2, 10:15] += 2
+        y[mask_2] = 2
+        
+        return X, y.astype(int)
+    
+    def build_model(self, input_dim, num_classes):
+        """Build neural network model"""
+        print("Building neural network model...")
+        
+        model = keras.Sequential([
+            keras.layers.Dense(128, activation='relu', input_shape=(input_dim,)),
+            keras.layers.BatchNormalization(),
+            keras.layers.Dropout(0.3),
+            
+            keras.layers.Dense(64, activation='relu'),
+            keras.layers.BatchNormalization(),
+            keras.layers.Dropout(0.3),
+            
+            keras.layers.Dense(32, activation='relu'),
+            keras.layers.BatchNormalization(),
+            keras.layers.Dropout(0.2),
+            
+            keras.layers.Dense(num_classes, activation='softmax')
+        ])
+        
+        optimizer = keras.optimizers.Adam(learning_rate=self.config['learning_rate'])
+        
+        model.compile(
+            optimizer=optimizer,
+            loss='sparse_categorical_crossentropy',
+            metrics=['accuracy']
+        )
+        
+        return model
+    
+    def train(self):
+        """Train the AI model"""
+        print("Starting AI model training...")
+        print("=" * 50)
+        
+        # Create dataset
+        X, y = self.create_synthetic_dataset()
+        print(f"Dataset shape: {X.shape}")
+        print(f"Number of classes: {len(np.unique(y))}")
+        
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, 
+            test_size=0.2, 
+            random_state=self.config['random_state'],
+            stratify=y
+        )
+        
+        # Scale features
+        X_train_scaled = self.scaler.fit_transform(X_train)
+        X_test_scaled = self.scaler.transform(X_test)
+        
+        # Build model
+        self.model = self.build_model(X_train.shape[1], len(np.unique(y)))
+        
+        print("\nModel Architecture:")
+        self.model.summary()
+        
+        # Define callbacks
+        callbacks = [
+            keras.callbacks.EarlyStopping(
+                monitor='val_loss',
+                patience=10,
+                restore_best_weights=True
+            ),
+            keras.callbacks.ReduceLROnPlateau(
+                monitor='val_loss',
+                factor=0.5,
+                patience=5,
+                min_lr=1e-7
+            )
+        ]
+        
+        # Train model
+        print(f"\nTraining for {self.config['epochs']} epochs...")
+        self.history = self.model.fit(
+            X_train_scaled, y_train,
+            epochs=self.config['epochs'],
+            batch_size=self.config['batch_size'],
+            validation_split=self.config['validation_split'],
+            callbacks=callbacks,
+            verbose=1
+        )
+        
+        # Evaluate model
+        print("\nEvaluating model...")
+        test_loss, test_accuracy = self.model.evaluate(X_test_scaled, y_test, verbose=0)
+        print(f"Test Loss: {test_loss:.4f}")
+        print(f"Test Accuracy: {test_accuracy:.4f}")
+        
+        # Generate predictions for detailed analysis
+        y_pred = self.model.predict(X_test_scaled)
+        y_pred_classes = np.argmax(y_pred, axis=1)
+        
+        print("\nClassification Report:")
+        print(classification_report(y_test, y_pred_classes))
+        
+        # Save results
+        self.save_results(test_accuracy, test_loss)
+        
+        if self.config['save_plots']:
+            self.create_visualizations(y_test, y_pred_classes)
+        
+        if self.config['save_model']:
+            self.save_model()
+        
+        return test_accuracy, test_loss
+    
+    def create_visualizations(self, y_true, y_pred):
+        """Create and save training visualizations"""
+        print("Creating visualizations...")
+        
+        # Training history plots
+        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+        
+        # Accuracy plot
+        axes[0, 0].plot(self.history.history['accuracy'], label='Training Accuracy')
+        axes[0, 0].plot(self.history.history['val_accuracy'], label='Validation Accuracy')
+        axes[0, 0].set_title('Model Accuracy')
+        axes[0, 0].set_xlabel('Epoch')
+        axes[0, 0].set_ylabel('Accuracy')
+        axes[0, 0].legend()
+        axes[0, 0].grid(True)
+        
+        # Loss plot
+        axes[0, 1].plot(self.history.history['loss'], label='Training Loss')
+        axes[0, 1].plot(self.history.history['val_loss'], label='Validation Loss')
+        axes[0, 1].set_title('Model Loss')
+        axes[0, 1].set_xlabel('Epoch')
+        axes[0, 1].set_ylabel('Loss')
+        axes[0, 1].legend()
+        axes[0, 1].grid(True)
+        
+        # Confusion matrix
+        cm = confusion_matrix(y_true, y_pred)
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=axes[1, 0])
+        axes[1, 0].set_title('Confusion Matrix')
+        axes[1, 0].set_xlabel('Predicted Label')
+        axes[1, 0].set_ylabel('True Label')
+        
+        # Class distribution
+        unique, counts = np.unique(y_true, return_counts=True)
+        axes[1, 1].bar(unique, counts, alpha=0.7, label='True')
+        unique_pred, counts_pred = np.unique(y_pred, return_counts=True)
+        axes[1, 1].bar(unique_pred, counts_pred, alpha=0.7, label='Predicted')
+        axes[1, 1].set_title('Class Distribution')
+        axes[1, 1].set_xlabel('Class')
+        axes[1, 1].set_ylabel('Count')
+        axes[1, 1].legend()
+        
+        plt.tight_layout()
+        plt.savefig('/app/models/training_results.png', dpi=300, bbox_inches='tight')
+        print("Visualizations saved to /app/models/training_results.png")
+    
+    def save_model(self):
+        """Save the trained model"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        model_path = f"/app/models/{self.config['model_name']}_{timestamp}"
+        
+        # Save model
+        self.model.save(f"{model_path}.h5")
+        
+        # Save scaler
+        import joblib
+        joblib.dump(self.scaler, f"{model_path}_scaler.pkl")
+        
+        print(f"Model saved to {model_path}.h5")
+        print(f"Scaler saved to {model_path}_scaler.pkl")
+    
+    def save_results(self, accuracy, loss):
+        """Save training results"""
+        results = {
+            "timestamp": datetime.now().isoformat(),
+            "config": self.config,
+            "test_accuracy": float(accuracy),
+            "test_loss": float(loss),
+            "tensorflow_version": tf.__version__
+        }
+        
+        with open('/app/models/training_results.json', 'w') as f:
+            json.dump(results, f, indent=2)
+        
+        print("Results saved to /app/models/training_results.json")
+
+def main():
+    parser = argparse.ArgumentParser(description='Train AI model in Docker')
+    parser.add_argument('--config', type=str, help='Path to config file')
+    parser.add_argument('--epochs', type=int, default=50, help='Number of epochs')
+    parser.add_argument('--batch-size', type=int, default=32, help='Batch size')
+    
+    args = parser.parse_args()
+    
+    print("AI Model Training in Docker Container")
+    print("=" * 40)
+    print(f"TensorFlow Version: {tf.__version__}")
+    print(f"GPU Available: {tf.config.list_physical_devices('GPU')}")
+    print()
+    
+    # Initialize trainer
+    trainer = AIModelTrainer(args.config)
+    
+    # Override config with command line arguments
+    if args.epochs:
+        trainer.config['epochs'] = args.epochs
+    if args.batch_size:
+        trainer.config['batch_size'] = args.batch_size
+    
+    # Train model
+    try:
+        accuracy, loss = trainer.train()
+        print(f"\nTraining completed successfully!")
+        print(f"Final Test Accuracy: {accuracy:.4f}")
+        print(f"Final Test Loss: {loss:.4f}")
+        
+    except Exception as e:
+        print(f"Training failed with error: {str(e)}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
+EOF
+Create a configuration file:
+
+cat > scripts/config.json << 'EOF'
+{
+    "model_name": "docker_ai_classifier",
+    "epochs": 30,
+    "batch_size": 64,
+    "learning_rate": 0.001,
+    "validation_split": 0.2,
+    "random_state": 42,
+    "save_model": true,
+    "save_plots": true
+}
+EOF
+Create a requirements file:
+
+cat > requirements.txt << 'EOF'
+tensorflow==2.13.0
+numpy==1.24.3
+pandas==2.0.3
+matplotlib==3.7.2
+seaborn==0.12.2
+scikit-learn==1.3.0
+joblib==1.3.2
+EOF
+Subtask 3.3: Build and Test the AI Training Image
+# Build the AI training image
+docker build -t ai-training:latest .
+
+# Create a volume for persistent storage
+docker volume create ai-models
+
+# Run the training container
+docker run --rm \
+    -v ai-models:/app/models \
+    ai-training:latest
+
+# Run with custom parameters
+docker run --rm \
+    -v ai-models:/app/models \
+    ai-training:latest python3 /app/scripts/train_model.py --
