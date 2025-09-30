@@ -1,0 +1,984 @@
+Lab 13: Docker Compose Networking
+Lab Objectives
+By the end of this lab, students will be able to:
+
+Understand Docker Compose networking concepts and default behavior
+Define custom networks in docker-compose.yml files
+Connect multiple services using Docker Compose networking
+Configure communication between web servers and databases
+Expose services externally while maintaining internal connectivity
+Implement network isolation and security best practices
+Troubleshoot common Docker Compose networking issues
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of Docker containers and images
+Familiarity with YAML syntax
+Basic knowledge of web servers and databases
+Understanding of networking concepts (ports, IP addresses)
+Experience with Linux command line operations
+Completion of previous Docker labs or equivalent knowledge
+Lab Environment Setup
+Al Nafi Cloud Machine: This lab uses Al Nafi's Linux-based cloud machines. Simply click Start Lab to access your dedicated Linux environment. The provided machine is bare metal with no pre-installed tools, so you'll install all required software during the lab.
+
+Note: All tasks in this lab will be performed on a single Linux machine. No additional virtual machines or remote hosts are required.
+
+Task 1: Environment Preparation and Docker Installation
+Subtask 1.1: Update System and Install Docker
+First, we need to prepare our Linux environment and install Docker and Docker Compose.
+
+# Update the package manager
+sudo apt update && sudo apt upgrade -y
+
+# Install required packages
+sudo apt install -y apt-transport-https ca-certificates curl gnupg lsb-release
+
+# Add Docker's official GPG key
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+
+# Add Docker repository
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# Update package index
+sudo apt update
+
+# Install Docker Engine
+sudo apt install -y docker-ce docker-ce-cli containerd.io
+
+# Install Docker Compose
+sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+sudo chmod +x /usr/local/bin/docker-compose
+Subtask 1.2: Configure Docker Permissions
+# Add current user to docker group
+sudo usermod -aG docker $USER
+
+# Apply group changes (logout and login, or use newgrp)
+newgrp docker
+
+# Verify Docker installation
+docker --version
+docker-compose --version
+Subtask 1.3: Create Lab Directory Structure
+# Create main lab directory
+mkdir -p ~/docker-compose-networking-lab
+cd ~/docker-compose-networking-lab
+
+# Create subdirectories for different exercises
+mkdir -p basic-networking multi-service-app custom-networks
+Task 2: Understanding Default Docker Compose Networking
+Subtask 2.1: Create Basic Multi-Container Setup
+Let's start by understanding how Docker Compose creates networks by default.
+
+# Navigate to basic networking directory
+cd ~/docker-compose-networking-lab/basic-networking
+
+# Create a simple docker-compose.yml file
+cat > docker-compose.yml << 'EOF'
+version: '3.8'
+
+services:
+  web:
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./html:/usr/share/nginx/html
+
+  app:
+    image: python:3.9-alpine
+    command: python -c "
+      import http.server;
+      import socketserver;
+      import socket;
+      print(f'App server running on {socket.gethostname()}');
+      with socketserver.TCPServer(('', 8000), http.server.SimpleHTTPRequestHandler) as httpd:
+        httpd.serve_forever()
+      "
+    ports:
+      - "8000:8000"
+EOF
+Subtask 2.2: Create Web Content
+# Create HTML directory and content
+mkdir -p html
+cat > html/index.html << 'EOF'
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Docker Compose Networking Lab</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .service-box { border: 2px solid #333; padding: 20px; margin: 20px 0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Docker Compose Networking Lab</h1>
+        <div class="service-box">
+            <h2>Web Service (Nginx)</h2>
+            <p>This page is served by the Nginx container</p>
+            <p>Port: 8080 (external) -> 80 (internal)</p>
+        </div>
+        <div class="service-box">
+            <h2>App Service (Python)</h2>
+            <p>Python service is running on port 8000</p>
+            <p><a href="http://localhost:8000" target="_blank">Access Python Service</a></p>
+        </div>
+    </div>
+</body>
+</html>
+EOF
+Subtask 2.3: Launch and Examine Default Network
+# Start the services
+docker-compose up -d
+
+# List running containers
+docker-compose ps
+
+# Examine the default network created by Docker Compose
+docker network ls
+
+# Inspect the default network (replace 'basic-networking_default' with actual network name)
+docker network inspect basic-networking_default
+
+# Check container connectivity
+docker-compose exec web ping -c 3 app
+docker-compose exec app ping -c 3 web
+Subtask 2.4: Test External Access
+# Test external access to services
+curl http://localhost:8080
+curl http://localhost:8000
+
+# View logs to see network activity
+docker-compose logs web
+docker-compose logs app
+Task 3: Implementing Multi-Service Application with Database
+Subtask 3.1: Create Web Application with Database
+# Navigate to multi-service directory
+cd ~/docker-compose-networking-lab/multi-service-app
+
+# Create application directory structure
+mkdir -p app database-init
+
+# Create a simple Flask application
+cat > app/app.py << 'EOF'
+from flask import Flask, render_template, request, jsonify
+import mysql.connector
+import os
+import time
+
+app = Flask(__name__)
+
+# Database configuration
+DB_CONFIG = {
+    'host': 'database',  # Service name in docker-compose
+    'user': 'appuser',
+    'password': 'apppassword',
+    'database': 'appdb'
+}
+
+def get_db_connection():
+    max_retries = 5
+    for attempt in range(max_retries):
+        try:
+            connection = mysql.connector.connect(**DB_CONFIG)
+            return connection
+        except mysql.connector.Error as e:
+            print(f"Database connection attempt {attempt + 1} failed: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(5)
+            else:
+                raise
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/users')
+def users():
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM users")
+        users = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return jsonify(users)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/add_user', methods=['POST'])
+def add_user():
+    try:
+        data = request.json
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO users (name, email) VALUES (%s, %s)", 
+                      (data['name'], data['email']))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return jsonify({'message': 'User added successfully'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/health')
+def health():
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1")
+        cursor.fetchone()
+        cursor.close()
+        conn.close()
+        return jsonify({'status': 'healthy', 'database': 'connected'})
+    except Exception as e:
+        return jsonify({'status': 'unhealthy', 'error': str(e)}), 500
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)
+EOF
+Subtask 3.2: Create Application Templates and Requirements
+# Create templates directory
+mkdir -p app/templates
+
+# Create HTML template
+cat > app/templates/index.html << 'EOF'
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Multi-Service Docker App</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .form-group { margin: 15px 0; }
+        input, button { padding: 10px; margin: 5px; }
+        .users-list { border: 1px solid #ccc; padding: 20px; margin: 20px 0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Multi-Service Docker Application</h1>
+        
+        <div class="form-group">
+            <h2>Add New User</h2>
+            <input type="text" id="name" placeholder="Name">
+            <input type="email" id="email" placeholder="Email">
+            <button onclick="addUser()">Add User</button>
+        </div>
+        
+        <div class="form-group">
+            <button onclick="loadUsers()">Load Users</button>
+            <button onclick="checkHealth()">Check Health</button>
+        </div>
+        
+        <div id="users-list" class="users-list">
+            <h3>Users:</h3>
+            <div id="users-content">Click "Load Users" to see users</div>
+        </div>
+        
+        <div id="status" class="users-list">
+            <h3>Status:</h3>
+            <div id="status-content">Click "Check Health" to see status</div>
+        </div>
+    </div>
+
+    <script>
+        function addUser() {
+            const name = document.getElementById('name').value;
+            const email = document.getElementById('email').value;
+            
+            fetch('/add_user', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({name: name, email: email})
+            })
+            .then(response => response.json())
+            .then(data => {
+                alert(data.message || data.error);
+                document.getElementById('name').value = '';
+                document.getElementById('email').value = '';
+            });
+        }
+        
+        function loadUsers() {
+            fetch('/users')
+            .then(response => response.json())
+            .then(users => {
+                const content = users.map(user => 
+                    `<p>ID: ${user.id}, Name: ${user.name}, Email: ${user.email}</p>`
+                ).join('');
+                document.getElementById('users-content').innerHTML = content || 'No users found';
+            });
+        }
+        
+        function checkHealth() {
+            fetch('/health')
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('status-content').innerHTML = 
+                    `<p>Status: ${data.status}</p><p>Database: ${data.database || data.error}</p>`;
+            });
+        }
+    </script>
+</body>
+</html>
+EOF
+
+# Create requirements file
+cat > app/requirements.txt << 'EOF'
+Flask==2.3.3
+mysql-connector-python==8.1.0
+EOF
+
+# Create Dockerfile for the application
+cat > app/Dockerfile << 'EOF'
+FROM python:3.9-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+EXPOSE 5000
+
+CMD ["python", "app.py"]
+EOF
+Subtask 3.3: Create Database Initialization Script
+# Create database initialization script
+cat > database-init/init.sql << 'EOF'
+CREATE DATABASE IF NOT EXISTS appdb;
+USE appdb;
+
+CREATE TABLE IF NOT EXISTS users (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    email VARCHAR(100) NOT NULL UNIQUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT INTO users (name, email) VALUES 
+('John Doe', 'john@example.com'),
+('Jane Smith', 'jane@example.com'),
+('Bob Johnson', 'bob@example.com');
+EOF
+Subtask 3.4: Create Docker Compose Configuration
+# Create docker-compose.yml for multi-service application
+cat > docker-compose.yml << 'EOF'
+version: '3.8'
+
+services:
+  # Web application service
+  webapp:
+    build: ./app
+    ports:
+      - "5000:5000"
+    depends_on:
+      - database
+    environment:
+      - FLASK_ENV=development
+    volumes:
+      - ./app:/app
+    restart: unless-stopped
+
+  # MySQL database service
+  database:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: appdb
+      MYSQL_USER: appuser
+      MYSQL_PASSWORD: apppassword
+    volumes:
+      - ./database-init:/docker-entrypoint-initdb.d
+      - mysql_data:/var/lib/mysql
+    ports:
+      - "3306:3306"
+    restart: unless-stopped
+
+  # Nginx reverse proxy
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+    depends_on:
+      - webapp
+    restart: unless-stopped
+
+volumes:
+  mysql_data:
+EOF
+Subtask 3.5: Create Nginx Configuration
+# Create Nginx configuration for reverse proxy
+cat > nginx.conf << 'EOF'
+events {
+    worker_connections 1024;
+}
+
+http {
+    upstream webapp {
+        server webapp:5000;
+    }
+
+    server {
+        listen 80;
+        server_name localhost;
+
+        location / {
+            proxy_pass http://webapp;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        location /health {
+            proxy_pass http://webapp/health;
+        }
+    }
+}
+EOF
+Subtask 3.6: Launch Multi-Service Application
+# Build and start all services
+docker-compose up --build -d
+
+# Check service status
+docker-compose ps
+
+# View logs for all services
+docker-compose logs
+
+# Test connectivity between services
+docker-compose exec webapp ping -c 3 database
+docker-compose exec nginx ping -c 3 webapp
+Subtask 3.7: Test Application Functionality
+# Test direct access to webapp
+curl http://localhost:5000/health
+
+# Test access through Nginx proxy
+curl http://localhost/health
+
+# Test database connectivity
+curl http://localhost/users
+
+# Add a new user via API
+curl -X POST http://localhost/add_user \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Test User","email":"test@example.com"}'
+
+# Verify user was added
+curl http://localhost/users
+Task 4: Custom Networks and Network Isolation
+Subtask 4.1: Create Custom Network Configuration
+# Navigate to custom networks directory
+cd ~/docker-compose-networking-lab/custom-networks
+
+# Create docker-compose.yml with custom networks
+cat > docker-compose.yml << 'EOF'
+version: '3.8'
+
+services:
+  # Frontend services network
+  frontend-app:
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./frontend:/usr/share/nginx/html
+    networks:
+      - frontend-network
+      - backend-network
+
+  # Backend API service
+  api-service:
+    build: ./api
+    ports:
+      - "3000:3000"
+    networks:
+      - backend-network
+      - database-network
+    depends_on:
+      - redis
+      - postgres
+
+  # Redis cache service
+  redis:
+    image: redis:alpine
+    networks:
+      - database-network
+    volumes:
+      - redis_data:/data
+
+  # PostgreSQL database
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_DB: apidb
+      POSTGRES_USER: apiuser
+      POSTGRES_PASSWORD: apipassword
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db-init:/docker-entrypoint-initdb.d
+    networks:
+      - database-network
+
+  # Monitoring service (isolated)
+  monitoring:
+    image: prom/prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    networks:
+      - monitoring-network
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+
+networks:
+  frontend-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+  
+  backend-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16
+  
+  database-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.22.0.0/16
+  
+  monitoring-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.23.0.0/16
+
+volumes:
+  redis_data:
+  postgres_data:
+EOF
+Subtask 4.2: Create API Service
+# Create API directory and application
+mkdir -p api
+
+# Create Node.js API application
+cat > api/package.json << 'EOF'
+{
+  "name": "api-service",
+  "version": "1.0.0",
+  "description": "API service for Docker Compose networking lab",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "pg": "^8.11.3",
+    "redis": "^4.6.8"
+  }
+}
+EOF
+
+# Create API server
+cat > api/server.js << 'EOF'
+const express = require('express');
+const { Client } = require('pg');
+const redis = require('redis');
+
+const app = express();
+app.use(express.json());
+
+// Database configuration
+const dbClient = new Client({
+  host: 'postgres',
+  port: 5432,
+  database: 'apidb',
+  user: 'apiuser',
+  password: 'apipassword',
+});
+
+// Redis configuration
+const redisClient = redis.createClient({
+  host: 'redis',
+  port: 6379
+});
+
+// Initialize connections
+async function initializeConnections() {
+  try {
+    await dbClient.connect();
+    console.log('Connected to PostgreSQL');
+    
+    await redisClient.connect();
+    console.log('Connected to Redis');
+  } catch (error) {
+    console.error('Connection error:', error);
+    process.exit(1);
+  }
+}
+
+// Health check endpoint
+app.get('/health', async (req, res) => {
+  try {
+    // Test database connection
+    await dbClient.query('SELECT 1');
+    
+    // Test Redis connection
+    await redisClient.ping();
+    
+    res.json({
+      status: 'healthy',
+      database: 'connected',
+      cache: 'connected',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: 'unhealthy',
+      error: error.message
+    });
+  }
+});
+
+// Get all items
+app.get('/items', async (req, res) => {
+  try {
+    // Check cache first
+    const cached = await redisClient.get('items');
+    if (cached) {
+      return res.json({
+        source: 'cache',
+        data: JSON.parse(cached)
+      });
+    }
+    
+    // Query database
+    const result = await dbClient.query('SELECT * FROM items ORDER BY id');
+    const items = result.rows;
+    
+    // Cache the result
+    await redisClient.setEx('items', 60, JSON.stringify(items));
+    
+    res.json({
+      source: 'database',
+      data: items
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Add new item
+app.post('/items', async (req, res) => {
+  try {
+    const { name, description } = req.body;
+    const result = await dbClient.query(
+      'INSERT INTO items (name, description) VALUES ($1, $2) RETURNING *',
+      [name, description]
+    );
+    
+    // Invalidate cache
+    await redisClient.del('items');
+    
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Network information endpoint
+app.get('/network-info', (req, res) => {
+  const os = require('os');
+  const interfaces = os.networkInterfaces();
+  
+  res.json({
+    hostname: os.hostname(),
+    interfaces: interfaces,
+    headers: req.headers
+  });
+});
+
+const PORT = process.env.PORT || 3000;
+
+initializeConnections().then(() => {
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`API server running on port ${PORT}`);
+  });
+});
+EOF
+
+# Create Dockerfile for API service
+cat > api/Dockerfile << 'EOF'
+FROM node:16-alpine
+
+WORKDIR /app
+
+COPY package.json .
+RUN npm install
+
+COPY . .
+
+EXPOSE 3000
+
+CMD ["npm", "start"]
+EOF
+Subtask 4.3: Create Database Initialization and Frontend
+# Create database initialization
+mkdir -p db-init
+cat > db-init/init.sql << 'EOF'
+CREATE TABLE IF NOT EXISTS items (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    description TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT INTO items (name, description) VALUES 
+('Item 1', 'First sample item'),
+('Item 2', 'Second sample item'),
+('Item 3', 'Third sample item');
+EOF
+
+# Create frontend content
+mkdir -p frontend
+cat > frontend/index.html << 'EOF'
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Custom Networks Demo</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        .container { max-width: 1000px; margin: 0 auto; }
+        .network-box { border: 2px solid #333; padding: 20px; margin: 20px 0; }
+        .frontend { border-color: #007bff; }
+        .backend { border-color: #28a745; }
+        .database { border-color: #dc3545; }
+        .monitoring { border-color: #ffc107; }
+        button { padding: 10px 15px; margin: 5px; cursor: pointer; }
+        .response { background: #f8f9fa; padding: 15px; margin: 10px 0; border-radius: 5px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Docker Compose Custom Networks Demo</h1>
+        
+        <div class="network-box frontend">
+            <h2>Frontend Network (172.20.0.0/16)</h2>
+            <p>This Nginx service can communicate with backend services</p>
+            <button onclick="testAPI()">Test API Connection</button>
+            <button onclick="getItems()">Get Items</button>
+            <button onclick="getNetworkInfo()">Get Network Info</button>
+        </div>
+        
+        <div class="network-box backend">
+            <h2>Backend Network (172.21.0.0/16)</h2>
+            <p>API service communicates with database services</p>
+            <button onclick="testHealth()">Test Health</button>
+            <button onclick="addItem()">Add Sample Item</button>
+        </div>
+        
+        <div class="network-box database">
+            <h2>Database Network (172.22.0.0/16)</h2>
+            <p>PostgreSQL and Redis are isolated in this network</p>
+            <p>Only accessible by API service</p>
+        </div>
+        
+        <div class="network-box monitoring">
+            <h2>Monitoring Network (172.23.0.0/16)</h2>
+            <p>Prometheus monitoring is isolated</p>
+            <a href="http://localhost:9090" target="_blank">Open Prometheus</a>
+        </div>
+        
+        <div id="response" class="response">
+            <h3>Response:</h3>
+            <pre id="response-content">Click buttons to see responses</pre>
+        </div>
+    </div>
+
+    <script>
+        function displayResponse(data) {
+            document.getElementById('response-content').textContent = JSON.stringify(data, null, 2);
+        }
+        
+        function testAPI() {
+            fetch('http://localhost:3000/health')
+            .then(response => response.json())
+            .then(data => displayResponse(data))
+            .catch(error => displayResponse({error: error.message}));
+        }
+        
+        function getItems() {
+            fetch('http://localhost:3000/items')
+            .then(response => response.json())
+            .then(data => displayResponse(data))
+            .catch(error => displayResponse({error: error.message}));
+        }
+        
+        function getNetworkInfo() {
+            fetch('http://localhost:3000/network-info')
+            .then(response => response.json())
+            .then(data => displayResponse(data))
+            .catch(error => displayResponse({error: error.message}));
+        }
+        
+        function testHealth() {
+            fetch('http://localhost:3000/health')
+            .then(response => response.json())
+            .then(data => displayResponse(data))
+            .catch(error => displayResponse({error: error.message}));
+        }
+        
+        function addItem() {
+            const item = {
+                name: 'Test Item ' + Date.now(),
+                description: 'Added via frontend at ' + new Date().toISOString()
+            };
+            
+            fetch('http://localhost:3000/items', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(item)
+            })
+            .then(response => response.json())
+            .then(data => displayResponse(data))
+            .catch(error => displayResponse({error: error.message}));
+        }
+    </script>
+</body>
+</html>
+EOF
+
+# Create Prometheus configuration
+cat > prometheus.yml << 'EOF'
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+EOF
+Subtask 4.4: Launch and Test Custom Networks
+# Build and start all services
+docker-compose up --build -d
+
+# Check all services are running
+docker-compose ps
+
+# List all networks
+docker network ls
+
+# Inspect custom networks
+docker network inspect custom-networks_frontend-network
+docker network inspect custom-networks_backend-network
+docker network inspect custom-networks_database-network
+docker network inspect custom-networks_monitoring-network
+Subtask 4.5: Test Network Connectivity and Isolation
+# Test connectivity within same network
+docker-compose exec api-service ping -c 3 postgres
+docker-compose exec api-service ping -c 3 redis
+
+# Test connectivity across networks (should work for api-service)
+docker-compose exec frontend-app ping -c 3 api-service
+
+# Test network isolation (should fail)
+echo "Testing network isolation..."
+docker-compose exec postgres ping -c 3 frontend-app 2>/dev/null || echo "Connection blocked - isolation working"
+docker-compose exec monitoring ping -c 3 api-service 2>/dev/null || echo "Connection blocked - isolation working"
+
+# Test API endpoints
+curl http://localhost:3000/health
+curl http://localhost:3000/items
+curl http://localhost:3000/network-info
+
+# Test frontend access
+curl http://localhost:8080
+Task 5: Advanced Networking Features and Troubleshooting
+Subtask 5.1: Network Troubleshooting Commands
+# Return to lab root directory
+cd ~/docker-compose-networking-lab
+
+# Create troubleshooting script
+cat > network-troubleshooting.sh << 'EOF'
+#!/bin/bash
+
+echo "=== Docker Compose Network Troubleshooting ==="
+echo
+
+echo "1. List all Docker networks:"
+docker network ls
+echo
+
+echo "2. List all running containers:"
+docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}"
+echo
+
+echo "3. Check Docker Compose services:"
+for dir in basic-networking multi-service-app custom-networks; do
+    if [ -d "$dir" ]; then
+        echo "--- $dir ---"
+        cd "$dir"
+        docker-compose ps 2>/dev/null || echo "No services running"
+        cd ..
+        echo
+    fi
+done
+
+echo "4. Network connectivity tests:"
+echo "Testing basic connectivity..."
+
+# Test if any containers are running
+if [ $(docker ps -q | wc -l) -gt 0 ]; then
+    echo "Containers are running, performing connectivity tests..."
+    
+    # Get first running container
+    CONTAINER=$(docker ps --format "{{.Names}}" | head -n1)
+    echo "Using container: $CONTAINER"
+    
+    # Test DNS resolution
+    docker exec $CONTAINER nslookup google.com 2>/dev/null || echo "DNS resolution test failed"
+    
+    # Test internal connectivity if multiple containers
+    if [ $(docker ps -q | wc -l) -gt 1 ]; then
+        CONTAINER2=$(docker ps --format "{{.Names}}" | head -n2 | tail -n1)
+        echo "Testing connectivity between $CONTAINER and $CONTAINER2"
+        docker exec $CONTAINER ping -c 2 $CONTAINER2 2>/dev/null || echo "Internal connectivity test failed"
+    fi
+else
+    echo "No containers running"
+fi
+
+echo
+echo "5. Port usage:"
+netstat -tlnp 2>/dev/null | grep -E ":(80|3000|3306|5000|8080|9090)" || echo "No services listening on common ports"
+
+echo
+echo "=== Troubleshooting Complete ==="
+EOF
+
+chmod +x network-troubleshooting.sh
+./network-troubleshooting.sh
+Subtask 5.2: Create Network Monitoring Setup
+# Create monitoring directory
+mkdir -p monitoring-setup
+cd monitoring-setup
+
+# Create comprehensive monitoring docker-compose
+cat > docker-compose.yml << 'EOF'
+version: '3.8'
+
+services:
+  # Application to monitor
+  sample-app:
+    image: nginx:alpine
