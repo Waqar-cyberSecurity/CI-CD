@@ -1,0 +1,771 @@
+Lab 11: Docker BuildKit
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Enable and configure Docker BuildKit for enhanced build capabilities
+Utilize BuildKit features including build cache, parallel builds, and build secrets
+Implement multi-stage builds for optimized container images
+Apply cache optimization techniques to improve build performance
+Compare traditional Docker builds with BuildKit-enhanced builds
+Troubleshoot common BuildKit configuration issues
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Docker concepts and commands
+Familiarity with Dockerfile syntax and structure
+Knowledge of Linux command line operations
+Understanding of container image layers and caching concepts
+Experience with basic Docker build processes
+Lab Environment
+Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated environment. The provided Linux machine is bare metal with no pre-installed tools, so you will install Docker and other required tools during the lab exercises.
+
+Task 1: Install Docker and Enable BuildKit
+Subtask 1.1: Install Docker Engine
+First, we need to install Docker on our Linux machine.
+
+# Update package index
+sudo apt update
+
+# Install required packages
+sudo apt install -y apt-transport-https ca-certificates curl gnupg lsb-release
+
+# Add Docker's official GPG key
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+
+# Add Docker repository
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# Update package index again
+sudo apt update
+
+# Install Docker Engine
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin
+
+# Add current user to docker group
+sudo usermod -aG docker $USER
+
+# Apply group changes
+newgrp docker
+
+# Verify Docker installation
+docker --version
+Subtask 1.2: Enable BuildKit Globally
+Configure Docker to use BuildKit by default for all build operations.
+
+# Create Docker daemon configuration directory
+sudo mkdir -p /etc/docker
+
+# Create daemon.json configuration file
+sudo tee /etc/docker/daemon.json > /dev/null <<EOF
+{
+  "features": {
+    "buildkit": true
+  }
+}
+EOF
+
+# Restart Docker service to apply changes
+sudo systemctl restart docker
+
+# Verify BuildKit is enabled
+docker info | grep -i buildkit
+Subtask 1.3: Enable BuildKit for Current Session
+You can also enable BuildKit for individual build commands using environment variables.
+
+# Set BuildKit environment variable
+export DOCKER_BUILDKIT=1
+
+# Verify the environment variable is set
+echo $DOCKER_BUILDKIT
+
+# Add to bashrc for persistent sessions
+echo 'export DOCKER_BUILDKIT=1' >> ~/.bashrc
+Task 2: Create Sample Applications for BuildKit Testing
+Subtask 2.1: Create a Node.js Application
+Set up a sample Node.js application to demonstrate BuildKit features.
+
+# Create project directory
+mkdir -p ~/buildkit-lab/nodejs-app
+cd ~/buildkit-lab/nodejs-app
+
+# Create package.json
+cat > package.json <<EOF
+{
+  "name": "buildkit-demo",
+  "version": "1.0.0",
+  "description": "Demo app for BuildKit testing",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "lodash": "^4.17.21"
+  }
+}
+EOF
+
+# Create server.js
+cat > server.js <<EOF
+const express = require('express');
+const _ = require('lodash');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.get('/', (req, res) => {
+  const data = _.shuffle([1, 2, 3, 4, 5]);
+  res.json({
+    message: 'Hello from BuildKit Demo!',
+    shuffled: data,
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
+EOF
+Subtask 2.2: Create Traditional Dockerfile
+Create a basic Dockerfile without BuildKit optimizations.
+
+# Create traditional Dockerfile
+cat > Dockerfile.traditional <<EOF
+FROM node:18-alpine
+
+WORKDIR /app
+
+COPY package.json ./
+RUN npm install
+
+COPY . .
+
+EXPOSE 3000
+
+CMD ["npm", "start"]
+EOF
+Subtask 2.3: Create BuildKit-Optimized Dockerfile
+Create an advanced Dockerfile that leverages BuildKit features.
+
+# Create BuildKit-optimized Dockerfile
+cat > Dockerfile <<EOF
+# syntax=docker/dockerfile:1
+
+FROM node:18-alpine AS base
+WORKDIR /app
+
+# Install dependencies in separate layer for better caching
+FROM base AS deps
+COPY package.json package-lock.json* ./
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --only=production
+
+# Development dependencies
+FROM base AS deps-dev
+COPY package.json package-lock.json* ./
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci
+
+# Build stage (if needed for compilation)
+FROM deps-dev AS build
+COPY . .
+# Add any build commands here if needed
+
+# Production stage
+FROM base AS production
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+
+EXPOSE 3000
+CMD ["npm", "start"]
+EOF
+Task 3: Explore BuildKit Cache Features
+Subtask 3.1: Build with Cache Mount
+Demonstrate BuildKit's cache mount feature for package managers.
+
+# Build with cache mount (first build)
+time docker build -t buildkit-demo:cache .
+
+# Modify server.js slightly
+sed -i 's/Hello from BuildKit Demo!/Hello from BuildKit Demo - Updated!/' server.js
+
+# Build again to see cache benefits
+time docker build -t buildkit-demo:cache-v2 .
+
+# Compare with traditional build
+time docker build -f Dockerfile.traditional -t buildkit-demo:traditional .
+Subtask 3.2: Use Bind Mount for Development
+Create a Dockerfile that uses bind mounts for development scenarios.
+
+# Create development Dockerfile
+cat > Dockerfile.dev <<EOF
+# syntax=docker/dockerfile:1
+
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Use bind mount for package.json and install dependencies
+RUN --mount=type=bind,source=package.json,target=package.json \
+    --mount=type=cache,target=/root/.npm \
+    npm install
+
+# Copy application code
+COPY . .
+
+EXPOSE 3000
+CMD ["npm", "start"]
+EOF
+
+# Build development image
+docker build -f Dockerfile.dev -t buildkit-demo:dev .
+Subtask 3.3: Implement Build Secrets
+Demonstrate secure handling of build-time secrets.
+
+# Create a secret file
+echo "my-secret-api-key-12345" > api-key.txt
+
+# Create Dockerfile with secrets
+cat > Dockerfile.secrets <<EOF
+# syntax=docker/dockerfile:1
+
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Use secret during build without exposing it in layers
+RUN --mount=type=secret,id=api_key \
+    API_KEY=\$(cat /run/secrets/api_key) && \
+    echo "Using API key for configuration..." && \
+    echo "API_KEY_LENGTH=\${#API_KEY}" > .env
+
+COPY package.json ./
+RUN npm install
+
+COPY . .
+
+EXPOSE 3000
+CMD ["npm", "start"]
+EOF
+
+# Build with secret
+docker build --secret id=api_key,src=./api-key.txt -f Dockerfile.secrets -t buildkit-demo:secrets .
+
+# Verify secret is not in image layers
+docker history buildkit-demo:secrets
+Task 4: Optimize Build Performance with Multi-Stage Builds
+Subtask 4.1: Create Multi-Stage Build for Go Application
+Create a Go application to demonstrate multi-stage build optimization.
+
+# Create Go application directory
+mkdir -p ~/buildkit-lab/go-app
+cd ~/buildkit-lab/go-app
+
+# Create main.go
+cat > main.go <<EOF
+package main
+
+import (
+    "fmt"
+    "log"
+    "net/http"
+    "time"
+)
+
+func handler(w http.ResponseWriter, r *http.Request) {
+    fmt.Fprintf(w, "Hello from Go BuildKit Demo! Time: %s", time.Now().Format(time.RFC3339))
+}
+
+func main() {
+    http.HandleFunc("/", handler)
+    log.Println("Server starting on :8080")
+    log.Fatal(http.ListenAndServe(":8080", nil))
+}
+EOF
+
+# Create go.mod
+cat > go.mod <<EOF
+module buildkit-go-demo
+
+go 1.21
+EOF
+Subtask 4.2: Create Optimized Multi-Stage Dockerfile
+# Create multi-stage Dockerfile for Go
+cat > Dockerfile <<EOF
+# syntax=docker/dockerfile:1
+
+# Build stage
+FROM golang:1.21-alpine AS builder
+
+WORKDIR /app
+
+# Copy go mod files
+COPY go.mod go.sum* ./
+
+# Download dependencies with cache mount
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
+
+# Copy source code
+COPY . .
+
+# Build binary with cache mount
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux go build -o main .
+
+# Production stage
+FROM alpine:latest
+
+# Install ca-certificates for HTTPS requests
+RUN apk --no-cache add ca-certificates
+
+WORKDIR /root/
+
+# Copy binary from builder stage
+COPY --from=builder /app/main .
+
+EXPOSE 8080
+
+CMD ["./main"]
+EOF
+
+# Build the Go application
+docker build -t buildkit-go-demo .
+
+# Check image size
+docker images buildkit-go-demo
+Subtask 4.3: Compare Build Performance
+Create scripts to measure and compare build performance.
+
+# Create build performance test script
+cat > test-build-performance.sh <<'EOF'
+#!/bin/bash
+
+echo "=== Build Performance Comparison ==="
+
+# Test traditional build
+echo "Testing traditional Docker build..."
+cd ~/buildkit-lab/nodejs-app
+export DOCKER_BUILDKIT=0
+time docker build -f Dockerfile.traditional -t perf-test:traditional . 2>&1 | grep real
+
+# Test BuildKit build
+echo "Testing BuildKit build..."
+export DOCKER_BUILDKIT=1
+time docker build -t perf-test:buildkit . 2>&1 | grep real
+
+# Test with cache (second build)
+echo "Testing BuildKit with cache (second build)..."
+time docker build -t perf-test:buildkit-cached . 2>&1 | grep real
+
+echo "=== Performance test completed ==="
+EOF
+
+# Make script executable and run
+chmod +x test-build-performance.sh
+./test-build-performance.sh
+Task 5: Advanced BuildKit Features
+Subtask 5.1: Parallel Builds with BuildKit
+Demonstrate BuildKit's ability to run parallel build stages.
+
+# Create complex multi-stage Dockerfile with parallel stages
+cd ~/buildkit-lab/nodejs-app
+
+cat > Dockerfile.parallel <<EOF
+# syntax=docker/dockerfile:1
+
+FROM node:18-alpine AS base
+WORKDIR /app
+
+# Stage 1: Install production dependencies
+FROM base AS prod-deps
+COPY package.json package-lock.json* ./
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --only=production
+
+# Stage 2: Install all dependencies (runs in parallel with prod-deps)
+FROM base AS all-deps
+COPY package.json package-lock.json* ./
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci
+
+# Stage 3: Run tests (depends on all-deps)
+FROM all-deps AS test
+COPY . .
+RUN npm test || echo "Tests would run here"
+
+# Stage 4: Build application (depends on all-deps, runs parallel with test)
+FROM all-deps AS build
+COPY . .
+RUN echo "Build process would run here"
+
+# Final stage: Production image
+FROM base AS production
+COPY --from=prod-deps /app/node_modules ./node_modules
+COPY --from=build /app .
+
+EXPOSE 3000
+CMD ["npm", "start"]
+EOF
+
+# Build with parallel stages
+docker build -f Dockerfile.parallel -t buildkit-demo:parallel .
+Subtask 5.2: Use BuildKit with Docker Compose
+Create a Docker Compose setup that leverages BuildKit.
+
+# Create docker-compose.yml
+cat > docker-compose.yml <<EOF
+version: '3.8'
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BUILDKIT_INLINE_CACHE: 1
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+    
+  go-app:
+    build:
+      context: ../go-app
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+
+networks:
+  default:
+    name: buildkit-network
+EOF
+
+# Build services with BuildKit
+DOCKER_BUILDKIT=1 docker-compose build
+
+# Start services
+docker-compose up -d
+
+# Test services
+curl http://localhost:3000
+curl http://localhost:8080
+
+# Stop services
+docker-compose down
+Subtask 5.3: Export Build Cache
+Demonstrate BuildKit's ability to export and import build cache.
+
+# Build with cache export
+docker build \
+  --cache-to type=local,dest=/tmp/buildkit-cache \
+  --cache-from type=local,src=/tmp/buildkit-cache \
+  -t buildkit-demo:cached .
+
+# List cache contents
+ls -la /tmp/buildkit-cache/
+
+# Build another image using the exported cache
+cd ~/buildkit-lab/go-app
+docker build \
+  --cache-from type=local,src=/tmp/buildkit-cache \
+  -t buildkit-go-demo:cached .
+Task 6: BuildKit Debugging and Inspection
+Subtask 6.1: Enable BuildKit Debug Output
+Configure BuildKit for detailed debugging information.
+
+# Build with debug output
+BUILDKIT_PROGRESS=plain docker build -t buildkit-demo:debug .
+
+# Use buildx for more detailed output
+docker buildx build --progress=plain -t buildkit-demo:buildx .
+Subtask 6.2: Inspect Build History
+Examine BuildKit build history and layer information.
+
+# Install buildx if not available
+docker buildx version || {
+  mkdir -p ~/.docker/cli-plugins
+  curl -L https://github.com/docker/buildx/releases/latest/download/buildx-v0.11.2.linux-amd64 -o ~/.docker/cli-plugins/docker-buildx
+  chmod +x ~/.docker/cli-plugins/docker-buildx
+}
+
+# Create and use buildx builder
+docker buildx create --name mybuilder --use
+docker buildx inspect --bootstrap
+
+# Build with detailed metadata
+docker buildx build \
+  --metadata-file /tmp/build-metadata.json \
+  --progress=plain \
+  -t buildkit-demo:metadata .
+
+# Examine metadata
+cat /tmp/build-metadata.json | python3 -m json.tool
+Subtask 6.3: Monitor Build Performance
+Create monitoring scripts for BuildKit builds.
+
+# Create build monitoring script
+cat > monitor-build.sh <<'EOF'
+#!/bin/bash
+
+BUILD_START=$(date +%s)
+echo "Starting build at $(date)"
+
+# Monitor system resources during build
+(
+  while true; do
+    echo "$(date): CPU: $(top -bn1 | grep "Cpu(s)" | awk '{print $2}'), Memory: $(free -h | grep Mem | awk '{print $3"/"$2}')"
+    sleep 2
+  done
+) &
+MONITOR_PID=$!
+
+# Run the build
+docker build -t buildkit-demo:monitored .
+
+# Stop monitoring
+kill $MONITOR_PID 2>/dev/null
+
+BUILD_END=$(date +%s)
+BUILD_TIME=$((BUILD_END - BUILD_START))
+echo "Build completed in ${BUILD_TIME} seconds"
+EOF
+
+# Make executable and run
+chmod +x monitor-build.sh
+./monitor-build.sh
+Task 7: Troubleshooting and Best Practices
+Subtask 7.1: Common BuildKit Issues
+Create examples of common issues and their solutions.
+
+# Create problematic Dockerfile
+cat > Dockerfile.problematic <<EOF
+FROM node:18-alpine
+
+WORKDIR /app
+
+# This will cause cache invalidation on every build
+COPY . .
+RUN npm install
+
+EXPOSE 3000
+CMD ["npm", "start"]
+EOF
+
+# Build and identify the issue
+docker build -f Dockerfile.problematic -t buildkit-demo:problematic .
+
+# Create fixed version
+cat > Dockerfile.fixed <<EOF
+# syntax=docker/dockerfile:1
+
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Copy package files first for better caching
+COPY package.json package-lock.json* ./
+
+# Install dependencies with cache mount
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci
+
+# Copy application code last
+COPY . .
+
+EXPOSE 3000
+CMD ["npm", "start"]
+EOF
+
+# Build fixed version
+docker build -f Dockerfile.fixed -t buildkit-demo:fixed .
+Subtask 7.2: BuildKit Configuration Optimization
+Configure BuildKit for optimal performance.
+
+# Create optimized BuildKit configuration
+sudo tee /etc/docker/daemon.json > /dev/null <<EOF
+{
+  "features": {
+    "buildkit": true
+  },
+  "builder": {
+    "gc": {
+      "enabled": true,
+      "defaultKeepStorage": "20GB",
+      "policy": [
+        {
+          "keepStorage": "10GB",
+          "filter": ["unused-for=2160h"]
+        },
+        {
+          "keepStorage": "50GB",
+          "filter": ["unused-for=168h"]
+        }
+      ]
+    }
+  }
+}
+EOF
+
+# Restart Docker to apply configuration
+sudo systemctl restart docker
+
+# Verify configuration
+docker system df
+docker builder prune --help
+Subtask 7.3: Clean Up BuildKit Cache
+Implement cache management strategies.
+
+# Check current disk usage
+docker system df
+
+# Clean up build cache
+docker builder prune
+
+# Clean up with specific filters
+docker builder prune --filter until=24h
+
+# Clean up everything (use with caution)
+docker builder prune -a
+
+# Check disk usage after cleanup
+docker system df
+Verification and Testing
+Test BuildKit Features
+Run comprehensive tests to verify all BuildKit features are working correctly.
+
+# Create comprehensive test script
+cat > verify-buildkit.sh <<'EOF'
+#!/bin/bash
+
+echo "=== BuildKit Verification Tests ==="
+
+# Test 1: Verify BuildKit is enabled
+echo "Test 1: Checking BuildKit status..."
+if docker info | grep -q "BuildKit"; then
+    echo "✓ BuildKit is enabled"
+else
+    echo "✗ BuildKit is not enabled"
+fi
+
+# Test 2: Test cache mount functionality
+echo "Test 2: Testing cache mount..."
+cd ~/buildkit-lab/nodejs-app
+if docker build -q -t test-cache . > /dev/null 2>&1; then
+    echo "✓ Cache mount build successful"
+else
+    echo "✗ Cache mount build failed"
+fi
+
+# Test 3: Test multi-stage build
+echo "Test 3: Testing multi-stage build..."
+cd ~/buildkit-lab/go-app
+if docker build -q -t test-multistage . > /dev/null 2>&1; then
+    echo "✓ Multi-stage build successful"
+else
+    echo "✗ Multi-stage build failed"
+fi
+
+# Test 4: Test secret mount
+echo "Test 4: Testing secret mount..."
+cd ~/buildkit-lab/nodejs-app
+if [ -f api-key.txt ] && docker build --secret id=api_key,src=./api-key.txt -f Dockerfile.secrets -q -t test-secrets . > /dev/null 2>&1; then
+    echo "✓ Secret mount build successful"
+else
+    echo "✗ Secret mount build failed"
+fi
+
+# Test 5: Test buildx functionality
+echo "Test 5: Testing buildx..."
+if docker buildx version > /dev/null 2>&1; then
+    echo "✓ Buildx is available"
+else
+    echo "✗ Buildx is not available"
+fi
+
+echo "=== Verification completed ==="
+EOF
+
+# Run verification tests
+chmod +x verify-buildkit.sh
+./verify-buildkit.sh
+Performance Comparison
+Create a final performance comparison between traditional Docker builds and BuildKit.
+
+# Create final performance test
+cat > final-performance-test.sh <<'EOF'
+#!/bin/bash
+
+echo "=== Final Performance Comparison ==="
+
+cd ~/buildkit-lab/nodejs-app
+
+# Clean up existing images
+docker rmi -f $(docker images -q buildkit-demo:*) 2>/dev/null || true
+
+echo "Building with traditional Docker (BUILDKIT=0)..."
+export DOCKER_BUILDKIT=0
+time docker build -f Dockerfile.traditional -t buildkit-demo:traditional-final . > /dev/null 2>&1
+
+echo "Building with BuildKit (BUILDKIT=1)..."
+export DOCKER_BUILDKIT=1
+time docker build -t buildkit-demo:buildkit-final . > /dev/null 2>&1
+
+echo "Rebuilding with BuildKit (should use cache)..."
+time docker build -t buildkit-demo:buildkit-cached-final . > /dev/null 2>&1
+
+echo "=== Image sizes ==="
+docker images | grep buildkit-demo
+
+echo "=== Performance test completed ==="
+EOF
+
+chmod +x final-performance-test.sh
+./final-performance-test.sh
+Cleanup
+Remove all created resources to clean up the environment.
+
+# Stop and remove containers
+docker stop $(docker ps -aq) 2>/dev/null || true
+docker rm $(docker ps -aq) 2>/dev/null || true
+
+# Remove images
+docker rmi $(docker images -q buildkit-demo:*) 2>/dev/null || true
+docker rmi $(docker images -q buildkit-go-demo:*) 2>/dev/null || true
+docker rmi $(docker images -q perf-test:*) 2>/dev/null || true
+docker rmi $(docker images -q test-*) 2>/dev/null || true
+
+# Clean up build cache
+docker builder prune -f
+
+# Remove project directories
+rm -rf ~/buildkit-lab
+
+# Remove temporary files
+rm -f /tmp/build-metadata.json
+rm -rf /tmp/buildkit-cache
+
+echo "Cleanup completed successfully!"
+Conclusion
+In this comprehensive lab, you have successfully explored Docker BuildKit and its advanced features for efficient container builds. You accomplished the following key objectives:
+
+BuildKit Configuration: You enabled BuildKit both globally through Docker daemon configuration and per-session using environment variables, understanding different activation methods.
+
+Cache Optimization: You implemented various caching strategies including cache mounts for package managers, bind mounts for development workflows, and cache export/import functionality to significantly improve build performance.
+
+Build Secrets Management: You learned to securely handle build-time secrets using BuildKit's secret mount feature, ensuring sensitive information doesn't leak into image layers.
+
+Multi-Stage Builds: You created optimized multi-stage builds for both Node.js and Go applications, demonstrating how to minimize final image size while maintaining build efficiency.
+
+Parallel Processing: You explored BuildKit's ability to execute parallel build stages, reducing overall build time for complex applications.
+
+Performance Analysis: You conducted comprehensive performance comparisons between traditional Docker builds and BuildKit-enhanced builds, quantifying the improvements in build speed and cache utilization.
+
+Advanced Features: You utilized BuildKit's debugging capabilities, metadata export, and integration with Docker Compose for production-ready workflows.
+
+Best Practices: You identified common pitfalls in Dockerfile construction and implemented solutions following BuildKit best practices for optimal performance.
+
+The skills you've developed in this lab are essential for modern containerized application development, where build efficiency directly impacts development velocity and CI/CD pipeline performance. BuildKit's advanced features enable faster iteration cycles, reduced resource consumption, and more secure build processes, making it an indispensable tool for professional Docker workflows.
+
+These BuildKit techniques will significantly improve your container build processes in real-world scenarios, whether you're working on local development, continuous integration pipelines, or production deployments.
