@@ -1,0 +1,1007 @@
+Lab 19: Docker for Microservices
+Lab Objectives
+By the end of this lab, students will be able to:
+
+Understand the fundamentals of microservices architecture and its benefits
+Build and containerize multiple microservices using Docker
+Deploy a complete microservices application using Docker Compose
+Implement inter-service communication between microservices
+Configure service discovery and networking in a containerized environment
+Test horizontal scaling of individual microservices
+Implement and test fault tolerance mechanisms
+Monitor and troubleshoot microservices deployments
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of Linux command line operations
+Familiarity with Docker concepts (containers, images, Dockerfile)
+Basic knowledge of web applications and APIs
+Understanding of JSON format and HTTP protocols
+Basic programming concepts (variables, functions, APIs)
+Lab Environment Setup
+Note: Al Nafi provides Linux-based cloud machines for this lab. Simply click "Start Lab" to access your dedicated Linux machine. The provided machine is bare metal with no pre-installed tools, so you will install all required software during the lab.
+
+Task 1: Environment Preparation and Docker Installation
+Subtask 1.1: Update System and Install Docker
+First, let's update the system and install Docker along with necessary tools.
+
+# Update package manager
+sudo apt update && sudo apt upgrade -y
+
+# Install required packages
+sudo apt install -y curl wget git vim nano
+
+# Install Docker
+curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
+
+# Add current user to docker group
+sudo usermod -aG docker $USER
+
+# Start and enable Docker service
+sudo systemctl start docker
+sudo systemctl enable docker
+
+# Install Docker Compose
+sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+sudo chmod +x /usr/local/bin/docker-compose
+
+# Verify installations
+docker --version
+docker-compose --version
+Subtask 1.2: Create Project Structure
+Create the directory structure for our microservices e-commerce application.
+
+# Create main project directory
+mkdir ~/microservices-ecommerce
+cd ~/microservices-ecommerce
+
+# Create service directories
+mkdir -p services/user-service
+mkdir -p services/product-service
+mkdir -p services/order-service
+mkdir -p services/api-gateway
+mkdir -p services/frontend
+mkdir -p database/init
+mkdir -p monitoring
+
+# Create shared directories
+mkdir -p shared/nginx
+mkdir -p logs
+
+# Verify structure
+tree . || ls -la
+Task 2: Build Individual Microservices
+Subtask 2.1: Create User Service
+The user service will handle user authentication and management.
+
+cd ~/microservices-ecommerce/services/user-service
+
+# Create package.json for Node.js service
+cat > package.json << 'EOF'
+{
+  "name": "user-service",
+  "version": "1.0.0",
+  "description": "User management microservice",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "body-parser": "^1.20.2",
+    "jsonwebtoken": "^9.0.0",
+    "bcryptjs": "^2.4.3"
+  }
+}
+EOF
+
+# Create the main server file
+cat > server.js << 'EOF'
+const express = require('express');
+const cors = require('cors');
+const bodyParser = require('body-parser');
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
+
+const app = express();
+const PORT = process.env.PORT || 3001;
+const JWT_SECRET = process.env.JWT_SECRET || 'user-service-secret';
+
+// Middleware
+app.use(cors());
+app.use(bodyParser.json());
+
+// In-memory user storage (in production, use a database)
+let users = [
+  {
+    id: 1,
+    username: 'admin',
+    email: 'admin@example.com',
+    password: bcrypt.hashSync('admin123', 10),
+    role: 'admin'
+  },
+  {
+    id: 2,
+    username: 'user1',
+    email: 'user1@example.com',
+    password: bcrypt.hashSync('user123', 10),
+    role: 'customer'
+  }
+];
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ status: 'healthy', service: 'user-service', timestamp: new Date().toISOString() });
+});
+
+// Register endpoint
+app.post('/register', async (req, res) => {
+  try {
+    const { username, email, password } = req.body;
+    
+    // Check if user exists
+    const existingUser = users.find(u => u.email === email || u.username === username);
+    if (existingUser) {
+      return res.status(400).json({ error: 'User already exists' });
+    }
+
+    // Create new user
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const newUser = {
+      id: users.length + 1,
+      username,
+      email,
+      password: hashedPassword,
+      role: 'customer'
+    };
+    
+    users.push(newUser);
+    
+    // Generate token
+    const token = jwt.sign({ id: newUser.id, username, role: newUser.role }, JWT_SECRET);
+    
+    res.status(201).json({
+      message: 'User registered successfully',
+      token,
+      user: { id: newUser.id, username, email, role: newUser.role }
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Registration failed' });
+  }
+});
+
+// Login endpoint
+app.post('/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    
+    // Find user
+    const user = users.find(u => u.username === username);
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    // Check password
+    const isValidPassword = await bcrypt.compare(password, user.password);
+    if (!isValidPassword) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    // Generate token
+    const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET);
+    
+    res.json({
+      message: 'Login successful',
+      token,
+      user: { id: user.id, username: user.username, email: user.email, role: user.role }
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+// Get user profile
+app.get('/profile/:id', (req, res) => {
+  const userId = parseInt(req.params.id);
+  const user = users.find(u => u.id === userId);
+  
+  if (!user) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+  
+  res.json({
+    id: user.id,
+    username: user.username,
+    email: user.email,
+    role: user.role
+  });
+});
+
+// Get all users (admin only)
+app.get('/users', (req, res) => {
+  const userList = users.map(u => ({
+    id: u.id,
+    username: u.username,
+    email: u.email,
+    role: u.role
+  }));
+  res.json(userList);
+});
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`User service running on port ${PORT}`);
+});
+EOF
+
+# Create Dockerfile
+cat > Dockerfile << 'EOF'
+FROM node:18-alpine
+
+WORKDIR /app
+
+COPY package.json .
+RUN npm install
+
+COPY . .
+
+EXPOSE 3001
+
+CMD ["npm", "start"]
+EOF
+Subtask 2.2: Create Product Service
+cd ~/microservices-ecommerce/services/product-service
+
+# Create package.json
+cat > package.json << 'EOF'
+{
+  "name": "product-service",
+  "version": "1.0.0",
+  "description": "Product management microservice",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "body-parser": "^1.20.2"
+  }
+}
+EOF
+
+# Create server.js
+cat > server.js << 'EOF'
+const express = require('express');
+const cors = require('cors');
+const bodyParser = require('body-parser');
+
+const app = express();
+const PORT = process.env.PORT || 3002;
+
+// Middleware
+app.use(cors());
+app.use(bodyParser.json());
+
+// In-memory product storage
+let products = [
+  {
+    id: 1,
+    name: 'Laptop',
+    description: 'High-performance laptop for professionals',
+    price: 999.99,
+    category: 'Electronics',
+    stock: 50,
+    image: 'laptop.jpg'
+  },
+  {
+    id: 2,
+    name: 'Smartphone',
+    description: 'Latest smartphone with advanced features',
+    price: 699.99,
+    category: 'Electronics',
+    stock: 100,
+    image: 'smartphone.jpg'
+  },
+  {
+    id: 3,
+    name: 'Coffee Mug',
+    description: 'Premium ceramic coffee mug',
+    price: 19.99,
+    category: 'Home & Kitchen',
+    stock: 200,
+    image: 'mug.jpg'
+  },
+  {
+    id: 4,
+    name: 'Running Shoes',
+    description: 'Comfortable running shoes for athletes',
+    price: 129.99,
+    category: 'Sports',
+    stock: 75,
+    image: 'shoes.jpg'
+  }
+];
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ status: 'healthy', service: 'product-service', timestamp: new Date().toISOString() });
+});
+
+// Get all products
+app.get('/products', (req, res) => {
+  const { category, search } = req.query;
+  let filteredProducts = products;
+
+  if (category) {
+    filteredProducts = filteredProducts.filter(p => 
+      p.category.toLowerCase().includes(category.toLowerCase())
+    );
+  }
+
+  if (search) {
+    filteredProducts = filteredProducts.filter(p => 
+      p.name.toLowerCase().includes(search.toLowerCase()) ||
+      p.description.toLowerCase().includes(search.toLowerCase())
+    );
+  }
+
+  res.json(filteredProducts);
+});
+
+// Get product by ID
+app.get('/products/:id', (req, res) => {
+  const productId = parseInt(req.params.id);
+  const product = products.find(p => p.id === productId);
+  
+  if (!product) {
+    return res.status(404).json({ error: 'Product not found' });
+  }
+  
+  res.json(product);
+});
+
+// Add new product
+app.post('/products', (req, res) => {
+  const { name, description, price, category, stock } = req.body;
+  
+  const newProduct = {
+    id: products.length + 1,
+    name,
+    description,
+    price: parseFloat(price),
+    category,
+    stock: parseInt(stock),
+    image: 'default.jpg'
+  };
+  
+  products.push(newProduct);
+  res.status(201).json(newProduct);
+});
+
+// Update product stock
+app.patch('/products/:id/stock', (req, res) => {
+  const productId = parseInt(req.params.id);
+  const { quantity } = req.body;
+  
+  const product = products.find(p => p.id === productId);
+  if (!product) {
+    return res.status(404).json({ error: 'Product not found' });
+  }
+  
+  product.stock += quantity;
+  res.json(product);
+});
+
+// Get categories
+app.get('/categories', (req, res) => {
+  const categories = [...new Set(products.map(p => p.category))];
+  res.json(categories);
+});
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Product service running on port ${PORT}`);
+});
+EOF
+
+# Create Dockerfile
+cat > Dockerfile << 'EOF'
+FROM node:18-alpine
+
+WORKDIR /app
+
+COPY package.json .
+RUN npm install
+
+COPY . .
+
+EXPOSE 3002
+
+CMD ["npm", "start"]
+EOF
+Subtask 2.3: Create Order Service
+cd ~/microservices-ecommerce/services/order-service
+
+# Create package.json
+cat > package.json << 'EOF'
+{
+  "name": "order-service",
+  "version": "1.0.0",
+  "description": "Order management microservice",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "body-parser": "^1.20.2",
+    "axios": "^1.4.0"
+  }
+}
+EOF
+
+# Create server.js
+cat > server.js << 'EOF'
+const express = require('express');
+const cors = require('cors');
+const bodyParser = require('body-parser');
+const axios = require('axios');
+
+const app = express();
+const PORT = process.env.PORT || 3003;
+const PRODUCT_SERVICE_URL = process.env.PRODUCT_SERVICE_URL || 'http://product-service:3002';
+
+// Middleware
+app.use(cors());
+app.use(bodyParser.json());
+
+// In-memory order storage
+let orders = [];
+let orderIdCounter = 1;
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ status: 'healthy', service: 'order-service', timestamp: new Date().toISOString() });
+});
+
+// Create new order
+app.post('/orders', async (req, res) => {
+  try {
+    const { userId, items } = req.body;
+    
+    // Validate products and calculate total
+    let totalAmount = 0;
+    const orderItems = [];
+    
+    for (const item of items) {
+      try {
+        const productResponse = await axios.get(`${PRODUCT_SERVICE_URL}/products/${item.productId}`);
+        const product = productResponse.data;
+        
+        if (product.stock < item.quantity) {
+          return res.status(400).json({ 
+            error: `Insufficient stock for product ${product.name}. Available: ${product.stock}, Requested: ${item.quantity}` 
+          });
+        }
+        
+        const itemTotal = product.price * item.quantity;
+        totalAmount += itemTotal;
+        
+        orderItems.push({
+          productId: item.productId,
+          productName: product.name,
+          price: product.price,
+          quantity: item.quantity,
+          subtotal: itemTotal
+        });
+        
+        // Update product stock
+        await axios.patch(`${PRODUCT_SERVICE_URL}/products/${item.productId}/stock`, {
+          quantity: -item.quantity
+        });
+        
+      } catch (error) {
+        console.error(`Error processing product ${item.productId}:`, error.message);
+        return res.status(400).json({ error: `Product ${item.productId} not found or unavailable` });
+      }
+    }
+    
+    // Create order
+    const newOrder = {
+      id: orderIdCounter++,
+      userId,
+      items: orderItems,
+      totalAmount: parseFloat(totalAmount.toFixed(2)),
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    
+    orders.push(newOrder);
+    
+    res.status(201).json(newOrder);
+  } catch (error) {
+    console.error('Order creation error:', error);
+    res.status(500).json({ error: 'Failed to create order' });
+  }
+});
+
+// Get orders for a user
+app.get('/orders/user/:userId', (req, res) => {
+  const userId = parseInt(req.params.userId);
+  const userOrders = orders.filter(order => order.userId === userId);
+  res.json(userOrders);
+});
+
+// Get order by ID
+app.get('/orders/:id', (req, res) => {
+  const orderId = parseInt(req.params.id);
+  const order = orders.find(o => o.id === orderId);
+  
+  if (!order) {
+    return res.status(404).json({ error: 'Order not found' });
+  }
+  
+  res.json(order);
+});
+
+// Update order status
+app.patch('/orders/:id/status', (req, res) => {
+  const orderId = parseInt(req.params.id);
+  const { status } = req.body;
+  
+  const order = orders.find(o => o.id === orderId);
+  if (!order) {
+    return res.status(404).json({ error: 'Order not found' });
+  }
+  
+  order.status = status;
+  order.updatedAt = new Date().toISOString();
+  
+  res.json(order);
+});
+
+// Get all orders (admin)
+app.get('/orders', (req, res) => {
+  res.json(orders);
+});
+
+// Get order statistics
+app.get('/stats', (req, res) => {
+  const stats = {
+    totalOrders: orders.length,
+    totalRevenue: orders.reduce((sum, order) => sum + order.totalAmount, 0),
+    ordersByStatus: {
+      pending: orders.filter(o => o.status === 'pending').length,
+      processing: orders.filter(o => o.status === 'processing').length,
+      shipped: orders.filter(o => o.status === 'shipped').length,
+      delivered: orders.filter(o => o.status === 'delivered').length,
+      cancelled: orders.filter(o => o.status === 'cancelled').length
+    }
+  };
+  res.json(stats);
+});
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Order service running on port ${PORT}`);
+});
+EOF
+
+# Create Dockerfile
+cat > Dockerfile << 'EOF'
+FROM node:18-alpine
+
+WORKDIR /app
+
+COPY package.json .
+RUN npm install
+
+COPY . .
+
+EXPOSE 3003
+
+CMD ["npm", "start"]
+EOF
+Subtask 2.4: Create API Gateway
+cd ~/microservices-ecommerce/services/api-gateway
+
+# Create package.json
+cat > package.json << 'EOF'
+{
+  "name": "api-gateway",
+  "version": "1.0.0",
+  "description": "API Gateway for microservices",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "body-parser": "^1.20.2",
+    "http-proxy-middleware": "^2.0.6",
+    "express-rate-limit": "^6.7.0"
+  }
+}
+EOF
+
+# Create server.js
+cat > server.js << 'EOF'
+const express = require('express');
+const cors = require('cors');
+const bodyParser = require('body-parser');
+const { createProxyMiddleware } = require('http-proxy-middleware');
+const rateLimit = require('express-rate-limit');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Service URLs
+const services = {
+  user: process.env.USER_SERVICE_URL || 'http://user-service:3001',
+  product: process.env.PRODUCT_SERVICE_URL || 'http://product-service:3002',
+  order: process.env.ORDER_SERVICE_URL || 'http://order-service:3003'
+};
+
+// Middleware
+app.use(cors());
+app.use(bodyParser.json());
+
+// Rate limiting
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 requests per windowMs
+  message: 'Too many requests from this IP, please try again later.'
+});
+
+app.use('/api/', limiter);
+
+// Health check for gateway
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'healthy', 
+    service: 'api-gateway', 
+    timestamp: new Date().toISOString(),
+    services: services
+  });
+});
+
+// Service health checks
+app.get('/health/all', async (req, res) => {
+  const axios = require('axios');
+  const healthChecks = {};
+  
+  for (const [serviceName, serviceUrl] of Object.entries(services)) {
+    try {
+      const response = await axios.get(`${serviceUrl}/health`, { timeout: 5000 });
+      healthChecks[serviceName] = { status: 'healthy', data: response.data };
+    } catch (error) {
+      healthChecks[serviceName] = { status: 'unhealthy', error: error.message };
+    }
+  }
+  
+  res.json({
+    gateway: 'healthy',
+    timestamp: new Date().toISOString(),
+    services: healthChecks
+  });
+});
+
+// Proxy configuration
+const proxyOptions = {
+  changeOrigin: true,
+  timeout: 10000,
+  proxyTimeout: 10000,
+  onError: (err, req, res) => {
+    console.error('Proxy error:', err);
+    res.status(500).json({ error: 'Service temporarily unavailable' });
+  },
+  onProxyReq: (proxyReq, req, res) => {
+    console.log(`Proxying ${req.method} ${req.url} to ${proxyReq.path}`);
+  }
+};
+
+// User service routes
+app.use('/api/users', createProxyMiddleware({
+  target: services.user,
+  pathRewrite: {
+    '^/api/users': ''
+  },
+  ...proxyOptions
+}));
+
+// Product service routes
+app.use('/api/products', createProxyMiddleware({
+  target: services.product,
+  pathRewrite: {
+    '^/api/products': ''
+  },
+  ...proxyOptions
+}));
+
+// Order service routes
+app.use('/api/orders', createProxyMiddleware({
+  target: services.order,
+  pathRewrite: {
+    '^/api/orders': ''
+  },
+  ...proxyOptions
+}));
+
+// API documentation endpoint
+app.get('/api/docs', (req, res) => {
+  res.json({
+    title: 'E-commerce Microservices API',
+    version: '1.0.0',
+    description: 'API Gateway for microservices-based e-commerce application',
+    endpoints: {
+      users: {
+        base: '/api/users',
+        endpoints: [
+          'POST /register - Register new user',
+          'POST /login - User login',
+          'GET /profile/:id - Get user profile',
+          'GET /users - Get all users (admin)'
+        ]
+      },
+      products: {
+        base: '/api/products',
+        endpoints: [
+          'GET /products - Get all products',
+          'GET /products/:id - Get product by ID',
+          'POST /products - Add new product',
+          'PATCH /products/:id/stock - Update product stock',
+          'GET /categories - Get product categories'
+        ]
+      },
+      orders: {
+        base: '/api/orders',
+        endpoints: [
+          'POST /orders - Create new order',
+          'GET /orders/user/:userId - Get user orders',
+          'GET /orders/:id - Get order by ID',
+          'PATCH /orders/:id/status - Update order status',
+          'GET /orders - Get all orders (admin)',
+          'GET /stats - Get order statistics'
+        ]
+      }
+    }
+  });
+});
+
+// Default route
+app.get('/', (req, res) => {
+  res.json({
+    message: 'E-commerce Microservices API Gateway',
+    version: '1.0.0',
+    documentation: '/api/docs',
+    health: '/health'
+  });
+});
+
+// 404 handler
+app.use('*', (req, res) => {
+  res.status(404).json({ error: 'Route not found' });
+});
+
+// Error handler
+app.use((error, req, res, next) => {
+  console.error('Gateway error:', error);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`API Gateway running on port ${PORT}`);
+  console.log('Service endpoints:');
+  Object.entries(services).forEach(([name, url]) => {
+    console.log(`  ${name}: ${url}`);
+  });
+});
+EOF
+
+# Create Dockerfile
+cat > Dockerfile << 'EOF'
+FROM node:18-alpine
+
+WORKDIR /app
+
+COPY package.json .
+RUN npm install
+
+COPY . .
+
+EXPOSE 3000
+
+CMD ["npm", "start"]
+EOF
+Subtask 2.5: Create Simple Frontend
+cd ~/microservices-ecommerce/services/frontend
+
+# Create package.json
+cat > package.json << 'EOF'
+{
+  "name": "frontend",
+  "version": "1.0.0",
+  "description": "Simple frontend for e-commerce microservices",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}
+EOF
+
+# Create server.js
+cat > server.js << 'EOF'
+const express = require('express');
+const path = require('path');
+
+const app = express();
+const PORT = process.env.PORT || 8080;
+
+// Serve static files
+app.use(express.static('public'));
+
+// Health check
+app.get('/health', (req, res) => {
+  res.json({ status: 'healthy', service: 'frontend', timestamp: new Date().toISOString() });
+});
+
+// Serve main page
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Frontend server running on port ${PORT}`);
+});
+EOF
+
+# Create public directory and HTML file
+mkdir -p public
+
+cat > public/index.html << 'EOF'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>E-commerce Microservices Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .header {
+            text-align: center;
+            color: #333;
+            border-bottom: 2px solid #007bff;
+            padding-bottom: 10px;
+        }
+        .section {
+            margin: 20px 0;
+        }
+        .button {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        .button:hover {
+            background-color: #0056b3;
+        }
+        .response {
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 15px;
+            margin-top: 10px;
+            white-space: pre-wrap;
+            font-family: monospace;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .input-group {
+            margin: 10px 0;
+        }
+        .input-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        .input-group input, .input-group select {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+        }
+        .status-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 5px;
+        }
+        .status-healthy { background-color: #28a745; }
+        .status-unhealthy { background-color: #dc3545; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>E-commerce Microservices Demo</h1>
+            <p>Testing microservices architecture with Docker</p>
+        </div>
+    </div>
+
+    <div class="grid">
+        <!-- Service Health Status -->
+        <div class="container">
+            <h2>Service Health Status</h2>
+            <button class="button" onclick="checkAllHealth()">Check All Services</button>
+            <div id="healthResponse" class="response"></div>
+        </div>
+
+        <!-- User Service -->
+        <div class="container">
+            <h2>User Service</h2>
+            <div class="section">
+                <h3>Login</h3>
+                <div class="input-group">
+                    <label>Username:</label>
+                    <input type="text" id="loginUsername" value="admin">
+                </div>
+                <div class="input-group">
+                    <label>Password:</label>
+                    <input type="password" id="loginPassword" value="admin123">
+                </div>
+                <button class="button" onclick="login()">Login</button>
+            </div>
+            <div class="section">
+                <h3>Register</h3>
+                <div class="input-group">
+                    <label>Username:</label>
+                    <input type="text" id="regUsername" placeholder="newuser">
+                </div>
+                <div class="input-group">
+                    <label>Email:</label>
+                    <input type="email" id="regEmail" placeholder="user@example.com">
+                </div>
+                <div class="input-group">
+                    <label>Password:</label>
+                    <input type="password" id="regPassword" placeholder="password">
+                </div>
+                <button class="button" onclick="register()">Register</button>
+            </div>
+            <div id="userResponse" class="response"></div>
+        </div>
+
+        <!-- Product Service -->
+        <div class="container">
+            <h2>Product Service</h2>
+            <button class="button" onclick="getProducts()">Get All Products</button>
+            <button class="button" onclick="getCategories()">Get Categories</button>
+            <div
