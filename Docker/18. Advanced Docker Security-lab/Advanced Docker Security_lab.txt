@@ -1,0 +1,952 @@
+Lab 18: Advanced Docker Security
+Learning Objectives
+By the end of this lab, students will be able to:
+
+Implement advanced user namespaces and resource controls for enhanced container security
+Apply security patches to base images and maintain secure container images
+Perform comprehensive vulnerability scanning using third-party tools like Trivy
+Configure Docker daemon security settings and implement security best practices
+Understand and mitigate common Docker security vulnerabilities
+Create and manage secure container environments with proper isolation
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of Linux command line operations
+Fundamental knowledge of Docker containers and images
+Basic understanding of Linux user management and permissions
+Familiarity with package management in Linux distributions
+Understanding of basic networking concepts
+Knowledge of YAML file structure and configuration files
+Lab Environment
+Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated Linux machine. The provided machine is bare metal with no pre-installed tools, so you will install all required tools during the lab exercises.
+
+Note: All tasks in this lab will be performed on a single Linux machine. No additional virtual machines or remote hosts are required.
+
+Task 1: Implement Advanced User Namespaces and Resource Controls
+Subtask 1.1: Install Docker and Configure Initial Security Settings
+First, we need to install Docker and configure it with security-focused settings.
+
+# Update the system
+sudo apt update && sudo apt upgrade -y
+
+# Install required packages
+sudo apt install -y apt-transport-https ca-certificates curl gnupg lsb-release
+
+# Add Docker's official GPG key
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+
+# Add Docker repository
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# Update package index and install Docker
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io
+
+# Start and enable Docker service
+sudo systemctl start docker
+sudo systemctl enable docker
+
+# Add current user to docker group
+sudo usermod -aG docker $USER
+
+# Apply group changes
+newgrp docker
+Subtask 1.2: Configure Docker Daemon with Security Settings
+Create a secure Docker daemon configuration file:
+
+# Create Docker daemon configuration directory
+sudo mkdir -p /etc/docker
+
+# Create daemon.json with security configurations
+sudo tee /etc/docker/daemon.json > /dev/null <<EOF
+{
+  "userns-remap": "default",
+  "no-new-privileges": true,
+  "seccomp-profile": "/etc/docker/seccomp.json",
+  "apparmor-profile": "docker-default",
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+  },
+  "live-restore": true,
+  "userland-proxy": false,
+  "experimental": false,
+  "icc": false,
+  "default-ulimits": {
+    "nofile": {
+      "Name": "nofile",
+      "Hard": 64000,
+      "Soft": 64000
+    }
+  }
+}
+EOF
+
+# Create a custom seccomp profile
+sudo tee /etc/docker/seccomp.json > /dev/null <<EOF
+{
+  "defaultAction": "SCMP_ACT_ERRNO",
+  "architectures": [
+    "SCMP_ARCH_X86_64",
+    "SCMP_ARCH_X86",
+    "SCMP_ARCH_X32"
+  ],
+  "syscalls": [
+    {
+      "names": [
+        "accept",
+        "accept4",
+        "access",
+        "adjtimex",
+        "alarm",
+        "bind",
+        "brk",
+        "capget",
+        "capset",
+        "chdir",
+        "chmod",
+        "chown",
+        "chown32",
+        "clock_getres",
+        "clock_gettime",
+        "clock_nanosleep",
+        "close",
+        "connect",
+        "copy_file_range",
+        "creat",
+        "dup",
+        "dup2",
+        "dup3",
+        "epoll_create",
+        "epoll_create1",
+        "epoll_ctl",
+        "epoll_pwait",
+        "epoll_wait",
+        "eventfd",
+        "eventfd2",
+        "execve",
+        "execveat",
+        "exit",
+        "exit_group",
+        "faccessat",
+        "fadvise64",
+        "fadvise64_64",
+        "fallocate",
+        "fanotify_mark",
+        "fchdir",
+        "fchmod",
+        "fchmodat",
+        "fchown",
+        "fchown32",
+        "fchownat",
+        "fcntl",
+        "fcntl64",
+        "fdatasync",
+        "fgetxattr",
+        "flistxattr",
+        "flock",
+        "fork",
+        "fremovexattr",
+        "fsetxattr",
+        "fstat",
+        "fstat64",
+        "fstatat64",
+        "fstatfs",
+        "fstatfs64",
+        "fsync",
+        "ftruncate",
+        "ftruncate64",
+        "futex",
+        "getcwd",
+        "getdents",
+        "getdents64",
+        "getegid",
+        "getegid32",
+        "geteuid",
+        "geteuid32",
+        "getgid",
+        "getgid32",
+        "getgroups",
+        "getgroups32",
+        "getitimer",
+        "getpeername",
+        "getpgid",
+        "getpgrp",
+        "getpid",
+        "getppid",
+        "getpriority",
+        "getrandom",
+        "getresgid",
+        "getresgid32",
+        "getresuid",
+        "getresuid32",
+        "getrlimit",
+        "get_robust_list",
+        "getrusage",
+        "getsid",
+        "getsockname",
+        "getsockopt",
+        "get_thread_area",
+        "gettid",
+        "gettimeofday",
+        "getuid",
+        "getuid32",
+        "getxattr",
+        "inotify_add_watch",
+        "inotify_init",
+        "inotify_init1",
+        "inotify_rm_watch",
+        "io_cancel",
+        "ioctl",
+        "io_destroy",
+        "io_getevents",
+        "ioprio_get",
+        "ioprio_set",
+        "io_setup",
+        "io_submit",
+        "ipc",
+        "kill",
+        "lchown",
+        "lchown32",
+        "lgetxattr",
+        "link",
+        "linkat",
+        "listen",
+        "listxattr",
+        "llistxattr",
+        "lremovexattr",
+        "lseek",
+        "lsetxattr",
+        "lstat",
+        "lstat64",
+        "madvise",
+        "memfd_create",
+        "mincore",
+        "mkdir",
+        "mkdirat",
+        "mknod",
+        "mknodat",
+        "mlock",
+        "mlock2",
+        "mlockall",
+        "mmap",
+        "mmap2",
+        "mprotect",
+        "mq_getsetattr",
+        "mq_notify",
+        "mq_open",
+        "mq_timedreceive",
+        "mq_timedsend",
+        "mq_unlink",
+        "mremap",
+        "msgctl",
+        "msgget",
+        "msgrcv",
+        "msgsnd",
+        "msync",
+        "munlock",
+        "munlockall",
+        "munmap",
+        "nanosleep",
+        "newfstatat",
+        "_newselect",
+        "open",
+        "openat",
+        "pause",
+        "pipe",
+        "pipe2",
+        "poll",
+        "ppoll",
+        "prctl",
+        "pread64",
+        "preadv",
+        "prlimit64",
+        "pselect6",
+        "ptrace",
+        "pwrite64",
+        "pwritev",
+        "read",
+        "readahead",
+        "readlink",
+        "readlinkat",
+        "readv",
+        "recv",
+        "recvfrom",
+        "recvmmsg",
+        "recvmsg",
+        "remap_file_pages",
+        "removexattr",
+        "rename",
+        "renameat",
+        "renameat2",
+        "restart_syscall",
+        "rmdir",
+        "rt_sigaction",
+        "rt_sigpending",
+        "rt_sigprocmask",
+        "rt_sigqueueinfo",
+        "rt_sigreturn",
+        "rt_sigsuspend",
+        "rt_sigtimedwait",
+        "rt_tgsigqueueinfo",
+        "sched_getaffinity",
+        "sched_getattr",
+        "sched_getparam",
+        "sched_get_priority_max",
+        "sched_get_priority_min",
+        "sched_getscheduler",
+        "sched_rr_get_interval",
+        "sched_setaffinity",
+        "sched_setattr",
+        "sched_setparam",
+        "sched_setscheduler",
+        "sched_yield",
+        "seccomp",
+        "select",
+        "semctl",
+        "semget",
+        "semop",
+        "semtimedop",
+        "send",
+        "sendfile",
+        "sendfile64",
+        "sendmmsg",
+        "sendmsg",
+        "sendto",
+        "setfsgid",
+        "setfsgid32",
+        "setfsuid",
+        "setfsuid32",
+        "setgid",
+        "setgid32",
+        "setgroups",
+        "setgroups32",
+        "setitimer",
+        "setpgid",
+        "setpriority",
+        "setregid",
+        "setregid32",
+        "setresgid",
+        "setresgid32",
+        "setresuid",
+        "setresuid32",
+        "setreuid",
+        "setreuid32",
+        "setrlimit",
+        "set_robust_list",
+        "setsid",
+        "setsockopt",
+        "set_thread_area",
+        "set_tid_address",
+        "setuid",
+        "setuid32",
+        "setxattr",
+        "shmat",
+        "shmctl",
+        "shmdt",
+        "shmget",
+        "shutdown",
+        "sigaltstack",
+        "signalfd",
+        "signalfd4",
+        "sigreturn",
+        "socket",
+        "socketcall",
+        "socketpair",
+        "splice",
+        "stat",
+        "stat64",
+        "statfs",
+        "statfs64",
+        "statx",
+        "symlink",
+        "symlinkat",
+        "sync",
+        "sync_file_range",
+        "syncfs",
+        "sysinfo",
+        "tee",
+        "tgkill",
+        "time",
+        "timer_create",
+        "timer_delete",
+        "timerfd_create",
+        "timerfd_gettime",
+        "timerfd_settime",
+        "timer_getoverrun",
+        "timer_gettime",
+        "timer_settime",
+        "times",
+        "tkill",
+        "truncate",
+        "truncate64",
+        "ugetrlimit",
+        "umask",
+        "uname",
+        "unlink",
+        "unlinkat",
+        "utime",
+        "utimensat",
+        "utimes",
+        "vfork",
+        "vmsplice",
+        "wait4",
+        "waitid",
+        "waitpid",
+        "write",
+        "writev"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    }
+  ]
+}
+EOF
+
+# Restart Docker daemon to apply new configuration
+sudo systemctl restart docker
+
+# Verify Docker is running with new configuration
+sudo systemctl status docker
+Subtask 1.3: Configure User Namespaces
+Set up user namespace mapping for enhanced security:
+
+# Create subordinate user and group ID ranges
+echo "dockremap:165536:65536" | sudo tee -a /etc/subuid
+echo "dockremap:165536:65536" | sudo tee -a /etc/subgid
+
+# Create the dockremap user
+sudo useradd -r -s /bin/false dockremap
+
+# Restart Docker to enable user namespace remapping
+sudo systemctl restart docker
+
+# Verify user namespace is working
+docker info | grep -i "user namespace"
+Subtask 1.4: Implement Resource Controls and Limits
+Create a test container with resource constraints:
+
+# Create a Dockerfile for testing resource limits
+mkdir -p ~/docker-security-lab
+cd ~/docker-security-lab
+
+cat > Dockerfile.resource-test <<EOF
+FROM alpine:latest
+RUN addgroup -g 1000 appuser && adduser -D -u 1000 -G appuser appuser
+USER appuser
+WORKDIR /app
+COPY stress-test.sh /app/
+RUN chmod +x /app/stress-test.sh
+CMD ["/app/stress-test.sh"]
+EOF
+
+# Create a stress test script
+cat > stress-test.sh <<'EOF'
+#!/bin/sh
+echo "Starting resource stress test..."
+echo "PID: $$"
+echo "User: $(whoami)"
+echo "UID: $(id -u)"
+echo "GID: $(id -g)"
+
+# Memory stress test
+echo "Testing memory limits..."
+dd if=/dev/zero of=/tmp/memory.fill bs=1024 count=1024 2>/dev/null || echo "Memory limit reached"
+
+# CPU stress test
+echo "Testing CPU limits..."
+yes > /dev/null &
+PID=$!
+sleep 5
+kill $PID 2>/dev/null
+
+echo "Resource test completed"
+sleep 30
+EOF
+
+# Build the test image
+docker build -f Dockerfile.resource-test -t resource-test .
+
+# Run container with strict resource limits
+docker run -d \
+  --name resource-limited \
+  --memory="64m" \
+  --memory-swap="64m" \
+  --cpus="0.5" \
+  --pids-limit=100 \
+  --ulimit nofile=1024:1024 \
+  --ulimit nproc=64:64 \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,size=10m \
+  --security-opt=no-new-privileges:true \
+  --cap-drop=ALL \
+  --cap-add=CHOWN \
+  --cap-add=SETUID \
+  --cap-add=SETGID \
+  resource-test
+
+# Monitor resource usage
+echo "Container resource usage:"
+docker stats resource-limited --no-stream
+
+# Check container logs
+echo "Container logs:"
+docker logs resource-limited
+
+# Clean up
+docker stop resource-limited
+docker rm resource-limited
+Task 2: Apply Security Patches to Base Images
+Subtask 2.1: Create Secure Base Images
+Create a hardened base image with security updates:
+
+# Create a secure Ubuntu base image
+cat > Dockerfile.secure-base <<EOF
+FROM ubuntu:22.04
+
+# Set non-interactive mode for apt
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Update and upgrade packages
+RUN apt-get update && \
+    apt-get upgrade -y && \
+    apt-get install -y \
+    ca-certificates \
+    curl \
+    gnupg \
+    lsb-release \
+    unattended-upgrades \
+    apt-listchanges && \
+    apt-get autoremove -y && \
+    apt-get autoclean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Configure automatic security updates
+RUN echo 'Unattended-Upgrade::Automatic-Reboot "false";' >> /etc/apt/apt.conf.d/50unattended-upgrades && \
+    echo 'Unattended-Upgrade::Remove-Unused-Dependencies "true";' >> /etc/apt/apt.conf.d/50unattended-upgrades && \
+    echo 'Unattended-Upgrade::Automatic-Reboot-Time "02:00";' >> /etc/apt/apt.conf.d/50unattended-upgrades
+
+# Create non-root user
+RUN groupadd -r appgroup && \
+    useradd -r -g appgroup -d /home/appuser -s /bin/bash -c "App User" appuser && \
+    mkdir -p /home/appuser && \
+    chown -R appuser:appgroup /home/appuser
+
+# Set security-focused environment variables
+ENV USER=appuser
+ENV HOME=/home/appuser
+ENV SHELL=/bin/bash
+
+# Remove unnecessary packages and files
+RUN apt-get purge -y --auto-remove \
+    wget \
+    vim \
+    nano \
+    less \
+    man-db \
+    manpages
+
+# Set proper permissions
+RUN chmod 755 /home/appuser
+
+USER appuser
+WORKDIR /home/appuser
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD echo "Health check passed" || exit 1
+
+CMD ["/bin/bash"]
+EOF
+
+# Build the secure base image
+docker build -f Dockerfile.secure-base -t secure-ubuntu:latest .
+
+# Test the secure base image
+docker run --rm -it --name test-secure-base secure-ubuntu:latest whoami
+Subtask 2.2: Implement Multi-Stage Builds for Security
+Create a multi-stage build that minimizes attack surface:
+
+# Create a multi-stage Dockerfile for a sample application
+cat > Dockerfile.multistage <<EOF
+# Build stage
+FROM ubuntu:22.04 AS builder
+
+# Install build dependencies
+RUN apt-get update && \
+    apt-get install -y \
+    build-essential \
+    curl \
+    git && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create application directory
+WORKDIR /app
+
+# Create a simple application
+RUN echo '#!/bin/bash' > app.sh && \
+    echo 'echo "Secure Application Running"' >> app.sh && \
+    echo 'echo "User: $(whoami)"' >> app.sh && \
+    echo 'echo "Working Directory: $(pwd)"' >> app.sh && \
+    echo 'while true; do sleep 30; done' >> app.sh && \
+    chmod +x app.sh
+
+# Production stage
+FROM alpine:latest AS production
+
+# Install only runtime dependencies
+RUN apk add --no-cache bash && \
+    addgroup -g 1001 appgroup && \
+    adduser -D -u 1001 -G appgroup appuser
+
+# Copy only the application from builder stage
+COPY --from=builder --chown=appuser:appgroup /app/app.sh /app/
+
+# Switch to non-root user
+USER appuser
+WORKDIR /app
+
+# Expose minimal information
+LABEL maintainer="security-team@company.com" \
+      version="1.0" \
+      description="Secure multi-stage application"
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD pgrep -f "app.sh" > /dev/null || exit 1
+
+CMD ["./app.sh"]
+EOF
+
+# Build the multi-stage image
+docker build -f Dockerfile.multistage -t secure-app:latest .
+
+# Compare image sizes
+echo "Image sizes comparison:"
+docker images | grep -E "(ubuntu|alpine|secure-)"
+
+# Run the secure application
+docker run -d \
+  --name secure-app \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,size=10m \
+  --security-opt=no-new-privileges:true \
+  --cap-drop=ALL \
+  secure-app:latest
+
+# Check the running application
+docker logs secure-app
+docker exec secure-app ps aux
+Subtask 2.3: Implement Image Signing and Verification
+Set up Docker Content Trust for image signing:
+
+# Enable Docker Content Trust
+export DOCKER_CONTENT_TRUST=1
+
+# Create a test registry simulation (for demonstration)
+mkdir -p ~/docker-trust-demo
+cd ~/docker-trust-demo
+
+# Create a simple application for signing
+cat > Dockerfile.signed <<EOF
+FROM alpine:latest
+RUN apk add --no-cache curl
+RUN adduser -D -s /bin/sh appuser
+USER appuser
+WORKDIR /home/appuser
+CMD ["echo", "Signed and verified application"]
+EOF
+
+# Build the image
+docker build -f Dockerfile.signed -t signed-app:v1.0 .
+
+# Show trust information (will show unsigned for local images)
+docker trust inspect signed-app:v1.0 --pretty || echo "Image not signed (local build)"
+
+# Create a script to simulate image verification
+cat > verify-image.sh <<'EOF'
+#!/bin/bash
+
+IMAGE_NAME=$1
+if [ -z "$IMAGE_NAME" ]; then
+    echo "Usage: $0 <image_name>"
+    exit 1
+fi
+
+echo "Verifying image: $IMAGE_NAME"
+
+# Check if image exists
+if ! docker image inspect "$IMAGE_NAME" > /dev/null 2>&1; then
+    echo "ERROR: Image $IMAGE_NAME not found"
+    exit 1
+fi
+
+# Get image digest
+DIGEST=$(docker image inspect "$IMAGE_NAME" --format='{{index .RepoDigests 0}}' 2>/dev/null)
+if [ -z "$DIGEST" ]; then
+    echo "WARNING: No digest found - image may be locally built"
+    DIGEST="local-build"
+fi
+
+# Get image creation date
+CREATED=$(docker image inspect "$IMAGE_NAME" --format='{{.Created}}')
+
+# Get image size
+SIZE=$(docker image inspect "$IMAGE_NAME" --format='{{.Size}}')
+
+echo "Image Details:"
+echo "  Name: $IMAGE_NAME"
+echo "  Digest: $DIGEST"
+echo "  Created: $CREATED"
+echo "  Size: $SIZE bytes"
+
+# Check for common security indicators
+echo "Security Checks:"
+
+# Check if running as root
+ROOT_USER=$(docker image inspect "$IMAGE_NAME" --format='{{.Config.User}}')
+if [ -z "$ROOT_USER" ] || [ "$ROOT_USER" = "root" ] || [ "$ROOT_USER" = "0" ]; then
+    echo "  WARNING: Image may run as root user"
+else
+    echo "  GOOD: Image configured to run as non-root user: $ROOT_USER"
+fi
+
+# Check exposed ports
+PORTS=$(docker image inspect "$IMAGE_NAME" --format='{{range $port, $config := .Config.ExposedPorts}}{{$port}} {{end}}')
+if [ -n "$PORTS" ]; then
+    echo "  INFO: Exposed ports: $PORTS"
+else
+    echo "  GOOD: No ports exposed"
+fi
+
+echo "Verification completed"
+EOF
+
+chmod +x verify-image.sh
+
+# Verify our images
+./verify-image.sh secure-ubuntu:latest
+./verify-image.sh secure-app:latest
+./verify-image.sh signed-app:v1.0
+
+# Disable Docker Content Trust for next tasks
+export DOCKER_CONTENT_TRUST=0
+Task 3: Perform Advanced Vulnerability Scanning with Third-Party Tools
+Subtask 3.1: Install and Configure Trivy
+Install Trivy vulnerability scanner:
+
+# Install Trivy
+curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.48.3
+
+# Verify Trivy installation
+trivy --version
+
+# Update Trivy database
+trivy image --download-db-only
+
+# Create a vulnerable test image for scanning
+cat > Dockerfile.vulnerable <<EOF
+FROM ubuntu:18.04
+
+# Install packages with known vulnerabilities (older Ubuntu version)
+RUN apt-get update && \
+    apt-get install -y \
+    curl \
+    wget \
+    openssl \
+    openssh-client \
+    python2.7 \
+    python-pip && \
+    pip install requests==2.6.0
+
+# Add a user but with poor security practices
+RUN useradd -m -s /bin/bash testuser
+RUN echo 'testuser:password123' | chpasswd
+
+# Copy a file with sensitive information
+RUN echo "API_KEY=sk-1234567890abcdef" > /etc/secrets.conf
+RUN echo "DATABASE_PASSWORD=admin123" >> /etc/secrets.conf
+RUN chmod 644 /etc/secrets.conf
+
+USER testuser
+WORKDIR /home/testuser
+
+CMD ["/bin/bash"]
+EOF
+
+# Build the vulnerable image
+docker build -f Dockerfile.vulnerable -t vulnerable-app:latest .
+Subtask 3.2: Perform Comprehensive Vulnerability Scanning
+Run various types of scans with Trivy:
+
+# Basic vulnerability scan
+echo "=== Basic Vulnerability Scan ==="
+trivy image vulnerable-app:latest
+
+# Scan with specific severity levels
+echo "=== High and Critical Vulnerabilities Only ==="
+trivy image --severity HIGH,CRITICAL vulnerable-app:latest
+
+# Scan for secrets
+echo "=== Secret Scanning ==="
+trivy image --scanners secret vulnerable-app:latest
+
+# Scan for misconfigurations
+echo "=== Configuration Scanning ==="
+trivy image --scanners config vulnerable-app:latest
+
+# Generate detailed JSON report
+echo "=== Generating JSON Report ==="
+trivy image --format json --output vulnerability-report.json vulnerable-app:latest
+
+# Generate HTML report
+echo "=== Generating HTML Report ==="
+trivy image --format template --template '@contrib/html.tpl' --output vulnerability-report.html vulnerable-app:latest
+
+# Scan our secure images for comparison
+echo "=== Scanning Secure Images ==="
+echo "Scanning secure-ubuntu:latest"
+trivy image --severity HIGH,CRITICAL secure-ubuntu:latest
+
+echo "Scanning secure-app:latest"
+trivy image --severity HIGH,CRITICAL secure-app:latest
+
+# Create a vulnerability summary script
+cat > vulnerability-summary.sh <<'EOF'
+#!/bin/bash
+
+IMAGE_NAME=$1
+if [ -z "$IMAGE_NAME" ]; then
+    echo "Usage: $0 <image_name>"
+    exit 1
+fi
+
+echo "Vulnerability Summary for: $IMAGE_NAME"
+echo "========================================"
+
+# Get vulnerability counts by severity
+echo "Vulnerability Counts:"
+trivy image --format json "$IMAGE_NAME" 2>/dev/null | jq -r '
+  .Results[]? | 
+  select(.Vulnerabilities) | 
+  .Vulnerabilities | 
+  group_by(.Severity) | 
+  map({severity: .[0].Severity, count: length}) | 
+  .[] | 
+  "\(.severity): \(.count)"
+' | sort
+
+# Get total count
+TOTAL=$(trivy image --format json "$IMAGE_NAME" 2>/dev/null | jq -r '.Results[]? | select(.Vulnerabilities) | .Vulnerabilities | length' | awk '{sum += $1} END {print sum+0}')
+echo "Total Vulnerabilities: $TOTAL"
+
+# Check for secrets
+SECRET_COUNT=$(trivy image --scanners secret --format json "$IMAGE_NAME" 2>/dev/null | jq -r '.Results[]? | select(.Secrets) | .Secrets | length' | awk '{sum += $1} END {print sum+0}')
+echo "Secrets Found: $SECRET_COUNT"
+
+echo "========================================"
+EOF
+
+chmod +x vulnerability-summary.sh
+
+# Run vulnerability summaries
+./vulnerability-summary.sh vulnerable-app:latest
+./vulnerability-summary.sh secure-ubuntu:latest
+./vulnerability-summary.sh secure-app:latest
+Subtask 3.3: Install and Use Additional Security Tools
+Install and configure additional security scanning tools:
+
+# Install Docker Bench Security
+cd ~/docker-security-lab
+git clone https://github.com/docker/docker-bench-security.git
+cd docker-bench-security
+
+# Run Docker Bench Security
+sudo ./docker-bench-security.sh
+
+# Install and use Hadolint for Dockerfile linting
+wget -O hadolint https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64
+chmod +x hadolint
+sudo mv hadolint /usr/local/bin/
+
+# Scan our Dockerfiles
+echo "=== Dockerfile Security Analysis ==="
+cd ~/docker-security-lab
+
+echo "Analyzing Dockerfile.vulnerable:"
+hadolint Dockerfile.vulnerable || echo "Issues found in vulnerable Dockerfile"
+
+echo "Analyzing Dockerfile.secure-base:"
+hadolint Dockerfile.secure-base || echo "Issues found in secure-base Dockerfile"
+
+echo "Analyzing Dockerfile.multistage:"
+hadolint Dockerfile.multistage || echo "Issues found in multistage Dockerfile"
+
+# Install and use Dockle for image security scanning
+curl -L -o dockle.deb https://github.com/goodwithtech/dockle/releases/download/v0.4.11/dockle_0.4.11_Linux-64bit.deb
+sudo dpkg -i dockle.deb
+
+# Scan images with Dockle
+echo "=== Dockle Image Security Analysis ==="
+echo "Scanning vulnerable-app:latest"
+dockle vulnerable-app:latest
+
+echo "Scanning secure-app:latest"
+dockle secure-app:latest
+Subtask 3.4: Create Automated Security Scanning Pipeline
+Create scripts for automated security scanning:
+
+# Create comprehensive security scan script
+cat > comprehensive-security-scan.sh <<'EOF'
+#!/bin/bash
+
+IMAGE_NAME=$1
+REPORT_DIR="security-reports"
+
+if [ -z "$IMAGE_NAME" ]; then
+    echo "Usage: $0 <image_name>"
+    exit 1
+fi
+
+# Create report directory
+mkdir -p "$REPORT_DIR"
+
+echo "Starting comprehensive security scan for: $IMAGE_NAME"
+echo "=================================================="
+
+# Clean image name for file naming
+CLEAN_NAME=$(echo "$IMAGE_NAME" | tr '/:' '_')
+
+# 1. Trivy vulnerability scan
+echo "1. Running Trivy vulnerability scan..."
+trivy image --format json --output "$REPORT_DIR/${CLEAN_NAME}_trivy_vulnerabilities.json" "$IMAGE_NAME"
+trivy image --format table --output "$REPORT_DIR/${CLEAN_NAME}_trivy_vulnerabilities.txt" "$IMAGE_NAME"
+
+# 2. Trivy secret scan
+echo "2. Running Trivy secret scan..."
+trivy image --scanners secret --format json --output "$REPORT_DIR/${CLEAN_NAME}_trivy_secrets.json" "$IMAGE_NAME"
+
+# 3. Trivy config scan
+echo "3. Running Trivy configuration scan..."
+trivy image --scanners config --format json --output "$REPORT_DIR/${CLEAN_NAME}_trivy_config.json" "$IMAGE_NAME"
+
+# 4. Dockle security scan
+echo "4. Running Dockle security scan..."
+dockle --format json --output "$REPORT_DIR/${CLEAN_NAME}_dockle.json" "$IMAGE_NAME" 2>/dev/null || echo "Dockle scan completed with issues"
+
+# 5. Generate summary report
+echo "5. Generating summary report..."
+cat > "$REPORT_DIR/${CLEAN_NAME}_summary.txt" <<SUMMARY
+Security Scan Summary for: $IMAGE_NAME
+Generated on: $(date)
+================================================
+
+VULNERABILITY SUMMARY:
+$(trivy image --format json "$IMAGE_NAME" 2>/dev/null | jq -r '
+  .Results[]? | 
+  select(.Vulnerabilities) | 
+  .Vulnerabilities | 
+  group_by(.Severity) | 
+  map({severity: .[0].Severity, count: length}) | 
+  .[] | 
+  "\
