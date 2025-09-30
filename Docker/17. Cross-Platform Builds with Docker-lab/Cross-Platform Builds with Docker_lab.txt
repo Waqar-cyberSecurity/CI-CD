@@ -1,0 +1,420 @@
+Lab 17: Cross-Platform Builds with Docker
+Learning Objectives
+By the end of this lab, students will be able to:
+
+Understand the concept of multi-architecture Docker images
+Set up Docker Buildx for cross-platform builds
+Configure builders for ARM64 and AMD64 architectures
+Build Docker images that work on multiple processor architectures
+Push multi-architecture images to Docker Hub registry
+Verify and inspect multi-platform image manifests
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of Docker containers and images
+Familiarity with Linux command line operations
+Knowledge of Dockerfile syntax and Docker build process
+Understanding of different processor architectures (ARM64, AMD64)
+A Docker Hub account for pushing images
+Lab Environment
+Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated Linux machine. The provided machine is bare metal with no pre-installed tools, so you will install all required software during the lab exercises.
+
+Task 1: Set up Buildx for ARM and AMD64 Support
+Subtask 1.1: Install Docker Engine
+First, we need to install Docker on our Linux machine.
+
+# Update package index
+sudo apt update
+
+# Install required packages
+sudo apt install -y apt-transport-https ca-certificates curl gnupg lsb-release
+
+# Add Docker's official GPG key
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+
+# Set up the stable repository
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# Update package index again
+sudo apt update
+
+# Install Docker Engine
+sudo apt install -y docker-ce docker-ce-cli containerd.io
+
+# Add current user to docker group
+sudo usermod -aG docker $USER
+
+# Apply group changes
+newgrp docker
+Subtask 1.2: Verify Docker Installation
+# Check Docker version
+docker --version
+
+# Test Docker installation
+docker run hello-world
+Subtask 1.3: Enable Docker Buildx
+Docker Buildx is included with Docker Desktop and recent versions of Docker Engine. Let's verify and enable it.
+
+# Check if buildx is available
+docker buildx version
+
+# List existing builders
+docker buildx ls
+
+# Create a new builder instance
+docker buildx create --name multiarch-builder --driver docker-container --use
+
+# Bootstrap the builder
+docker buildx inspect --bootstrap
+Subtask 1.4: Install QEMU for Cross-Platform Emulation
+QEMU allows us to emulate different architectures on our x86_64 machine.
+
+# Install QEMU static binaries
+sudo apt install -y qemu-user-static
+
+# Register QEMU interpreters
+docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+
+# Verify available platforms
+docker buildx inspect --bootstrap
+Task 2: Build Docker Images for Multiple Platforms
+Subtask 2.1: Create a Sample Application
+Let's create a simple Node.js application to demonstrate cross-platform builds.
+
+# Create project directory
+mkdir cross-platform-app
+cd cross-platform-app
+
+# Create package.json
+cat > package.json << 'EOF'
+{
+  "name": "cross-platform-demo",
+  "version": "1.0.0",
+  "description": "Demo app for cross-platform Docker builds",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}
+EOF
+
+# Create server.js
+cat > server.js << 'EOF'
+const express = require('express');
+const os = require('os');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.get('/', (req, res) => {
+  res.json({
+    message: 'Hello from Cross-Platform Docker!',
+    platform: os.platform(),
+    architecture: os.arch(),
+    hostname: os.hostname(),
+    uptime: os.uptime()
+  });
+});
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+  console.log(`Platform: ${os.platform()}`);
+  console.log(`Architecture: ${os.arch()}`);
+});
+EOF
+Subtask 2.2: Create Multi-Stage Dockerfile
+Create a Dockerfile optimized for multiple architectures.
+
+cat > Dockerfile << 'EOF'
+# Use multi-stage build for efficiency
+FROM node:18-alpine AS builder
+
+# Set working directory
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies
+RUN npm ci --only=production
+
+# Production stage
+FROM node:18-alpine AS production
+
+# Create non-root user
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S nodejs -u 1001
+
+# Set working directory
+WORKDIR /app
+
+# Copy dependencies from builder stage
+COPY --from=builder /app/node_modules ./node_modules
+
+# Copy application code
+COPY --chown=nodejs:nodejs . .
+
+# Switch to non-root user
+USER nodejs
+
+# Expose port
+EXPOSE 3000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD node -e "require('http').get('http://localhost:3000', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) })"
+
+# Start application
+CMD ["npm", "start"]
+EOF
+Subtask 2.3: Build Single Architecture Image (Testing)
+First, let's build a single architecture image to test our setup.
+
+# Build for current platform only
+docker buildx build --platform linux/amd64 -t cross-platform-demo:amd64 --load .
+
+# Test the image
+docker run -d --name test-app -p 3000:3000 cross-platform-demo:amd64
+
+# Wait a moment for the app to start
+sleep 5
+
+# Test the application
+curl http://localhost:3000
+
+# Stop and remove test container
+docker stop test-app
+docker rm test-app
+Subtask 2.4: Build Multi-Architecture Images
+Now let's build images for multiple architectures.
+
+# Build for multiple platforms (this will take several minutes)
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  -t cross-platform-demo:multi \
+  --load .
+Note: The --load flag only works with single platform builds. For multi-platform builds, we need to push directly to a registry or use --output type=docker.
+
+Let's build without loading to test the multi-platform capability:
+
+# Build multi-platform without loading
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  -t cross-platform-demo:multi \
+  .
+Subtask 2.5: Inspect Build Cache and Platforms
+# Check builder information
+docker buildx inspect
+
+# List available platforms
+docker buildx inspect --bootstrap | grep Platforms
+
+# Check build cache
+docker buildx du
+Task 3: Push Multi-Architecture Images to Docker Hub
+Subtask 3.1: Login to Docker Hub
+# Login to Docker Hub (you'll be prompted for credentials)
+docker login
+
+# Verify login
+docker info | grep Username
+Subtask 3.2: Tag Images with Docker Hub Repository
+Replace yourusername with your actual Docker Hub username.
+
+# Set your Docker Hub username
+DOCKER_USERNAME="yourusername"
+
+# Tag the image
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  -t ${DOCKER_USERNAME}/cross-platform-demo:latest \
+  -t ${DOCKER_USERNAME}/cross-platform-demo:v1.0 \
+  --push .
+Subtask 3.3: Verify Multi-Architecture Push
+# Inspect the pushed image manifest
+docker buildx imagetools inspect ${DOCKER_USERNAME}/cross-platform-demo:latest
+
+# Check specific platform details
+docker buildx imagetools inspect ${DOCKER_USERNAME}/cross-platform-demo:latest --format "{{json .}}" | jq
+If jq is not installed:
+
+# Install jq for JSON parsing
+sudo apt install -y jq
+
+# Then run the inspect command again
+docker buildx imagetools inspect ${DOCKER_USERNAME}/cross-platform-demo:latest --format "{{json .}}" | jq
+Subtask 3.4: Test Multi-Architecture Images
+# Pull and test AMD64 image
+docker pull --platform linux/amd64 ${DOCKER_USERNAME}/cross-platform-demo:latest
+docker run --rm --platform linux/amd64 ${DOCKER_USERNAME}/cross-platform-demo:latest node -e "console.log('Platform:', process.platform, 'Arch:', process.arch)"
+
+# Pull and test ARM64 image (emulated on x86_64)
+docker pull --platform linux/arm64 ${DOCKER_USERNAME}/cross-platform-demo:latest
+docker run --rm --platform linux/arm64 ${DOCKER_USERNAME}/cross-platform-demo:latest node -e "console.log('Platform:', process.platform, 'Arch:', process.arch)"
+Subtask 3.5: Create and Push Additional Tags
+# Build and push with multiple tags
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  -t ${DOCKER_USERNAME}/cross-platform-demo:latest \
+  -t ${DOCKER_USERNAME}/cross-platform-demo:stable \
+  -t ${DOCKER_USERNAME}/cross-platform-demo:$(date +%Y%m%d) \
+  --push .
+
+# Verify all tags
+docker buildx imagetools inspect ${DOCKER_USERNAME}/cross-platform-demo:stable
+Advanced Configuration and Troubleshooting
+Builder Management
+# List all builders
+docker buildx ls
+
+# Create a new builder with specific configuration
+docker buildx create \
+  --name advanced-builder \
+  --driver docker-container \
+  --driver-opt network=host \
+  --buildkitd-flags '--allow-insecure-entitlement security.insecure' \
+  --use
+
+# Remove a builder
+docker buildx rm multiarch-builder
+
+# Switch between builders
+docker buildx use advanced-builder
+Build Optimization
+# Build with cache mount for faster builds
+cat > Dockerfile.optimized << 'EOF'
+FROM node:18-alpine AS builder
+
+WORKDIR /app
+
+COPY package*.json ./
+
+# Use cache mount for npm cache
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --only=production
+
+FROM node:18-alpine AS production
+
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S nodejs -u 1001
+
+WORKDIR /app
+
+COPY --from=builder /app/node_modules ./node_modules
+COPY --chown=nodejs:nodejs . .
+
+USER nodejs
+
+EXPOSE 3000
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD node -e "require('http').get('http://localhost:3000', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) })"
+
+CMD ["npm", "start"]
+EOF
+
+# Build with optimized Dockerfile
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  -f Dockerfile.optimized \
+  -t ${DOCKER_USERNAME}/cross-platform-demo:optimized \
+  --push .
+Common Troubleshooting
+Issue 1: QEMU not working properly
+
+# Reinstall QEMU and re-register
+sudo apt remove -y qemu-user-static
+sudo apt install -y qemu-user-static
+docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+Issue 2: Builder not supporting multiple platforms
+
+# Remove and recreate builder
+docker buildx rm multiarch-builder
+docker buildx create --name multiarch-builder --driver docker-container --use
+docker buildx inspect --bootstrap
+Issue 3: Build fails on specific architecture
+
+# Build for single architecture to isolate issues
+docker buildx build --platform linux/amd64 -t test:amd64 .
+docker buildx build --platform linux/arm64 -t test:arm64 .
+Verification and Testing
+Subtask 4.1: Comprehensive Image Testing
+# Create a test script
+cat > test-multiarch.sh << 'EOF'
+#!/bin/bash
+
+DOCKER_USERNAME="yourusername"
+IMAGE_NAME="${DOCKER_USERNAME}/cross-platform-demo:latest"
+
+echo "Testing multi-architecture image: ${IMAGE_NAME}"
+
+# Test AMD64
+echo "Testing AMD64 platform..."
+docker run --rm --platform linux/amd64 ${IMAGE_NAME} node -e "
+const os = require('os');
+console.log('Platform:', os.platform());
+console.log('Architecture:', os.arch());
+console.log('Node version:', process.version);
+"
+
+echo ""
+
+# Test ARM64
+echo "Testing ARM64 platform..."
+docker run --rm --platform linux/arm64 ${IMAGE_NAME} node -e "
+const os = require('os');
+console.log('Platform:', os.platform());
+console.log('Architecture:', os.arch());
+console.log('Node version:', process.version);
+"
+
+echo ""
+echo "Multi-architecture test completed!"
+EOF
+
+# Make script executable
+chmod +x test-multiarch.sh
+
+# Run the test (replace yourusername with your Docker Hub username)
+sed -i 's/yourusername/your-actual-username/g' test-multiarch.sh
+./test-multiarch.sh
+Subtask 4.2: Manifest Inspection
+# Detailed manifest inspection
+docker buildx imagetools inspect ${DOCKER_USERNAME}/cross-platform-demo:latest --raw | jq
+
+# Check image sizes for different architectures
+docker buildx imagetools inspect ${DOCKER_USERNAME}/cross-platform-demo:latest | grep -E "(MediaType|Platform|Size)"
+Cleanup
+# Remove test containers and images
+docker system prune -f
+
+# Remove builders
+docker buildx rm multiarch-builder advanced-builder
+
+# Remove project directory
+cd ..
+rm -rf cross-platform-app
+
+# Logout from Docker Hub
+docker logout
+Conclusion
+In this lab, you have successfully:
+
+Set up Docker Buildx for cross-platform builds with support for multiple architectures
+Configured QEMU emulation to build ARM64 images on x86_64 hardware
+Created a multi-stage Dockerfile optimized for different processor architectures
+Built Docker images that work seamlessly on both AMD64 and ARM64 platforms
+Pushed multi-architecture images to Docker Hub registry
+Verified and tested the functionality of cross-platform images
+This knowledge is crucial in today's diverse computing environment where applications need to run on various architectures, from traditional x86_64 servers to ARM-based cloud instances and edge devices. Multi-architecture Docker images ensure your applications can run efficiently across different hardware platforms without requiring separate build processes or image variants.
+
+The skills you've learned enable you to:
+
+Deploy applications to ARM-based cloud services like AWS Graviton instances
+Support Apple Silicon (M1/M2) development environments
+Create images for IoT and edge computing devices
+Optimize deployment strategies across heterogeneous infrastructure
+Cross-platform builds are essential for modern containerized applications, providing flexibility, cost optimization, and broader deployment options in cloud-native environments.
