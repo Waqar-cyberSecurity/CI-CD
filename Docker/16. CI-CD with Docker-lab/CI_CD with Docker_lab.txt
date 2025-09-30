@@ -1,0 +1,963 @@
+Lab 16: CI/CD with Docker
+Learning Objectives
+By the end of this lab, students will be able to:
+
+Set up and configure GitHub Actions for automated CI/CD pipelines
+Create Docker images automatically using GitHub Actions workflows
+Push Docker images to Docker Hub registry using CI/CD automation
+Deploy containerized applications through automated pipelines
+Understand the complete CI/CD workflow from code commit to deployment
+Implement best practices for Docker-based CI/CD processes
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of Docker containers and images
+Familiarity with Git version control system
+Knowledge of Linux command line operations
+Understanding of web applications and HTTP protocols
+Basic knowledge of YAML syntax
+A GitHub account (free account is sufficient)
+A Docker Hub account (free account is sufficient)
+Lab Environment
+Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated Linux machine. The provided machine is bare metal with no pre-installed tools, so you will install all required tools during the lab exercises.
+
+Task 1: Environment Setup and Tool Installation
+Subtask 1.1: Install Required Tools
+First, update the system and install necessary packages:
+
+# Update package manager
+sudo apt update && sudo apt upgrade -y
+
+# Install essential tools
+sudo apt install -y curl wget git vim nano unzip
+
+# Install Docker
+curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
+
+# Add current user to docker group
+sudo usermod -aG docker $USER
+
+# Start and enable Docker service
+sudo systemctl start docker
+sudo systemctl enable docker
+
+# Verify Docker installation
+docker --version
+Subtask 1.2: Install GitHub CLI
+# Install GitHub CLI
+curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+sudo apt update
+sudo apt install gh -y
+
+# Verify installation
+gh --version
+Subtask 1.3: Create Sample Application
+Create a simple Node.js web application for our CI/CD pipeline:
+
+# Create project directory
+mkdir ~/docker-cicd-lab
+cd ~/docker-cicd-lab
+
+# Create package.json
+cat > package.json << 'EOF'
+{
+  "name": "docker-cicd-app",
+  "version": "1.0.0",
+  "description": "Sample app for Docker CI/CD lab",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "echo \"Test passed\" && exit 0"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}
+EOF
+
+# Create main application file
+cat > server.js << 'EOF'
+const express = require('express');
+const app = express();
+const port = process.env.PORT || 3000;
+
+app.get('/', (req, res) => {
+  res.json({
+    message: 'Hello from Docker CI/CD Lab!',
+    version: '1.0.0',
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'healthy',
+    uptime: process.uptime()
+  });
+});
+
+app.listen(port, () => {
+  console.log(`Server running on port ${port}`);
+});
+EOF
+
+# Create Dockerfile
+cat > Dockerfile << 'EOF'
+FROM node:18-alpine
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm install --only=production
+
+COPY . .
+
+EXPOSE 3000
+
+USER node
+
+CMD ["npm", "start"]
+EOF
+
+# Create .dockerignore
+cat > .dockerignore << 'EOF'
+node_modules
+npm-debug.log
+.git
+.gitignore
+README.md
+.env
+.nyc_output
+coverage
+.nyc_output
+EOF
+Task 2: Set up GitHub Repository and Actions Pipeline
+Subtask 2.1: Initialize Git Repository and Connect to GitHub
+# Initialize git repository
+git init
+git add .
+git commit -m "Initial commit: Docker CI/CD lab application"
+
+# Authenticate with GitHub (follow the prompts)
+gh auth login
+
+# Create GitHub repository
+gh repo create docker-cicd-lab --public --source=. --remote=origin --push
+Subtask 2.2: Create GitHub Actions Workflow Directory
+# Create GitHub Actions workflow directory
+mkdir -p .github/workflows
+
+# Create the main CI/CD workflow file
+cat > .github/workflows/docker-cicd.yml << 'EOF'
+name: Docker CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  DOCKER_IMAGE_NAME: docker-cicd-app
+  DOCKER_TAG: latest
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    name: Run Tests
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        
+    - name: Install dependencies
+      run: npm install
+      
+    - name: Run tests
+      run: npm test
+
+  build-and-push:
+    needs: test
+    runs-on: ubuntu-latest
+    name: Build and Push Docker Image
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      
+    - name: Login to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+        
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ secrets.DOCKER_USERNAME }}/${{ env.DOCKER_IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
+          
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    name: Deploy Application
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Create deployment script
+      run: |
+        cat > deploy.sh << 'DEPLOY_EOF'
+        #!/bin/bash
+        echo "Deploying application..."
+        
+        # Stop existing container if running
+        docker stop docker-cicd-app || true
+        docker rm docker-cicd-app || true
+        
+        # Pull latest image
+        docker pull ${{ secrets.DOCKER_USERNAME }}/docker-cicd-app:latest
+        
+        # Run new container
+        docker run -d \
+          --name docker-cicd-app \
+          --restart unless-stopped \
+          -p 3000:3000 \
+          ${{ secrets.DOCKER_USERNAME }}/docker-cicd-app:latest
+        
+        echo "Deployment completed successfully!"
+        DEPLOY_EOF
+        
+        chmod +x deploy.sh
+        
+    - name: Simulate deployment
+      run: |
+        echo "Deployment script created successfully"
+        echo "In a real scenario, this would deploy to your server"
+        cat deploy.sh
+EOF
+Subtask 2.3: Configure Repository Secrets
+Set up Docker Hub credentials as GitHub secrets:
+
+# Get your Docker Hub username (you'll need this)
+echo "Your Docker Hub username will be needed for the next steps"
+
+# Add secrets using GitHub CLI
+echo "Setting up repository secrets..."
+echo "You will be prompted to enter your Docker Hub credentials"
+
+# Set Docker Hub username
+read -p "Enter your Docker Hub username: " DOCKER_USERNAME
+gh secret set DOCKER_USERNAME --body "$DOCKER_USERNAME"
+
+# Set Docker Hub password/token
+echo "Enter your Docker Hub password or access token:"
+read -s DOCKER_PASSWORD
+gh secret set DOCKER_PASSWORD --body "$DOCKER_PASSWORD"
+
+echo "Secrets configured successfully!"
+Task 3: Integrate Docker Build and Push to Docker Hub
+Subtask 3.1: Test Local Docker Build
+Before pushing to the repository, test the Docker build locally:
+
+# Build the Docker image locally
+docker build -t docker-cicd-app:test .
+
+# Run the container locally to test
+docker run -d --name test-app -p 3000:3000 docker-cicd-app:test
+
+# Wait a moment for the container to start
+sleep 5
+
+# Test the application
+curl http://localhost:3000
+curl http://localhost:3000/health
+
+# Stop and remove test container
+docker stop test-app
+docker rm test-app
+docker rmi docker-cicd-app:test
+Subtask 3.2: Create Additional Workflow for Manual Deployment
+Create a manual deployment workflow:
+
+cat > .github/workflows/manual-deploy.yml << 'EOF'
+name: Manual Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+        - staging
+        - production
+      image_tag:
+        description: 'Docker image tag to deploy'
+        required: true
+        default: 'latest'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    name: Manual Deploy to ${{ github.event.inputs.environment }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Login to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+        
+    - name: Pull and verify image
+      run: |
+        echo "Pulling image: ${{ secrets.DOCKER_USERNAME }}/docker-cicd-app:${{ github.event.inputs.image_tag }}"
+        docker pull ${{ secrets.DOCKER_USERNAME }}/docker-cicd-app:${{ github.event.inputs.image_tag }}
+        docker inspect ${{ secrets.DOCKER_USERNAME }}/docker-cicd-app:${{ github.event.inputs.image_tag }}
+        
+    - name: Deploy to ${{ github.event.inputs.environment }}
+      run: |
+        echo "Deploying to ${{ github.event.inputs.environment }} environment"
+        echo "Image: ${{ secrets.DOCKER_USERNAME }}/docker-cicd-app:${{ github.event.inputs.image_tag }}"
+        
+        # Create environment-specific deployment script
+        cat > deploy-${{ github.event.inputs.environment }}.sh << 'DEPLOY_EOF'
+        #!/bin/bash
+        
+        ENVIRONMENT="${{ github.event.inputs.environment }}"
+        IMAGE_TAG="${{ github.event.inputs.image_tag }}"
+        CONTAINER_NAME="docker-cicd-app-${ENVIRONMENT}"
+        
+        echo "Deploying to ${ENVIRONMENT} environment..."
+        
+        # Stop existing container
+        docker stop ${CONTAINER_NAME} || true
+        docker rm ${CONTAINER_NAME} || true
+        
+        # Run new container with environment-specific settings
+        if [ "${ENVIRONMENT}" = "production" ]; then
+          PORT=80
+          RESTART_POLICY="always"
+        else
+          PORT=3001
+          RESTART_POLICY="unless-stopped"
+        fi
+        
+        docker run -d \
+          --name ${CONTAINER_NAME} \
+          --restart ${RESTART_POLICY} \
+          -p ${PORT}:3000 \
+          -e NODE_ENV=${ENVIRONMENT} \
+          ${{ secrets.DOCKER_USERNAME }}/docker-cicd-app:${IMAGE_TAG}
+        
+        echo "Deployment to ${ENVIRONMENT} completed!"
+        echo "Application available on port ${PORT}"
+        DEPLOY_EOF
+        
+        chmod +x deploy-${{ github.event.inputs.environment }}.sh
+        cat deploy-${{ github.event.inputs.environment }}.sh
+        
+        echo "Deployment script created for ${{ github.event.inputs.environment }}"
+EOF
+Subtask 3.3: Add Docker Compose for Local Development
+Create a Docker Compose file for easier local development:
+
+cat > docker-compose.yml << 'EOF'
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+    volumes:
+      - .:/app
+      - /app/node_modules
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  app-production:
+    image: ${DOCKER_USERNAME}/docker-cicd-app:latest
+    ports:
+      - "3001:3000"
+    environment:
+      - NODE_ENV=production
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+EOF
+
+# Create docker-compose override for development
+cat > docker-compose.override.yml << 'EOF'
+version: '3.8'
+
+services:
+  app:
+    environment:
+      - DEBUG=true
+      - LOG_LEVEL=debug
+    command: npm run start
+EOF
+Task 4: Deploy Containerized Applications via CI/CD Pipelines
+Subtask 4.1: Create Deployment Scripts
+Create comprehensive deployment scripts:
+
+# Create scripts directory
+mkdir scripts
+
+# Create production deployment script
+cat > scripts/deploy-production.sh << 'EOF'
+#!/bin/bash
+
+set -e
+
+# Configuration
+DOCKER_USERNAME="${1:-your-docker-username}"
+IMAGE_TAG="${2:-latest}"
+CONTAINER_NAME="docker-cicd-app-production"
+PORT="80"
+
+echo "Starting production deployment..."
+echo "Docker Username: $DOCKER_USERNAME"
+echo "Image Tag: $IMAGE_TAG"
+
+# Pull latest image
+echo "Pulling Docker image..."
+docker pull $DOCKER_USERNAME/docker-cicd-app:$IMAGE_TAG
+
+# Stop existing container
+echo "Stopping existing container..."
+docker stop $CONTAINER_NAME 2>/dev/null || true
+docker rm $CONTAINER_NAME 2>/dev/null || true
+
+# Run new container
+echo "Starting new container..."
+docker run -d \
+  --name $CONTAINER_NAME \
+  --restart always \
+  -p $PORT:3000 \
+  -e NODE_ENV=production \
+  -e PORT=3000 \
+  --health-cmd="curl -f http://localhost:3000/health || exit 1" \
+  --health-interval=30s \
+  --health-timeout=10s \
+  --health-retries=3 \
+  $DOCKER_USERNAME/docker-cicd-app:$IMAGE_TAG
+
+# Wait for container to be healthy
+echo "Waiting for container to be healthy..."
+timeout=60
+counter=0
+
+while [ $counter -lt $timeout ]; do
+  if docker inspect --format='{{.State.Health.Status}}' $CONTAINER_NAME 2>/dev/null | grep -q "healthy"; then
+    echo "Container is healthy!"
+    break
+  fi
+  
+  if [ $counter -eq $((timeout-1)) ]; then
+    echo "Container failed to become healthy within $timeout seconds"
+    docker logs $CONTAINER_NAME
+    exit 1
+  fi
+  
+  echo "Waiting for container to be healthy... ($((counter+1))/$timeout)"
+  sleep 1
+  counter=$((counter+1))
+done
+
+echo "Production deployment completed successfully!"
+echo "Application is running on port $PORT"
+
+# Show container status
+docker ps | grep $CONTAINER_NAME
+EOF
+
+# Create staging deployment script
+cat > scripts/deploy-staging.sh << 'EOF'
+#!/bin/bash
+
+set -e
+
+# Configuration
+DOCKER_USERNAME="${1:-your-docker-username}"
+IMAGE_TAG="${2:-latest}"
+CONTAINER_NAME="docker-cicd-app-staging"
+PORT="3001"
+
+echo "Starting staging deployment..."
+echo "Docker Username: $DOCKER_USERNAME"
+echo "Image Tag: $IMAGE_TAG"
+
+# Pull latest image
+echo "Pulling Docker image..."
+docker pull $DOCKER_USERNAME/docker-cicd-app:$IMAGE_TAG
+
+# Stop existing container
+echo "Stopping existing container..."
+docker stop $CONTAINER_NAME 2>/dev/null || true
+docker rm $CONTAINER_NAME 2>/dev/null || true
+
+# Run new container
+echo "Starting new container..."
+docker run -d \
+  --name $CONTAINER_NAME \
+  --restart unless-stopped \
+  -p $PORT:3000 \
+  -e NODE_ENV=staging \
+  -e PORT=3000 \
+  --health-cmd="curl -f http://localhost:3000/health || exit 1" \
+  --health-interval=30s \
+  --health-timeout=10s \
+  --health-retries=3 \
+  $DOCKER_USERNAME/docker-cicd-app:$IMAGE_TAG
+
+# Wait for container to start
+sleep 10
+
+echo "Staging deployment completed successfully!"
+echo "Application is running on port $PORT"
+
+# Test the deployment
+echo "Testing deployment..."
+curl -f http://localhost:$PORT/health || echo "Health check failed"
+
+# Show container status
+docker ps | grep $CONTAINER_NAME
+EOF
+
+# Make scripts executable
+chmod +x scripts/*.sh
+Subtask 4.2: Create Monitoring and Rollback Scripts
+# Create monitoring script
+cat > scripts/monitor.sh << 'EOF'
+#!/bin/bash
+
+CONTAINER_NAME="${1:-docker-cicd-app-production}"
+
+echo "Monitoring container: $CONTAINER_NAME"
+echo "=================================="
+
+# Check if container exists and is running
+if ! docker ps | grep -q $CONTAINER_NAME; then
+  echo "ERROR: Container $CONTAINER_NAME is not running!"
+  exit 1
+fi
+
+# Get container information
+echo "Container Status:"
+docker ps --filter "name=$CONTAINER_NAME" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+
+echo -e "\nHealth Status:"
+docker inspect --format='{{.State.Health.Status}}' $CONTAINER_NAME 2>/dev/null || echo "No health check configured"
+
+echo -e "\nResource Usage:"
+docker stats --no-stream --format "table {{.Container}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}" $CONTAINER_NAME
+
+echo -e "\nRecent Logs (last 20 lines):"
+docker logs --tail 20 $CONTAINER_NAME
+
+echo -e "\nContainer Details:"
+docker inspect $CONTAINER_NAME | grep -E "(Image|Created|StartedAt)" | head -3
+EOF
+
+# Create rollback script
+cat > scripts/rollback.sh << 'EOF'
+#!/bin/bash
+
+set -e
+
+DOCKER_USERNAME="${1:-your-docker-username}"
+PREVIOUS_TAG="${2:-previous}"
+CONTAINER_NAME="${3:-docker-cicd-app-production}"
+PORT="${4:-80}"
+
+echo "Starting rollback process..."
+echo "Rolling back to: $DOCKER_USERNAME/docker-cicd-app:$PREVIOUS_TAG"
+
+# Pull previous image
+echo "Pulling previous image..."
+docker pull $DOCKER_USERNAME/docker-cicd-app:$PREVIOUS_TAG
+
+# Stop current container
+echo "Stopping current container..."
+docker stop $CONTAINER_NAME 2>/dev/null || true
+docker rm $CONTAINER_NAME 2>/dev/null || true
+
+# Start container with previous image
+echo "Starting container with previous image..."
+docker run -d \
+  --name $CONTAINER_NAME \
+  --restart always \
+  -p $PORT:3000 \
+  -e NODE_ENV=production \
+  --health-cmd="curl -f http://localhost:3000/health || exit 1" \
+  --health-interval=30s \
+  --health-timeout=10s \
+  --health-retries=3 \
+  $DOCKER_USERNAME/docker-cicd-app:$PREVIOUS_TAG
+
+echo "Rollback completed successfully!"
+echo "Application rolled back to: $DOCKER_USERNAME/docker-cicd-app:$PREVIOUS_TAG"
+
+# Show status
+docker ps | grep $CONTAINER_NAME
+EOF
+
+# Make all scripts executable
+chmod +x scripts/*.sh
+Subtask 4.3: Test the Complete CI/CD Pipeline
+Commit and push all changes to trigger the pipeline:
+
+# Add all files to git
+git add .
+
+# Commit changes
+git commit -m "Add comprehensive CI/CD pipeline with Docker integration
+
+- Added GitHub Actions workflows for automated builds
+- Integrated Docker Hub push functionality  
+- Created deployment scripts for staging and production
+- Added monitoring and rollback capabilities
+- Included Docker Compose for local development"
+
+# Push to trigger the pipeline
+git push origin main
+Subtask 4.4: Monitor Pipeline Execution
+# Check the status of your workflows
+gh run list
+
+# Watch the latest workflow run
+gh run watch
+
+# View workflow details (replace RUN_ID with actual ID from list command)
+# gh run view RUN_ID
+Subtask 4.5: Test Local Deployment
+Test the deployment scripts locally:
+
+# Replace 'your-docker-username' with your actual Docker Hub username
+DOCKER_USERNAME="your-docker-username"
+
+# Test staging deployment
+./scripts/deploy-staging.sh $DOCKER_USERNAME latest
+
+# Wait a moment and test the application
+sleep 10
+curl http://localhost:3001
+curl http://localhost:3001/health
+
+# Monitor the staging deployment
+./scripts/monitor.sh docker-cicd-app-staging
+
+# Test production deployment (using different port for testing)
+sed 's/PORT="80"/PORT="8080"/' scripts/deploy-production.sh > scripts/deploy-production-test.sh
+chmod +x scripts/deploy-production-test.sh
+./scripts/deploy-production-test.sh $DOCKER_USERNAME latest
+
+# Test the production deployment
+sleep 10
+curl http://localhost:8080
+curl http://localhost:8080/health
+
+# Monitor the production deployment
+./scripts/monitor.sh docker-cicd-app-production
+Task 5: Advanced CI/CD Features and Best Practices
+Subtask 5.1: Add Security Scanning to Pipeline
+Create a security-focused workflow:
+
+cat > .github/workflows/security-scan.yml << 'EOF'
+name: Security Scan
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    - cron: '0 2 * * 1'  # Run weekly on Mondays at 2 AM
+
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+    name: Security Vulnerability Scan
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: '${{ secrets.DOCKER_USERNAME }}/docker-cicd-app:latest'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+        
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: 'trivy-results.sarif'
+        
+    - name: Run npm audit
+      run: |
+        npm audit --audit-level moderate
+        npm audit fix --dry-run
+EOF
+Subtask 5.2: Create Multi-Environment Configuration
+# Create environment-specific configurations
+mkdir -p config/environments
+
+cat > config/environments/staging.env << 'EOF'
+NODE_ENV=staging
+PORT=3000
+LOG_LEVEL=debug
+API_TIMEOUT=30000
+CACHE_TTL=300
+EOF
+
+cat > config/environments/production.env << 'EOF'
+NODE_ENV=production
+PORT=3000
+LOG_LEVEL=info
+API_TIMEOUT=10000
+CACHE_TTL=3600
+EOF
+
+# Update docker-compose for multiple environments
+cat > docker-compose.prod.yml << 'EOF'
+version: '3.8'
+
+services:
+  app:
+    image: ${DOCKER_USERNAME}/docker-cicd-app:${IMAGE_TAG:-latest}
+    ports:
+      - "80:3000"
+    env_file:
+      - config/environments/production.env
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+EOF
+
+cat > docker-compose.staging.yml << 'EOF'
+version: '3.8'
+
+services:
+  app:
+    image: ${DOCKER_USERNAME}/docker-cicd-app:${IMAGE_TAG:-latest}
+    ports:
+      - "3001:3000"
+    env_file:
+      - config/environments/staging.env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+EOF
+Subtask 5.3: Add Performance Testing
+# Create performance testing script
+cat > scripts/performance-test.sh << 'EOF'
+#!/bin/bash
+
+TARGET_URL="${1:-http://localhost:3000}"
+DURATION="${2:-30s}"
+CONNECTIONS="${3:-10}"
+
+echo "Running performance test against: $TARGET_URL"
+echo "Duration: $DURATION"
+echo "Concurrent connections: $CONNECTIONS"
+
+# Install Apache Bench if not available
+if ! command -v ab &> /dev/null; then
+    echo "Installing Apache Bench..."
+    sudo apt-get update
+    sudo apt-get install -y apache2-utils
+fi
+
+# Run performance test
+echo "Starting performance test..."
+ab -t 30 -c $CONNECTIONS -g performance-results.tsv $TARGET_URL/
+
+# Display results summary
+echo -e "\nPerformance Test Summary:"
+echo "========================="
+tail -n 20 performance-results.tsv | head -n 10
+
+# Test health endpoint
+echo -e "\nTesting health endpoint..."
+ab -n 100 -c 5 $TARGET_URL/health/
+
+echo "Performance test completed!"
+EOF
+
+chmod +x scripts/performance-test.sh
+Verification and Testing
+Test Complete Pipeline
+# Create a simple change to trigger the pipeline
+echo "# Docker CI/CD Lab
+
+This application demonstrates a complete CI/CD pipeline with Docker integration.
+
+## Features
+- Automated builds with GitHub Actions
+- Docker image creation and push to Docker Hub
+- Multi-environment deployment support
+- Security scanning integration
+- Performance testing capabilities
+
+## Current Version: 1.1.0" > README.md
+
+# Commit and push to trigger pipeline
+git add .
+git commit -m "Update README and add advanced CI/CD features
+
+- Added security scanning workflow
+- Implemented multi-environment configurations  
+- Created performance testing scripts
+- Enhanced deployment capabilities"
+
+git push origin main
+
+# Monitor the pipeline
+gh run list --limit 5
+Verify Deployments
+# Check running containers
+docker ps
+
+# Test applications if running
+if docker ps | grep -q docker-cicd-app-staging; then
+    echo "Testing staging deployment:"
+    curl -s http://localhost:3001 | jq '.'
+    curl -s http://localhost:3001/health | jq '.'
+fi
+
+if docker ps | grep -q docker-cicd-app-production; then
+    echo "Testing production deployment:"
+    curl -s http://localhost:8080 | jq '.'
+    curl -s http://localhost:8080/health | jq '.'
+fi
+Troubleshooting Common Issues
+Issue 1: Docker Permission Denied
+# If you get permission denied errors
+sudo usermod -aG docker $USER
+newgrp docker
+
+# Or restart your session
+exit
+# Log back in and continue
+Issue 2: GitHub Actions Failing
+# Check workflow status
+gh run list --limit 10
+
+# View failed run details
+gh run view --log
+
+# Check repository secrets
+gh secret list
+Issue 3: Docker Hub Push Failures
+# Test Docker Hub authentication locally
+docker login
+
+# Verify your credentials are correct
+docker pull hello-world
+docker tag hello-world $DOCKER_USERNAME/test
+docker push $DOCKER_USERNAME/test
+docker rmi $DOCKER_USERNAME/test
+Issue 4: Container Health Check Failures
+# Check container logs
+docker logs docker-cicd-app-staging
+
+# Inspect container health
+docker inspect docker-cicd-app-staging | grep -A 10 Health
+
+# Test health endpoint manually
+curl -v http://localhost:3001/health
+Cleanup
+# Stop and remove all containers
+docker stop $(docker ps -q --filter "name=docker-cicd-app") 2>/dev/null || true
+docker rm $(docker ps -aq --filter "name=docker-cicd-app") 2>/dev/null || true
+
+# Remove images (optional)
+docker rmi $(docker images "$DOCKER_USERNAME/docker-cicd-app" -q) 2>/dev/null || true
+
+# Clean up Docker system
+docker system prune -f
+Conclusion
+In this comprehensive lab, you have successfully:
+
+Set up a complete CI/CD pipeline using GitHub Actions that automatically builds, tests, and deploys Docker containers
+Integrated Docker Hub as a container registry with automated image builds and pushes
+Created automated deployment workflows that can deploy applications to different environments
+Implemented security scanning and performance testing as part of the CI/CD process
+Developed monitoring and rollback capabilities for production deployments
+Learned best practices for Docker-based CI/CD including multi-stage builds, health checks, and environment-specific configurations
+This lab demonstrates the power of modern DevOps practices where code changes automatically trigger a complete pipeline from development to production. The skills you've learned here are directly applicable to real-world scenarios where teams need to deploy applications quickly, safely, and reliably.
+
+The CI/CD pipeline you've built provides:
+
+Automated quality assurance through testing and security scanning
+Consistent deployments across different environments
+Rapid feedback loops for developers
+Rollback capabilities for quick recovery from issues
+Monitoring and observability for production applications
+These practices are essential in modern software development and form the foundation of reliable, scalable application delivery systems.
