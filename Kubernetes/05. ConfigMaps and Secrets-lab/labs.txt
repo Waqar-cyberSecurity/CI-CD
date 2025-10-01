@@ -1,0 +1,711 @@
+Lab 5: ConfigMaps and Secrets
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Understand the difference between ConfigMaps and Secrets in Kubernetes
+Create and manage ConfigMaps to store non-sensitive configuration data
+Create and manage Secrets to store sensitive information securely
+Mount ConfigMaps and Secrets as volumes in pods
+Use ConfigMaps and Secrets as environment variables
+Access and verify Secret data using kubectl commands
+Implement best practices for configuration management in Kubernetes
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Linux command line operations
+Familiarity with YAML file format
+Basic knowledge of Kubernetes concepts (pods, deployments)
+Understanding of environment variables and configuration files
+Completed previous Kubernetes labs or equivalent experience
+Lab Environment
+Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated Linux machine. The provided machine is bare metal with no pre-installed tools, so you will install all required tools during the lab exercises.
+
+Task 1: Environment Setup and Kubernetes Installation
+Subtask 1.1: Update System and Install Dependencies
+First, update your system and install necessary dependencies:
+
+# Update package lists
+sudo apt update
+
+# Install required packages
+sudo apt install -y curl wget apt-transport-https ca-certificates gnupg lsb-release
+
+# Install Docker
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io
+
+# Add current user to docker group
+sudo usermod -aG docker $USER
+newgrp docker
+
+# Verify Docker installation
+docker --version
+Subtask 1.2: Install Kubernetes Tools
+Install kubectl and minikube for local Kubernetes cluster:
+
+# Install kubectl
+curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+
+# Verify kubectl installation
+kubectl version --client
+
+# Install minikube
+curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+sudo install minikube-linux-amd64 /usr/local/bin/minikube
+
+# Verify minikube installation
+minikube version
+Subtask 1.3: Start Kubernetes Cluster
+Start your local Kubernetes cluster:
+
+# Start minikube cluster
+minikube start --driver=docker
+
+# Verify cluster is running
+kubectl cluster-info
+
+# Check node status
+kubectl get nodes
+Task 2: Create and Use ConfigMaps
+Subtask 2.1: Understanding ConfigMaps
+ConfigMaps are Kubernetes objects that store non-confidential configuration data in key-value pairs. They help separate configuration from application code, making applications more portable and easier to manage.
+
+Subtask 2.2: Create ConfigMap from Literal Values
+Create a ConfigMap using literal key-value pairs:
+
+# Create a ConfigMap with literal values
+kubectl create configmap app-config \
+  --from-literal=database_host=mysql.example.com \
+  --from-literal=database_port=3306 \
+  --from-literal=app_mode=production \
+  --from-literal=log_level=info
+
+# Verify ConfigMap creation
+kubectl get configmaps
+
+# View ConfigMap details
+kubectl describe configmap app-config
+Subtask 2.3: Create ConfigMap from File
+First, create a configuration file:
+
+# Create a directory for lab files
+mkdir -p ~/k8s-lab5
+cd ~/k8s-lab5
+
+# Create a sample configuration file
+cat > app.properties << EOF
+# Application Configuration
+server.port=8080
+server.host=0.0.0.0
+database.url=jdbc:mysql://localhost:3306/myapp
+database.driver=com.mysql.cj.jdbc.Driver
+cache.enabled=true
+cache.ttl=3600
+logging.level=DEBUG
+EOF
+
+# Create ConfigMap from file
+kubectl create configmap app-properties --from-file=app.properties
+
+# View the ConfigMap
+kubectl get configmap app-properties -o yaml
+Subtask 2.4: Create ConfigMap Using YAML Manifest
+Create a ConfigMap using a YAML file:
+
+# Create ConfigMap YAML manifest
+cat > configmap-web.yaml << EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-config
+  labels:
+    app: web-server
+data:
+  nginx.conf: |
+    server {
+        listen 80;
+        server_name localhost;
+        
+        location / {
+            root /usr/share/nginx/html;
+            index index.html index.htm;
+        }
+        
+        location /api {
+            proxy_pass http://backend:8080;
+            proxy_set_header Host \$host;
+            proxy_set_header X-Real-IP \$remote_addr;
+        }
+    }
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>ConfigMap Demo</title>
+    </head>
+    <body>
+        <h1>Welcome to ConfigMap Demo</h1>
+        <p>This content is loaded from a ConfigMap!</p>
+    </body>
+    </html>
+EOF
+
+# Apply the ConfigMap
+kubectl apply -f configmap-web.yaml
+
+# Verify creation
+kubectl get configmap web-config -o yaml
+Subtask 2.5: Use ConfigMap in a Pod
+Create a pod that uses the ConfigMap:
+
+# Create pod YAML that uses ConfigMap
+cat > pod-with-configmap.yaml << EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: configmap-demo-pod
+  labels:
+    app: demo
+spec:
+  containers:
+  - name: demo-container
+    image: nginx:1.21
+    ports:
+    - containerPort: 80
+    env:
+    # Use ConfigMap as environment variables
+    - name: DATABASE_HOST
+      valueFrom:
+        configMapKeyRef:
+          name: app-config
+          key: database_host
+    - name: DATABASE_PORT
+      valueFrom:
+        configMapKeyRef:
+          name: app-config
+          key: database_port
+    - name: APP_MODE
+      valueFrom:
+        configMapKeyRef:
+          name: app-config
+          key: app_mode
+    volumeMounts:
+    # Mount ConfigMap as volume
+    - name: config-volume
+      mountPath: /etc/nginx/conf.d
+    - name: web-content
+      mountPath: /usr/share/nginx/html
+    - name: app-properties
+      mountPath: /etc/config
+  volumes:
+  - name: config-volume
+    configMap:
+      name: web-config
+      items:
+      - key: nginx.conf
+        path: default.conf
+  - name: web-content
+    configMap:
+      name: web-config
+      items:
+      - key: index.html
+        path: index.html
+  - name: app-properties
+    configMap:
+      name: app-properties
+EOF
+
+# Create the pod
+kubectl apply -f pod-with-configmap.yaml
+
+# Wait for pod to be ready
+kubectl wait --for=condition=Ready pod/configmap-demo-pod --timeout=60s
+
+# Verify pod is running
+kubectl get pods
+Subtask 2.6: Verify ConfigMap Usage
+Test that the ConfigMap data is properly loaded:
+
+# Check environment variables in the pod
+kubectl exec configmap-demo-pod -- env | grep -E "(DATABASE|APP_MODE)"
+
+# Check mounted configuration files
+kubectl exec configmap-demo-pod -- ls -la /etc/config/
+kubectl exec configmap-demo-pod -- cat /etc/config/app.properties
+
+# Check nginx configuration
+kubectl exec configmap-demo-pod -- cat /etc/nginx/conf.d/default.conf
+
+# Check web content
+kubectl exec configmap-demo-pod -- cat /usr/share/nginx/html/index.html
+
+# Test the web server
+kubectl port-forward pod/configmap-demo-pod 8080:80 &
+sleep 2
+curl http://localhost:8080
+pkill -f "kubectl port-forward"
+Task 3: Store Sensitive Information in Kubernetes Secrets
+Subtask 3.1: Understanding Secrets
+Secrets are Kubernetes objects designed to store sensitive information such as passwords, OAuth tokens, SSH keys, and TLS certificates. Unlike ConfigMaps, Secrets are base64 encoded and can be encrypted at rest.
+
+Subtask 3.2: Create Secret from Literal Values
+Create a Secret using literal values:
+
+# Create a Secret with literal values
+kubectl create secret generic database-secret \
+  --from-literal=username=admin \
+  --from-literal=password=supersecret123 \
+  --from-literal=api-key=abc123def456ghi789
+
+# Verify Secret creation
+kubectl get secrets
+
+# View Secret details (note that values are not shown)
+kubectl describe secret database-secret
+Subtask 3.3: Create Secret from Files
+Create files with sensitive data and create Secret from them:
+
+# Create files with sensitive information
+echo -n "admin" > username.txt
+echo -n "supersecret123" > password.txt
+echo -n "abc123def456ghi789" > api-key.txt
+
+# Create Secret from files
+kubectl create secret generic file-secret \
+  --from-file=username.txt \
+  --from-file=password.txt \
+  --from-file=api-key.txt
+
+# Clean up sensitive files
+rm username.txt password.txt api-key.txt
+
+# Verify Secret creation
+kubectl get secret file-secret -o yaml
+Subtask 3.4: Create TLS Secret
+Create a TLS Secret for HTTPS certificates:
+
+# Generate a self-signed certificate for demo purposes
+openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+  -keyout tls.key -out tls.crt \
+  -subj "/CN=demo.example.com/O=demo"
+
+# Create TLS Secret
+kubectl create secret tls tls-secret \
+  --cert=tls.crt \
+  --key=tls.key
+
+# Verify TLS Secret
+kubectl get secret tls-secret -o yaml
+
+# Clean up certificate files
+rm tls.key tls.crt
+Subtask 3.5: Create Secret Using YAML Manifest
+Create a Secret using YAML (values must be base64 encoded):
+
+# Encode values to base64
+echo -n "dbuser" | base64
+echo -n "dbpass123" | base64
+echo -n "mongodb://localhost:27017/myapp" | base64
+
+# Create Secret YAML manifest
+cat > secret-manifest.yaml << EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secret
+  labels:
+    app: myapp
+type: Opaque
+data:
+  db-username: ZGJ1c2Vy
+  db-password: ZGJwYXNzMTIz
+  connection-string: bW9uZ29kYjovL2xvY2FsaG9zdDoyNzAxNy9teWFwcA==
+EOF
+
+# Apply the Secret
+kubectl apply -f secret-manifest.yaml
+
+# Verify creation
+kubectl get secret app-secret -o yaml
+Subtask 3.6: Use Secrets in a Pod
+Create a pod that uses Secrets:
+
+# Create pod YAML that uses Secrets
+cat > pod-with-secrets.yaml << EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: secret-demo-pod
+  labels:
+    app: secret-demo
+spec:
+  containers:
+  - name: demo-container
+    image: nginx:1.21
+    ports:
+    - containerPort: 80
+    env:
+    # Use Secret as environment variables
+    - name: DB_USERNAME
+      valueFrom:
+        secretKeyRef:
+          name: database-secret
+          key: username
+    - name: DB_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: database-secret
+          key: password
+    - name: API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: database-secret
+          key: api-key
+    volumeMounts:
+    # Mount Secret as volume
+    - name: secret-volume
+      mountPath: /etc/secrets
+      readOnly: true
+    - name: tls-volume
+      mountPath: /etc/tls
+      readOnly: true
+  volumes:
+  - name: secret-volume
+    secret:
+      secretName: app-secret
+  - name: tls-volume
+    secret:
+      secretName: tls-secret
+EOF
+
+# Create the pod
+kubectl apply -f pod-with-secrets.yaml
+
+# Wait for pod to be ready
+kubectl wait --for=condition=Ready pod/secret-demo-pod --timeout=60s
+
+# Verify pod is running
+kubectl get pods
+Task 4: Test Secret Access with kubectl
+Subtask 4.1: View Secret Data
+Access and decode Secret data using kubectl:
+
+# List all secrets
+kubectl get secrets
+
+# Get Secret in YAML format
+kubectl get secret database-secret -o yaml
+
+# Get specific Secret data and decode
+kubectl get secret database-secret -o jsonpath='{.data.username}' | base64 --decode
+echo
+kubectl get secret database-secret -o jsonpath='{.data.password}' | base64 --decode
+echo
+kubectl get secret database-secret -o jsonpath='{.data.api-key}' | base64 --decode
+echo
+Subtask 4.2: Verify Secret Usage in Pod
+Test that Secrets are properly loaded in the pod:
+
+# Check environment variables in the pod
+kubectl exec secret-demo-pod -- env | grep -E "(DB_|API_KEY)"
+
+# Check mounted Secret files
+kubectl exec secret-demo-pod -- ls -la /etc/secrets/
+kubectl exec secret-demo-pod -- cat /etc/secrets/db-username
+kubectl exec secret-demo-pod -- cat /etc/secrets/db-password
+kubectl exec secret-demo-pod -- cat /etc/secrets/connection-string
+
+# Check TLS certificates
+kubectl exec secret-demo-pod -- ls -la /etc/tls/
+kubectl exec secret-demo-pod -- openssl x509 -in /etc/tls/tls.crt -text -noout | head -20
+Subtask 4.3: Update Secrets
+Demonstrate how to update Secrets:
+
+# Update Secret with new values
+kubectl create secret generic database-secret \
+  --from-literal=username=newadmin \
+  --from-literal=password=newsecret456 \
+  --from-literal=api-key=xyz789abc123def456 \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# Verify the update
+kubectl get secret database-secret -o jsonpath='{.data.username}' | base64 --decode
+echo
+
+# Note: Pod needs to be restarted to pick up new Secret values from environment variables
+kubectl delete pod secret-demo-pod
+kubectl apply -f pod-with-secrets.yaml
+kubectl wait --for=condition=Ready pod/secret-demo-pod --timeout=60s
+
+# Verify new values
+kubectl exec secret-demo-pod -- env | grep DB_USERNAME
+Subtask 4.4: Secret Security Best Practices
+Demonstrate security considerations:
+
+# Show that Secrets are base64 encoded, not encrypted
+echo "This demonstrates that base64 is encoding, not encryption:"
+echo -n "mysecretpassword" | base64
+echo "bXlzZWNyZXRwYXNzd29yZA==" | base64 --decode
+echo
+
+# Create a Secret with proper RBAC (Role-Based Access Control) considerations
+cat > secret-rbac-demo.yaml << EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rbac-secret
+  namespace: default
+  annotations:
+    description: "Secret with RBAC considerations"
+type: Opaque
+data:
+  sensitive-data: dGhpc2lzdmVyeXNlbnNpdGl2ZWRhdGE=
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: secret-reader
+  namespace: default
+EOF
+
+# Apply the RBAC demo
+kubectl apply -f secret-rbac-demo.yaml
+
+# Show Secret access patterns
+kubectl get secret rbac-secret -o yaml
+Task 5: Advanced ConfigMap and Secret Operations
+Subtask 5.1: ConfigMap and Secret Immutability
+Create immutable ConfigMaps and Secrets:
+
+# Create immutable ConfigMap
+cat > immutable-configmap.yaml << EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: immutable-config
+immutable: true
+data:
+  config.yaml: |
+    app:
+      name: "MyApp"
+      version: "1.0.0"
+      environment: "production"
+    database:
+      host: "prod-db.example.com"
+      port: 5432
+EOF
+
+# Apply immutable ConfigMap
+kubectl apply -f immutable-configmap.yaml
+
+# Try to update it (this should fail)
+kubectl patch configmap immutable-config --patch='{"data":{"config.yaml":"modified"}}'
+
+# Create immutable Secret
+cat > immutable-secret.yaml << EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: immutable-secret
+type: Opaque
+immutable: true
+data:
+  token: dGhpc2lzYXNlY3JldHRva2Vu
+EOF
+
+# Apply immutable Secret
+kubectl apply -f immutable-secret.yaml
+
+# Verify immutability
+kubectl describe configmap immutable-config
+kubectl describe secret immutable-secret
+Subtask 5.2: Using ConfigMaps and Secrets Together
+Create a comprehensive example using both ConfigMaps and Secrets:
+
+# Create a complete application deployment
+cat > complete-app.yaml << EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config-complete
+data:
+  app.yaml: |
+    server:
+      port: 8080
+      host: "0.0.0.0"
+    logging:
+      level: "INFO"
+      format: "json"
+    features:
+      cache_enabled: true
+      metrics_enabled: true
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secrets-complete
+type: Opaque
+data:
+  db_password: cG9zdGdyZXNfcGFzc3dvcmQ=
+  jwt_secret: and0X3NlY3JldF9rZXlfMTIz
+  api_token: YWJjZGVmZ2hpams=
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: complete-app
+  labels:
+    app: complete-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: complete-app
+  template:
+    metadata:
+      labels:
+        app: complete-app
+    spec:
+      containers:
+      - name: app
+        image: nginx:1.21
+        ports:
+        - containerPort: 8080
+        env:
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: app-secrets-complete
+              key: db_password
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: app-secrets-complete
+              key: jwt_secret
+        - name: API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: app-secrets-complete
+              key: api_token
+        volumeMounts:
+        - name: config-volume
+          mountPath: /etc/config
+        - name: secret-volume
+          mountPath: /etc/secrets
+          readOnly: true
+      volumes:
+      - name: config-volume
+        configMap:
+          name: app-config-complete
+      - name: secret-volume
+        secret:
+          secretName: app-secrets-complete
+EOF
+
+# Deploy the complete application
+kubectl apply -f complete-app.yaml
+
+# Wait for deployment to be ready
+kubectl wait --for=condition=available deployment/complete-app --timeout=120s
+
+# Verify deployment
+kubectl get deployments
+kubectl get pods -l app=complete-app
+Subtask 5.3: Cleanup and Resource Management
+Clean up resources and demonstrate management commands:
+
+# List all ConfigMaps and Secrets
+echo "=== ConfigMaps ==="
+kubectl get configmaps
+
+echo "=== Secrets ==="
+kubectl get secrets
+
+# Show resource usage
+kubectl top nodes 2>/dev/null || echo "Metrics server not available"
+
+# Clean up resources
+kubectl delete pod configmap-demo-pod secret-demo-pod
+kubectl delete deployment complete-app
+kubectl delete configmap app-config app-properties web-config immutable-config app-config-complete
+kubectl delete secret database-secret file-secret tls-secret app-secret rbac-secret immutable-secret app-secrets-complete
+kubectl delete serviceaccount secret-reader
+
+# Verify cleanup
+kubectl get configmaps
+kubectl get secrets
+kubectl get pods
+Troubleshooting Tips
+Common Issues and Solutions
+Issue 1: Pod fails to start due to missing ConfigMap or Secret
+
+# Check pod events
+kubectl describe pod <pod-name>
+
+# Verify ConfigMap/Secret exists
+kubectl get configmaps
+kubectl get secrets
+Issue 2: Environment variables not showing up in pod
+
+# Check if the keys exist in ConfigMap/Secret
+kubectl describe configmap <configmap-name>
+kubectl describe secret <secret-name>
+
+# Verify environment variable names match
+kubectl exec <pod-name> -- env
+Issue 3: Mounted files are empty or missing
+
+# Check volume mounts
+kubectl describe pod <pod-name>
+
+# Verify file paths
+kubectl exec <pod-name> -- ls -la /path/to/mount
+Issue 4: Base64 encoding/decoding issues
+
+# Encode properly (no newlines)
+echo -n "your-secret" | base64
+
+# Decode and verify
+echo "encoded-value" | base64 --decode
+Lab Summary
+In this comprehensive lab, you have successfully:
+
+Key Accomplishments
+Installed and configured a complete Kubernetes environment using minikube
+Created and managed ConfigMaps using multiple methods:
+Literal values from command line
+From configuration files
+Using YAML manifests
+Implemented Secrets management for sensitive data:
+Generic secrets for passwords and API keys
+TLS secrets for certificates
+File-based and manifest-based creation
+Deployed applications that consume both ConfigMaps and Secrets:
+As environment variables
+As mounted volumes
+In combination for complete application configuration
+Tested and verified proper access and security:
+Used kubectl to inspect and decode Secret data
+Verified proper mounting and environment variable injection
+Implemented security best practices
+Why This Matters
+Configuration Management is crucial in modern application deployment because:
+
+Separation of Concerns: Configuration is separated from application code, making applications more portable
+Environment-Specific Settings: Different configurations can be used for development, staging, and production
+Security: Sensitive data is handled separately from regular configuration data
+Scalability: Configuration changes don't require rebuilding application images
+Compliance: Proper secret management helps meet security and compliance requirements
+Best Practices Learned
+Use ConfigMaps for non-sensitive data like application settings, feature flags, and environment-specific configurations
+Use Secrets for sensitive information such as passwords, API keys, and certificates
+Implement proper RBAC to control access to Secrets
+Consider immutable ConfigMaps and Secrets for production environments
+Use volume mounts for large configuration files and environment variables for simple key-value pairs
+Regularly rotate secrets and update configurations as needed
+This lab provides a solid foundation for managing application configuration and secrets in Kubernetes environments, preparing you for real-world container orchestration scenarios.
