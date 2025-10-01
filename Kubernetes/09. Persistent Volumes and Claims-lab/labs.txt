@@ -1,0 +1,530 @@
+Lab 9: Persistent Volumes and Claims
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Understand the concepts of PersistentVolumes (PV) and PersistentVolumeClaims (PVC) in Kubernetes
+Create and configure PersistentVolumes for storage management
+Create PersistentVolumeClaims to request storage resources
+Attach PVCs to pods for persistent data storage
+Test and verify data persistence across pod restarts and deletions
+Troubleshoot common storage-related issues in Kubernetes
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Linux command line operations
+Familiarity with Kubernetes concepts (pods, deployments, services)
+Knowledge of YAML file structure and syntax
+Understanding of file systems and storage concepts
+Completed previous Kubernetes labs or equivalent experience
+Lab Environment
+Al Nafi Cloud Machine: This lab uses a Linux-based cloud machine provided by Al Nafi. Simply click Start Lab to access your dedicated environment. The provided Linux machine is bare metal with no pre-installed tools, so you will install all required components during the lab.
+
+Important Note: All tasks in this lab will be performed on a single Linux machine. No additional machines or remote environments are required.
+
+Task 1: Environment Setup and Kubernetes Installation
+Subtask 1.1: Update System and Install Dependencies
+First, update your system and install necessary dependencies:
+
+# Update package manager
+sudo apt update && sudo apt upgrade -y
+
+# Install required packages
+sudo apt install -y curl wget apt-transport-https ca-certificates gnupg lsb-release
+
+# Install Docker
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io
+
+# Start and enable Docker
+sudo systemctl start docker
+sudo systemctl enable docker
+sudo usermod -aG docker $USER
+Subtask 1.2: Install Kubernetes Components
+Install kubectl, kubeadm, and kubelet:
+
+# Add Kubernetes repository
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
+
+# Install Kubernetes components
+sudo apt update
+sudo apt install -y kubelet kubeadm kubectl
+sudo apt-mark hold kubelet kubeadm kubectl
+Subtask 1.3: Initialize Kubernetes Cluster
+Set up a single-node Kubernetes cluster:
+
+# Initialize the cluster
+sudo kubeadm init --pod-network-cidr=10.244.0.0/16
+
+# Configure kubectl for regular user
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+# Install Flannel network plugin
+kubectl apply -f https://raw.githubusercontent.com/flannel-io/flannel/master/Documentation/kube-flannel.yml
+
+# Remove taint from master node to allow pod scheduling
+kubectl taint nodes --all node-role.kubernetes.io/control-plane-
+Subtask 1.4: Verify Cluster Status
+Check that your cluster is running properly:
+
+# Check node status
+kubectl get nodes
+
+# Check system pods
+kubectl get pods -n kube-system
+
+# Wait for all pods to be running (this may take a few minutes)
+kubectl wait --for=condition=Ready pods --all -n kube-system --timeout=300s
+Task 2: Create a PersistentVolume (PV) and PersistentVolumeClaim (PVC)
+Subtask 2.1: Create Storage Directory
+Create a directory on the host that will serve as our persistent storage:
+
+# Create storage directory
+sudo mkdir -p /mnt/data
+sudo chmod 777 /mnt/data
+
+# Create a test file to verify persistence
+echo "Initial data from host" | sudo tee /mnt/data/host-file.txt
+Subtask 2.2: Create PersistentVolume YAML
+Create a PersistentVolume configuration file:
+
+cat > pv-storage.yaml << 'EOF'
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: local-pv
+  labels:
+    type: local
+spec:
+  storageClassName: manual
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: "/mnt/data"
+  persistentVolumeReclaimPolicy: Retain
+EOF
+Subtask 2.3: Create PersistentVolumeClaim YAML
+Create a PersistentVolumeClaim configuration file:
+
+cat > pvc-storage.yaml << 'EOF'
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: local-pvc
+spec:
+  storageClassName: manual
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 500Mi
+EOF
+Subtask 2.4: Apply PV and PVC Configurations
+Deploy the PersistentVolume and PersistentVolumeClaim:
+
+# Create the PersistentVolume
+kubectl apply -f pv-storage.yaml
+
+# Verify PV creation
+kubectl get pv
+
+# Create the PersistentVolumeClaim
+kubectl apply -f pvc-storage.yaml
+
+# Verify PVC creation and binding
+kubectl get pvc
+
+# Check detailed PV and PVC status
+kubectl describe pv local-pv
+kubectl describe pvc local-pvc
+Key Concepts:
+
+PersistentVolume (PV): A piece of storage in the cluster that has been provisioned by an administrator
+PersistentVolumeClaim (PVC): A request for storage by a user
+StorageClass: Defines the type of storage and provisioning method
+Access Modes: Define how the volume can be mounted (ReadWriteOnce, ReadOnlyMany, ReadWriteMany)
+Task 3: Attach PVC to a Pod
+Subtask 3.1: Create Pod with PVC Mount
+Create a pod configuration that uses the PVC:
+
+cat > pod-with-pvc.yaml << 'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: storage-pod
+  labels:
+    app: storage-test
+spec:
+  containers:
+  - name: storage-container
+    image: nginx:latest
+    ports:
+    - containerPort: 80
+    volumeMounts:
+    - name: storage-volume
+      mountPath: /usr/share/nginx/html
+    env:
+    - name: POD_NAME
+      valueFrom:
+        fieldRef:
+          fieldPath: metadata.name
+  volumes:
+  - name: storage-volume
+    persistentVolumeClaim:
+      claimName: local-pvc
+  restartPolicy: Always
+EOF
+Subtask 3.2: Deploy Pod and Verify Mount
+Deploy the pod and verify the volume mount:
+
+# Create the pod
+kubectl apply -f pod-with-pvc.yaml
+
+# Wait for pod to be running
+kubectl wait --for=condition=Ready pod/storage-pod --timeout=120s
+
+# Check pod status
+kubectl get pods
+
+# Verify volume mount inside the pod
+kubectl exec storage-pod -- df -h
+
+# Check mounted volume content
+kubectl exec storage-pod -- ls -la /usr/share/nginx/html
+
+# Verify the host file is accessible from the pod
+kubectl exec storage-pod -- cat /usr/share/nginx/html/host-file.txt
+Subtask 3.3: Create Content from Pod
+Add content to the persistent volume from within the pod:
+
+# Create an HTML file from the pod
+kubectl exec storage-pod -- bash -c 'echo "<h1>Hello from Storage Pod</h1><p>Pod Name: $POD_NAME</p><p>Timestamp: $(date)</p>" > /usr/share/nginx/html/index.html'
+
+# Create additional test files
+kubectl exec storage-pod -- bash -c 'echo "Data created by storage-pod at $(date)" > /usr/share/nginx/html/pod-data.txt'
+
+# List files in the mounted volume
+kubectl exec storage-pod -- ls -la /usr/share/nginx/html
+
+# Verify content
+kubectl exec storage-pod -- cat /usr/share/nginx/html/index.html
+kubectl exec storage-pod -- cat /usr/share/nginx/html/pod-data.txt
+Subtask 3.4: Test Web Server Access
+Test the nginx web server to ensure it's serving content from the persistent volume:
+
+# Get pod IP
+POD_IP=$(kubectl get pod storage-pod -o jsonpath='{.status.podIP}')
+echo "Pod IP: $POD_IP"
+
+# Test web server from within the cluster
+kubectl run test-client --image=curlimages/curl --rm -it --restart=Never -- curl http://$POD_IP
+
+# Alternative: Port forward to test from host
+kubectl port-forward pod/storage-pod 8080:80 &
+PORT_FORWARD_PID=$!
+
+# Test from host (wait a moment for port-forward to establish)
+sleep 3
+curl http://localhost:8080
+
+# Stop port forwarding
+kill $PORT_FORWARD_PID 2>/dev/null || true
+Task 4: Test Data Persistence Across Pod Restarts
+Subtask 4.1: Verify Data on Host
+Check that the data created by the pod is visible on the host system:
+
+# Check files on host
+ls -la /mnt/data/
+
+# View content created by pod
+cat /mnt/data/index.html
+cat /mnt/data/pod-data.txt
+cat /mnt/data/host-file.txt
+
+# Add data from host
+echo "Data added from host at $(date)" | sudo tee /mnt/data/host-added.txt
+Subtask 4.2: Delete and Recreate Pod
+Test persistence by deleting and recreating the pod:
+
+# Delete the current pod
+kubectl delete pod storage-pod
+
+# Verify pod is deleted
+kubectl get pods
+
+# Recreate the pod using the same configuration
+kubectl apply -f pod-with-pvc.yaml
+
+# Wait for new pod to be ready
+kubectl wait --for=condition=Ready pod/storage-pod --timeout=120s
+
+# Check if data persists in the new pod
+kubectl exec storage-pod -- ls -la /usr/share/nginx/html
+
+# Verify all files are still there
+kubectl exec storage-pod -- cat /usr/share/nginx/html/index.html
+kubectl exec storage-pod -- cat /usr/share/nginx/html/pod-data.txt
+kubectl exec storage-pod -- cat /usr/share/nginx/html/host-file.txt
+kubectl exec storage-pod -- cat /usr/share/nginx/html/host-added.txt
+Subtask 4.3: Test with Different Pod
+Create a different pod using the same PVC to test data sharing:
+
+cat > second-pod.yaml << 'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: second-storage-pod
+  labels:
+    app: storage-test-2
+spec:
+  containers:
+  - name: storage-container-2
+    image: busybox:latest
+    command: ["/bin/sh"]
+    args: ["-c", "while true; do sleep 30; done"]
+    volumeMounts:
+    - name: storage-volume
+      mountPath: /data
+  volumes:
+  - name: storage-volume
+    persistentVolumeClaim:
+      claimName: local-pvc
+  restartPolicy: Always
+EOF
+
+# Create second pod
+kubectl apply -f second-pod.yaml
+
+# Wait for pod to be ready
+kubectl wait --for=condition=Ready pod/second-storage-pod --timeout=120s
+
+# Check data accessibility from second pod
+kubectl exec second-storage-pod -- ls -la /data
+
+# Add data from second pod
+kubectl exec second-storage-pod -- sh -c 'echo "Data from second pod at $(date)" > /data/second-pod-data.txt'
+
+# Verify data from first pod
+kubectl exec storage-pod -- cat /usr/share/nginx/html/second-pod-data.txt
+Subtask 4.4: Test PVC Persistence
+Test what happens when PVC is deleted and recreated:
+
+# Delete both pods first
+kubectl delete pod storage-pod second-storage-pod
+
+# Check PVC status
+kubectl get pvc
+
+# Note: Do NOT delete PVC in production without backing up data
+# This is for educational purposes only
+echo "Current PVC status:"
+kubectl describe pvc local-pvc
+
+# Verify data still exists on host
+ls -la /mnt/data/
+Task 5: Advanced Storage Testing and Monitoring
+Subtask 5.1: Monitor Storage Usage
+Create a monitoring pod to check storage usage:
+
+cat > storage-monitor.yaml << 'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: storage-monitor
+spec:
+  containers:
+  - name: monitor
+    image: busybox:latest
+    command: ["/bin/sh"]
+    args: ["-c", "while true; do echo '=== Storage Usage ==='; df -h /data; echo '=== File Count ==='; find /data -type f | wc -l; echo '=== Latest Files ==='; ls -lt /data | head -5; sleep 60; done"]
+    volumeMounts:
+    - name: storage-volume
+      mountPath: /data
+  volumes:
+  - name: storage-volume
+    persistentVolumeClaim:
+      claimName: local-pvc
+  restartPolicy: Always
+EOF
+
+# Deploy monitoring pod
+kubectl apply -f storage-monitor.yaml
+
+# Wait for pod to be ready
+kubectl wait --for=condition=Ready pod/storage-monitor --timeout=120s
+
+# View monitoring output
+kubectl logs storage-monitor --follow &
+LOGS_PID=$!
+
+# Let it run for a moment
+sleep 10
+
+# Stop log following
+kill $LOGS_PID 2>/dev/null || true
+Subtask 5.2: Test Storage Limits
+Test storage capacity and behavior:
+
+# Create a pod to test storage limits
+cat > storage-test.yaml << 'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: storage-test
+spec:
+  containers:
+  - name: test-container
+    image: busybox:latest
+    command: ["/bin/sh"]
+    args: ["-c", "while true; do sleep 30; done"]
+    volumeMounts:
+    - name: storage-volume
+      mountPath: /test-data
+  volumes:
+  - name: storage-volume
+    persistentVolumeClaim:
+      claimName: local-pvc
+  restartPolicy: Always
+EOF
+
+kubectl apply -f storage-test.yaml
+kubectl wait --for=condition=Ready pod/storage-test --timeout=120s
+
+# Test writing large amounts of data
+kubectl exec storage-test -- sh -c 'for i in $(seq 1 100); do echo "Test data line $i - $(date)" >> /test-data/large-file.txt; done'
+
+# Check file size
+kubectl exec storage-test -- ls -lh /test-data/large-file.txt
+
+# Verify data integrity
+kubectl exec storage-test -- head -5 /test-data/large-file.txt
+kubectl exec storage-test -- tail -5 /test-data/large-file.txt
+Task 6: Cleanup and Resource Management
+Subtask 6.1: Resource Cleanup
+Clean up the resources created during the lab:
+
+# Delete all pods
+kubectl delete pod storage-pod second-storage-pod storage-monitor storage-test --ignore-not-found=true
+
+# Verify pods are deleted
+kubectl get pods
+
+# Check PVC status (should still be bound)
+kubectl get pvc
+
+# Check PV status
+kubectl get pv
+
+# View final state of data
+ls -la /mnt/data/
+Subtask 6.2: Optional Complete Cleanup
+If you want to completely clean up all resources:
+
+# Delete PVC (this will release the PV)
+kubectl delete pvc local-pvc
+
+# Delete PV
+kubectl delete pv local-pv
+
+# Verify cleanup
+kubectl get pv,pvc
+
+# Note: Data on host remains unless manually deleted
+echo "Data still exists on host:"
+ls -la /mnt/data/
+Troubleshooting Common Issues
+Issue 1: PVC Stuck in Pending State
+Problem: PVC remains in "Pending" status Solution:
+
+# Check PVC events
+kubectl describe pvc local-pvc
+
+# Check available PVs
+kubectl get pv
+
+# Verify storage class matches
+kubectl get pv local-pv -o yaml | grep storageClassName
+kubectl get pvc local-pvc -o yaml | grep storageClassName
+Issue 2: Pod Cannot Mount Volume
+Problem: Pod fails to start due to volume mount issues Solution:
+
+# Check pod events
+kubectl describe pod storage-pod
+
+# Verify PVC is bound
+kubectl get pvc
+
+# Check node storage availability
+df -h /mnt/data
+Issue 3: Data Not Persisting
+Problem: Data disappears after pod restart Solution:
+
+# Verify PV reclaim policy
+kubectl get pv local-pv -o yaml | grep persistentVolumeReclaimPolicy
+
+# Check host directory permissions
+ls -la /mnt/data/
+sudo chmod 777 /mnt/data
+Issue 4: Permission Denied Errors
+Problem: Cannot write to mounted volume Solution:
+
+# Fix host directory permissions
+sudo chown -R 1000:1000 /mnt/data
+sudo chmod -R 755 /mnt/data
+
+# Or make it world-writable (less secure)
+sudo chmod 777 /mnt/data
+Key Concepts Summary
+PersistentVolume (PV):
+
+Cluster-wide storage resource
+Independent lifecycle from pods
+Defined by administrators
+Has capacity, access modes, and reclaim policy
+PersistentVolumeClaim (PVC):
+
+User request for storage
+Binds to available PVs
+Used by pods to access storage
+Can specify size and access requirements
+Volume Mounting:
+
+Pods reference PVCs in volume specifications
+Containers mount volumes at specific paths
+Data persists beyond pod lifecycle
+Storage Classes:
+
+Define storage types and provisioning
+Enable dynamic provisioning
+Manual class requires pre-created PVs
+Conclusion
+In this lab, you have successfully:
+
+Installed and configured a complete Kubernetes environment on a single Linux machine
+Created PersistentVolumes to define available storage resources in your cluster
+Created PersistentVolumeClaims to request storage for applications
+Attached PVCs to pods and verified proper volume mounting
+Tested data persistence across pod restarts and deletions
+Demonstrated data sharing between multiple pods using the same PVC
+Monitored storage usage and tested storage capacity
+Troubleshot common issues related to persistent storage
+Why This Matters:
+
+Persistent storage is crucial for stateful applications in Kubernetes. Unlike ephemeral pod storage, persistent volumes ensure that:
+
+Data survives pod restarts - Critical for databases and applications that store important data
+Applications can be moved between nodes without losing data
+Storage resources are managed centrally - Administrators can provision and manage storage independently from applications
+Multiple pods can share data - Enabling collaborative applications and data processing workflows
+Understanding PVs and PVCs is essential for running production workloads in Kubernetes, as most real-world applications require some form of persistent data storage. This knowledge forms the foundation for deploying databases, content management systems, and other stateful applications in Kubernetes environments.
+
+The skills you've learned in this lab are directly applicable to production Kubernetes deployments, where proper storage management is critical for application reliability and data integrity.
