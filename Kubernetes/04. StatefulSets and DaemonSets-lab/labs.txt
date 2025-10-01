@@ -1,0 +1,735 @@
+Lab 4: StatefulSets and DaemonSets
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Understand the differences between StatefulSets, DaemonSets, and regular Deployments
+Create and manage StatefulSets with persistent storage
+Deploy DaemonSets and verify their distribution across cluster nodes
+Configure persistent volumes for stateful applications
+Monitor and troubleshoot StatefulSets and DaemonSets
+Understand use cases for stateful workloads in Kubernetes
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Kubernetes concepts (Pods, Services, Deployments)
+Familiarity with Linux command line operations
+Basic knowledge of YAML file structure
+Understanding of container concepts
+Note: Al Nafi provides Linux-based cloud machines for this lab. Simply click "Start Lab" to access your dedicated Linux machine. The provided machine is bare metal with no pre-installed tools, so you will install all required tools during the lab.
+
+Lab Environment Setup
+Task 1: Install Required Tools
+Subtask 1.1: Update System and Install Dependencies
+First, update your system and install essential tools:
+
+# Update package manager
+sudo apt update && sudo apt upgrade -y
+
+# Install curl, wget, and other utilities
+sudo apt install -y curl wget apt-transport-https ca-certificates gnupg lsb-release
+Subtask 1.2: Install Docker
+Install Docker to run containers:
+
+# Add Docker's official GPG key
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+
+# Add Docker repository
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# Update package index and install Docker
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io
+
+# Add current user to docker group
+sudo usermod -aG docker $USER
+
+# Start and enable Docker service
+sudo systemctl start docker
+sudo systemctl enable docker
+
+# Verify Docker installation
+docker --version
+Subtask 1.3: Install kubectl
+Install the Kubernetes command-line tool:
+
+# Download kubectl
+curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+
+# Make kubectl executable
+chmod +x kubectl
+
+# Move kubectl to system PATH
+sudo mv kubectl /usr/local/bin/
+
+# Verify kubectl installation
+kubectl version --client
+Subtask 1.4: Install and Start Minikube
+Install Minikube to create a local Kubernetes cluster:
+
+# Download Minikube
+curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+
+# Install Minikube
+sudo install minikube-linux-amd64 /usr/local/bin/minikube
+
+# Start Minikube cluster
+minikube start --driver=docker --nodes=3
+
+# Verify cluster status
+kubectl get nodes
+minikube status
+Main Lab Tasks
+Task 1: Create a StatefulSet with Persistent Volume
+Subtask 1.1: Understand StatefulSets
+StatefulSets are Kubernetes workloads designed for stateful applications that require:
+
+Stable network identities: Each pod gets a predictable hostname
+Ordered deployment and scaling: Pods are created and terminated in order
+Persistent storage: Each pod can have its own persistent volume
+Subtask 1.2: Create Storage Class and Persistent Volume
+First, create a storage class for dynamic provisioning:
+
+# Create storage class configuration
+cat > storageclass.yaml << 'EOF'
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-storage
+provisioner: k8s.io/minikube-hostpath
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Delete
+EOF
+
+# Apply storage class
+kubectl apply -f storageclass.yaml
+
+# Verify storage class creation
+kubectl get storageclass
+Subtask 1.3: Create a StatefulSet with MySQL
+Create a MySQL StatefulSet with persistent storage:
+
+# Create MySQL StatefulSet configuration
+cat > mysql-statefulset.yaml << 'EOF'
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql-statefulset
+  labels:
+    app: mysql
+spec:
+  serviceName: mysql-headless
+  replicas: 3
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      containers:
+      - name: mysql
+        image: mysql:8.0
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          value: "rootpassword"
+        - name: MYSQL_DATABASE
+          value: "testdb"
+        - name: MYSQL_USER
+          value: "testuser"
+        - name: MYSQL_PASSWORD
+          value: "testpass"
+        ports:
+        - containerPort: 3306
+          name: mysql
+        volumeMounts:
+        - name: mysql-storage
+          mountPath: /var/lib/mysql
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+  volumeClaimTemplates:
+  - metadata:
+      name: mysql-storage
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: local-storage
+      resources:
+        requests:
+          storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-headless
+  labels:
+    app: mysql
+spec:
+  clusterIP: None
+  selector:
+    app: mysql
+  ports:
+  - port: 3306
+    targetPort: 3306
+    name: mysql
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-service
+  labels:
+    app: mysql
+spec:
+  selector:
+    app: mysql
+  ports:
+  - port: 3306
+    targetPort: 3306
+    name: mysql
+  type: ClusterIP
+EOF
+
+# Apply the StatefulSet
+kubectl apply -f mysql-statefulset.yaml
+Subtask 1.4: Monitor StatefulSet Deployment
+Watch the StatefulSet pods being created in order:
+
+# Watch StatefulSet rollout
+kubectl get statefulset mysql-statefulset -w
+
+# In another terminal, monitor pods
+kubectl get pods -l app=mysql -w
+
+# Check StatefulSet status
+kubectl describe statefulset mysql-statefulset
+
+# Verify persistent volumes
+kubectl get pv
+kubectl get pvc
+Subtask 1.5: Test StatefulSet Properties
+Verify the unique properties of StatefulSet pods:
+
+# Check pod names (should be mysql-statefulset-0, mysql-statefulset-1, mysql-statefulset-2)
+kubectl get pods -l app=mysql
+
+# Check persistent volume claims
+kubectl get pvc
+
+# Test stable network identity
+kubectl run mysql-client --image=mysql:8.0 -it --rm --restart=Never -- mysql -h mysql-statefulset-0.mysql-headless.default.svc.cluster.local -u root -prootpassword -e "SELECT @@hostname;"
+
+# Test ordered scaling - scale down to 2 replicas
+kubectl scale statefulset mysql-statefulset --replicas=2
+
+# Watch which pod gets terminated (should be mysql-statefulset-2)
+kubectl get pods -l app=mysql -w
+
+# Scale back up to 3 replicas
+kubectl scale statefulset mysql-statefulset --replicas=3
+Subtask 1.6: Test Data Persistence
+Create data and verify persistence across pod restarts:
+
+# Connect to the first MySQL pod and create test data
+kubectl exec -it mysql-statefulset-0 -- mysql -u root -prootpassword -e "
+CREATE DATABASE IF NOT EXISTS testdb;
+USE testdb;
+CREATE TABLE IF NOT EXISTS users (id INT PRIMARY KEY, name VARCHAR(50));
+INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob');
+SELECT * FROM users;
+"
+
+# Delete the pod to test persistence
+kubectl delete pod mysql-statefulset-0
+
+# Wait for pod to be recreated
+kubectl wait --for=condition=Ready pod/mysql-statefulset-0 --timeout=300s
+
+# Verify data persistence
+kubectl exec -it mysql-statefulset-0 -- mysql -u root -prootpassword -e "
+USE testdb;
+SELECT * FROM users;
+"
+Task 2: Deploy a DaemonSet and Test Pod Distribution on Nodes
+Subtask 2.1: Understand DaemonSets
+DaemonSets ensure that a copy of a pod runs on all (or selected) nodes in the cluster. They are commonly used for:
+
+Node monitoring agents (like Prometheus Node Exporter)
+Log collection daemons (like Fluentd)
+Network plugins (like Calico)
+Storage daemons (like Ceph)
+Subtask 2.2: Create a Monitoring DaemonSet
+Create a DaemonSet that deploys a monitoring agent on all nodes:
+
+# Create DaemonSet configuration for node monitoring
+cat > monitoring-daemonset.yaml << 'EOF'
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-monitor
+  labels:
+    app: node-monitor
+spec:
+  selector:
+    matchLabels:
+      app: node-monitor
+  template:
+    metadata:
+      labels:
+        app: node-monitor
+    spec:
+      hostNetwork: true
+      hostPID: true
+      containers:
+      - name: node-monitor
+        image: prom/node-exporter:latest
+        args:
+        - '--path.procfs=/host/proc'
+        - '--path.sysfs=/host/sys'
+        - '--collector.filesystem.ignored-mount-points=^/(sys|proc|dev|host|etc)($|/)'
+        ports:
+        - containerPort: 9100
+          hostPort: 9100
+          name: metrics
+        volumeMounts:
+        - name: proc
+          mountPath: /host/proc
+          readOnly: true
+        - name: sys
+          mountPath: /host/sys
+          readOnly: true
+        - name: root
+          mountPath: /rootfs
+          readOnly: true
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65534
+      volumes:
+      - name: proc
+        hostPath:
+          path: /proc
+      - name: sys
+        hostPath:
+          path: /sys
+      - name: root
+        hostPath:
+          path: /
+      tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: node-monitor-service
+  labels:
+    app: node-monitor
+spec:
+  selector:
+    app: node-monitor
+  ports:
+  - port: 9100
+    targetPort: 9100
+    name: metrics
+  type: ClusterIP
+EOF
+
+# Apply the DaemonSet
+kubectl apply -f monitoring-daemonset.yaml
+Subtask 2.3: Verify DaemonSet Distribution
+Check that the DaemonSet has deployed pods on all nodes:
+
+# Check DaemonSet status
+kubectl get daemonset node-monitor
+
+# List all nodes in the cluster
+kubectl get nodes
+
+# Check pods distribution across nodes
+kubectl get pods -l app=node-monitor -o wide
+
+# Describe the DaemonSet
+kubectl describe daemonset node-monitor
+
+# Check which nodes have the monitoring pods
+kubectl get pods -l app=node-monitor --field-selector=status.phase=Running -o custom-columns=NAME:.metadata.name,NODE:.spec.nodeName
+Subtask 2.4: Test DaemonSet Scaling with Node Addition
+Simulate adding a new node and verify automatic pod deployment:
+
+# Check current node count
+kubectl get nodes
+
+# Add a new node to the cluster (Minikube)
+minikube node add
+
+# Wait for the new node to be ready
+kubectl wait --for=condition=Ready node --all --timeout=300s
+
+# Verify new node is added
+kubectl get nodes
+
+# Check that DaemonSet automatically deployed to the new node
+kubectl get pods -l app=node-monitor -o wide
+
+# Verify DaemonSet status shows increased desired count
+kubectl get daemonset node-monitor
+Subtask 2.5: Test DaemonSet Functionality
+Test the monitoring functionality of the DaemonSet:
+
+# Port forward to access node exporter metrics
+kubectl port-forward daemonset/node-monitor 9100:9100 &
+
+# Test metrics endpoint (in another terminal or background the port-forward)
+curl http://localhost:9100/metrics | head -20
+
+# Stop port forwarding
+pkill -f "kubectl port-forward"
+
+# Create a test pod to access the service internally
+kubectl run test-pod --image=curlimages/curl -it --rm --restart=Never -- sh
+
+# Inside the test pod, test the service
+# curl http://node-monitor-service:9100/metrics | head -10
+# exit
+Subtask 2.6: Create a Log Collection DaemonSet
+Create another DaemonSet for log collection to demonstrate multiple DaemonSets:
+
+# Create log collector DaemonSet
+cat > log-collector-daemonset.yaml << 'EOF'
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: log-collector
+  labels:
+    app: log-collector
+spec:
+  selector:
+    matchLabels:
+      app: log-collector
+  template:
+    metadata:
+      labels:
+        app: log-collector
+    spec:
+      containers:
+      - name: log-collector
+        image: fluent/fluent-bit:latest
+        volumeMounts:
+        - name: varlog
+          mountPath: /var/log
+          readOnly: true
+        - name: varlibdockercontainers
+          mountPath: /var/lib/docker/containers
+          readOnly: true
+        - name: config
+          mountPath: /fluent-bit/etc/
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+      volumes:
+      - name: varlog
+        hostPath:
+          path: /var/log
+      - name: varlibdockercontainers
+        hostPath:
+          path: /var/lib/docker/containers
+      - name: config
+        configMap:
+          name: fluent-bit-config
+      tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluent-bit-config
+data:
+  fluent-bit.conf: |
+    [SERVICE]
+        Flush         1
+        Log_Level     info
+        Daemon        off
+        Parsers_File  parsers.conf
+
+    [INPUT]
+        Name              tail
+        Path              /var/log/containers/*.log
+        Parser            docker
+        Tag               kube.*
+        Refresh_Interval  5
+        Mem_Buf_Limit     50MB
+        Skip_Long_Lines   On
+
+    [OUTPUT]
+        Name  stdout
+        Match *
+  
+  parsers.conf: |
+    [PARSER]
+        Name        docker
+        Format      json
+        Time_Key    time
+        Time_Format %Y-%m-%dT%H:%M:%S.%L
+        Time_Keep   On
+EOF
+
+# Apply the log collector DaemonSet
+kubectl apply -f log-collector-daemonset.yaml
+Subtask 2.7: Monitor Multiple DaemonSets
+Verify both DaemonSets are running correctly:
+
+# List all DaemonSets
+kubectl get daemonsets
+
+# Check pods for both DaemonSets
+kubectl get pods -l app=node-monitor -o wide
+kubectl get pods -l app=log-collector -o wide
+
+# Verify both DaemonSets have pods on all nodes
+kubectl get pods -o wide | grep -E "(node-monitor|log-collector)"
+
+# Check resource usage
+kubectl top pods -l app=node-monitor
+kubectl top pods -l app=log-collector
+Advanced Configuration and Testing
+Task 3: Advanced StatefulSet Operations
+Subtask 3.1: Rolling Updates
+Test rolling updates with StatefulSets:
+
+# Update MySQL image version
+kubectl patch statefulset mysql-statefulset -p='{"spec":{"template":{"spec":{"containers":[{"name":"mysql","image":"mysql:8.0.35"}]}}}}'
+
+# Watch the rolling update process
+kubectl rollout status statefulset/mysql-statefulset
+
+# Check rollout history
+kubectl rollout history statefulset/mysql-statefulset
+Subtask 3.2: StatefulSet Backup and Recovery
+Simulate backup and recovery scenarios:
+
+# Create a backup of data from one pod
+kubectl exec mysql-statefulset-0 -- mysqldump -u root -prootpassword --all-databases > backup.sql
+
+# Simulate pod failure and recovery
+kubectl delete pod mysql-statefulset-1
+
+# Wait for automatic recovery
+kubectl wait --for=condition=Ready pod/mysql-statefulset-1 --timeout=300s
+
+# Verify data integrity
+kubectl exec -it mysql-statefulset-1 -- mysql -u root -prootpassword -e "SHOW DATABASES;"
+Task 4: Advanced DaemonSet Operations
+Subtask 4.1: Node Selector for DaemonSets
+Create a DaemonSet that only runs on specific nodes:
+
+# Label a node
+kubectl label nodes minikube-m02 environment=production
+
+# Create selective DaemonSet
+cat > selective-daemonset.yaml << 'EOF'
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: production-monitor
+spec:
+  selector:
+    matchLabels:
+      app: production-monitor
+  template:
+    metadata:
+      labels:
+        app: production-monitor
+    spec:
+      nodeSelector:
+        environment: production
+      containers:
+      - name: monitor
+        image: busybox
+        command: ['sh', '-c', 'while true; do echo "Monitoring production node"; sleep 30; done']
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "25m"
+          limits:
+            memory: "64Mi"
+            cpu: "50m"
+EOF
+
+# Apply selective DaemonSet
+kubectl apply -f selective-daemonset.yaml
+
+# Verify it only runs on labeled nodes
+kubectl get pods -l app=production-monitor -o wide
+Troubleshooting and Monitoring
+Task 5: Troubleshooting Common Issues
+Subtask 5.1: StatefulSet Troubleshooting
+Common StatefulSet issues and solutions:
+
+# Check StatefulSet events
+kubectl describe statefulset mysql-statefulset
+
+# Check pod events
+kubectl describe pod mysql-statefulset-0
+
+# Check persistent volume issues
+kubectl get pv,pvc
+
+# Check storage class issues
+kubectl describe storageclass local-storage
+
+# View StatefulSet logs
+kubectl logs mysql-statefulset-0
+
+# Check resource constraints
+kubectl top pods -l app=mysql
+Subtask 5.2: DaemonSet Troubleshooting
+Common DaemonSet issues and solutions:
+
+# Check DaemonSet status
+kubectl get daemonset node-monitor -o yaml
+
+# Check why pods might not be scheduled
+kubectl describe daemonset node-monitor
+
+# Check node taints and tolerations
+kubectl describe nodes | grep -A 5 Taints
+
+# View DaemonSet logs
+kubectl logs -l app=node-monitor
+
+# Check resource usage
+kubectl top pods -l app=node-monitor
+Performance and Resource Management
+Task 6: Resource Management
+Subtask 6.1: Resource Limits and Requests
+Monitor and adjust resource usage:
+
+# Check current resource usage
+kubectl top nodes
+kubectl top pods
+
+# Update resource limits for StatefulSet
+kubectl patch statefulset mysql-statefulset -p='{"spec":{"template":{"spec":{"containers":[{"name":"mysql","resources":{"requests":{"memory":"512Mi","cpu":"500m"},"limits":{"memory":"1Gi","cpu":"1000m"}}}]}}}}'
+
+# Monitor resource changes
+kubectl describe statefulset mysql-statefulset | grep -A 10 Resources
+Subtask 6.2: Horizontal Pod Autoscaling (HPA) Limitations
+Understand why HPA doesn't work with StatefulSets:
+
+# Try to create HPA for StatefulSet (this will show limitations)
+kubectl autoscale statefulset mysql-statefulset --cpu-percent=50 --min=1 --max=10
+
+# Check the error message
+kubectl get hpa
+
+# Clean up the failed HPA
+kubectl delete hpa mysql-statefulset
+Cleanup and Resource Management
+Task 7: Cleanup Resources
+Subtask 7.1: Clean Up StatefulSets
+# Delete StatefulSet (keeps PVCs by default)
+kubectl delete statefulset mysql-statefulset
+
+# Check remaining PVCs
+kubectl get pvc
+
+# Delete PVCs manually
+kubectl delete pvc mysql-storage-mysql-statefulset-0
+kubectl delete pvc mysql-storage-mysql-statefulset-1
+kubectl delete pvc mysql-storage-mysql-statefulset-2
+
+# Delete services
+kubectl delete service mysql-headless mysql-service
+
+# Delete storage class
+kubectl delete storageclass local-storage
+Subtask 7.2: Clean Up DaemonSets
+# Delete DaemonSets
+kubectl delete daemonset node-monitor log-collector production-monitor
+
+# Delete associated ConfigMaps
+kubectl delete configmap fluent-bit-config
+
+# Delete services
+kubectl delete service node-monitor-service
+
+# Remove node labels
+kubectl label nodes minikube-m02 environment-
+Subtask 7.3: Final Cleanup
+# Remove any remaining resources
+kubectl get all
+
+# Stop Minikube cluster
+minikube stop
+
+# Optional: Delete Minikube cluster completely
+# minikube delete
+Lab Summary and Key Takeaways
+What You Accomplished
+In this comprehensive lab, you successfully:
+
+Installed and configured a complete Kubernetes environment using Minikube
+Created and managed StatefulSets with persistent storage for stateful applications
+Deployed DaemonSets for system-level services across all cluster nodes
+Implemented persistent storage using StorageClasses and PersistentVolumeClaims
+Tested data persistence and pod recovery scenarios
+Monitored resource usage and performance characteristics
+Troubleshot common issues with both StatefulSets and DaemonSets
+Performed advanced operations like rolling updates and selective deployment
+Key Concepts Learned
+StatefulSets:
+
+Provide stable network identities and ordered deployment
+Essential for databases, message queues, and other stateful applications
+Maintain persistent storage across pod restarts
+Support ordered scaling and rolling updates
+DaemonSets:
+
+Ensure pods run on all or selected nodes
+Perfect for system-level services like monitoring and logging
+Automatically scale with cluster node additions
+Support node selection and tolerations
+Persistent Storage:
+
+StorageClasses enable dynamic volume provisioning
+PersistentVolumeClaims provide storage abstraction
+Data persists beyond pod lifecycle
+Real-World Applications
+The skills you've developed in this lab are directly applicable to:
+
+Database Management: Running MySQL, PostgreSQL, or MongoDB clusters
+Monitoring Systems: Deploying Prometheus, Grafana, or custom monitoring solutions
+Log Management: Implementing centralized logging with Fluentd, Filebeat, or similar tools
+Network Services: Managing network plugins and service meshes
+Storage Systems: Deploying distributed storage solutions like Ceph or GlusterFS
+Best Practices Learned
+Always use resource limits to prevent resource exhaustion
+Implement proper backup strategies for stateful applications
+Monitor resource usage and performance metrics
+Use appropriate tolerations for DaemonSets on control plane nodes
+Test disaster recovery scenarios regularly
+Implement proper security contexts for system-level pods
+This lab has provided you with essential skills for managing both stateful applications and system-level services in Kubernetes environments, preparing you for real-world container orchestration challenges.
