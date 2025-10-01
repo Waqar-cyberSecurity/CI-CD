@@ -1,0 +1,621 @@
+Lab 8: Horizontal Pod Autoscaling
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Understand the concept of Horizontal Pod Autoscaling (HPA) in Kubernetes
+Install and configure metrics-server for resource monitoring
+Create and configure a Horizontal Pod Autoscaler for a sample application
+Generate load on applications to trigger automatic scaling
+Monitor scaling events and behavior using kubectl commands
+Analyze HPA performance and scaling decisions
+Troubleshoot common HPA issues
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Kubernetes concepts (Pods, Deployments, Services)
+Familiarity with kubectl command-line tool
+Knowledge of YAML configuration files
+Understanding of CPU and memory resource concepts
+Basic Linux command-line skills
+Lab Environment Setup
+Note: Al Nafi provides Linux-based cloud machines for this lab. Simply click "Start Lab" to access your dedicated Linux machine. The provided machine is bare metal with no pre-installed tools, so you will install all required components during the lab.
+
+Task 1: Environment Preparation and Kubernetes Setup
+Subtask 1.1: Install Docker
+First, we need to install Docker as our container runtime.
+
+# Update the package index
+sudo apt update
+
+# Install required packages
+sudo apt install -y apt-transport-https ca-certificates curl software-properties-common
+
+# Add Docker's official GPG key
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+
+# Add Docker repository
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# Update package index again
+sudo apt update
+
+# Install Docker
+sudo apt install -y docker-ce docker-ce-cli containerd.io
+
+# Add current user to docker group
+sudo usermod -aG docker $USER
+
+# Start and enable Docker service
+sudo systemctl start docker
+sudo systemctl enable docker
+Log out and log back in for the group changes to take effect, or run:
+
+newgrp docker
+Subtask 1.2: Install kubectl
+# Download kubectl
+curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+
+# Make kubectl executable
+chmod +x kubectl
+
+# Move kubectl to PATH
+sudo mv kubectl /usr/local/bin/
+
+# Verify installation
+kubectl version --client
+Subtask 1.3: Install and Start Minikube
+# Download Minikube
+curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+
+# Install Minikube
+sudo install minikube-linux-amd64 /usr/local/bin/minikube
+
+# Start Minikube cluster
+minikube start --driver=docker
+
+# Verify cluster is running
+kubectl cluster-info
+kubectl get nodes
+Subtask 1.4: Enable Metrics Server
+The metrics-server is essential for HPA to function as it provides resource usage metrics.
+
+# Enable metrics-server addon in Minikube
+minikube addons enable metrics-server
+
+# Verify metrics-server is running
+kubectl get pods -n kube-system | grep metrics-server
+
+# Wait for metrics-server to be ready (may take 1-2 minutes)
+kubectl wait --for=condition=ready pod -l k8s-app=metrics-server -n kube-system --timeout=120s
+Task 2: Create and Deploy a Sample Application
+Subtask 2.1: Create Application Deployment
+Create a sample PHP application that will be used for autoscaling demonstration.
+
+# Create a deployment YAML file
+cat > php-apache-deployment.yaml << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: php-apache
+  labels:
+    app: php-apache
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: php-apache
+  template:
+    metadata:
+      labels:
+        app: php-apache
+    spec:
+      containers:
+      - name: php-apache
+        image: k8s.gcr.io/hpa-example
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: php-apache
+  labels:
+    app: php-apache
+spec:
+  ports:
+  - port: 80
+    targetPort: 80
+  selector:
+    app: php-apache
+  type: ClusterIP
+EOF
+Subtask 2.2: Deploy the Application
+# Apply the deployment
+kubectl apply -f php-apache-deployment.yaml
+
+# Verify the deployment
+kubectl get deployments
+kubectl get pods
+kubectl get services
+
+# Wait for the pod to be ready
+kubectl wait --for=condition=ready pod -l app=php-apache --timeout=120s
+Subtask 2.3: Test Application Accessibility
+# Test the service internally
+kubectl run test-pod --image=busybox --rm -it --restart=Never -- wget -qO- http://php-apache.default.svc.cluster.local
+
+# Check if metrics are available (wait a few minutes after deployment)
+kubectl top pods
+Note: If kubectl top pods shows "error: Metrics API not available", wait 2-3 minutes for metrics-server to collect data.
+
+Task 3: Create a Horizontal Pod Autoscaler (HPA)
+Subtask 3.1: Create HPA Configuration
+# Create HPA YAML file
+cat > php-apache-hpa.yaml << 'EOF'
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: php-apache-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: php-apache
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 70
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 15
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+EOF
+Subtask 3.2: Apply HPA Configuration
+# Apply the HPA
+kubectl apply -f php-apache-hpa.yaml
+
+# Verify HPA creation
+kubectl get hpa
+kubectl describe hpa php-apache-hpa
+Subtask 3.3: Monitor Initial HPA Status
+# Check HPA status (run this several times with 30-second intervals)
+kubectl get hpa php-apache-hpa
+
+# Get detailed HPA information
+kubectl describe hpa php-apache-hpa
+
+# Check current resource usage
+kubectl top pods
+Task 4: Simulate Load on the Application to Trigger Scaling
+Subtask 4.1: Create Load Generation Script
+# Create a load testing script
+cat > load-test.sh << 'EOF'
+#!/bin/bash
+
+echo "Starting load test..."
+echo "Press Ctrl+C to stop"
+
+# Function to generate load
+generate_load() {
+    local pod_name=$1
+    echo "Generating load on pod: $pod_name"
+    
+    for i in {1..1000}; do
+        kubectl exec $pod_name -- wget -q -O- http://php-apache.default.svc.cluster.local &
+        if [ $((i % 10)) -eq 0 ]; then
+            echo "Sent $i requests..."
+            sleep 1
+        fi
+    done
+    wait
+}
+
+# Get the load generator pod name
+LOAD_POD=$(kubectl get pods -l app=load-generator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+
+if [ -z "$LOAD_POD" ]; then
+    echo "Creating load generator pod..."
+    kubectl run load-generator --image=busybox --restart=Never -- sleep 3600
+    kubectl wait --for=condition=ready pod load-generator --timeout=60s
+    LOAD_POD="load-generator"
+fi
+
+# Generate continuous load
+while true; do
+    kubectl exec $LOAD_POD -- sh -c "while true; do wget -q -O- http://php-apache.default.svc.cluster.local; done" &
+    sleep 5
+done
+EOF
+
+# Make the script executable
+chmod +x load-test.sh
+Subtask 4.2: Start Load Generation
+# Create a load generator pod
+kubectl run load-generator --image=busybox --restart=Never -- sleep 3600
+
+# Wait for the pod to be ready
+kubectl wait --for=condition=ready pod load-generator --timeout=60s
+
+# Start generating load (run this in background)
+kubectl exec -it load-generator -- sh -c "while true; do wget -q -O- http://php-apache.default.svc.cluster.local; done" &
+
+# Alternative: Generate load using multiple processes
+for i in {1..5}; do
+    kubectl exec load-generator -- sh -c "while true; do wget -q -O- http://php-apache.default.svc.cluster.local; done" &
+done
+Subtask 4.3: Monitor Resource Usage During Load
+Open a new terminal session and monitor the scaling:
+
+# Monitor HPA status continuously
+watch -n 5 'kubectl get hpa php-apache-hpa'
+In another terminal, monitor pods:
+
+# Monitor pod scaling
+watch -n 5 'kubectl get pods -l app=php-apache'
+And in another terminal, monitor resource usage:
+
+# Monitor resource usage
+watch -n 10 'kubectl top pods'
+Task 5: Monitor Scaling Events Using kubectl
+Subtask 5.1: Monitor HPA Events
+# View HPA events
+kubectl describe hpa php-apache-hpa
+
+# Get events related to scaling
+kubectl get events --sort-by=.metadata.creationTimestamp | grep -i horizontal
+
+# Monitor events in real-time
+kubectl get events --watch &
+Subtask 5.2: Create Monitoring Script
+# Create a comprehensive monitoring script
+cat > monitor-hpa.sh << 'EOF'
+#!/bin/bash
+
+echo "=== HPA Monitoring Dashboard ==="
+echo "Press Ctrl+C to stop monitoring"
+echo
+
+while true; do
+    clear
+    echo "=== $(date) ==="
+    echo
+    
+    echo "--- HPA Status ---"
+    kubectl get hpa php-apache-hpa
+    echo
+    
+    echo "--- Pod Count ---"
+    kubectl get pods -l app=php-apache --no-headers | wc -l | xargs echo "Current pods:"
+    echo
+    
+    echo "--- Pod Details ---"
+    kubectl get pods -l app=php-apache -o wide
+    echo
+    
+    echo "--- Resource Usage ---"
+    kubectl top pods -l app=php-apache 2>/dev/null || echo "Metrics not available yet"
+    echo
+    
+    echo "--- Recent Events ---"
+    kubectl get events --sort-by=.metadata.creationTimestamp | grep -i "horizontal\|scaled" | tail -5
+    echo
+    
+    echo "--- Deployment Status ---"
+    kubectl get deployment php-apache
+    echo
+    
+    sleep 10
+done
+EOF
+
+# Make the script executable
+chmod +x monitor-hpa.sh
+
+# Run the monitoring script
+./monitor-hpa.sh
+Subtask 5.3: Analyze Scaling Behavior
+# Get detailed HPA description
+kubectl describe hpa php-apache-hpa
+
+# Check deployment replica history
+kubectl rollout history deployment php-apache
+
+# View detailed pod information
+kubectl get pods -l app=php-apache -o yaml | grep -A 5 -B 5 resources
+
+# Check HPA configuration
+kubectl get hpa php-apache-hpa -o yaml
+Task 6: Test Scale-Down Behavior
+Subtask 6.1: Stop Load Generation
+# Stop the load generation processes
+pkill -f "wget.*php-apache"
+
+# Delete the load generator pod
+kubectl delete pod load-generator
+
+# Verify load has stopped
+kubectl top pods
+Subtask 6.2: Monitor Scale-Down
+# Monitor the scale-down process
+watch -n 10 'kubectl get hpa php-apache-hpa && echo && kubectl get pods -l app=php-apache'
+Subtask 6.3: Verify Scale-Down Events
+# Check scale-down events
+kubectl get events --sort-by=.metadata.creationTimestamp | grep -i "scaled down"
+
+# Get final HPA status
+kubectl describe hpa php-apache-hpa
+Task 7: Advanced HPA Configuration and Testing
+Subtask 7.1: Create Multi-Metric HPA
+# Create an advanced HPA with multiple metrics
+cat > advanced-hpa.yaml << 'EOF'
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: php-apache-advanced-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: php-apache
+  minReplicas: 2
+  maxReplicas: 15
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 40
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 60
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+      - type: Percent
+        value: 200
+        periodSeconds: 30
+      - type: Pods
+        value: 2
+        periodSeconds: 30
+      selectPolicy: Max
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 25
+        periodSeconds: 60
+      selectPolicy: Min
+EOF
+Subtask 7.2: Test Advanced HPA
+# Delete the existing HPA
+kubectl delete hpa php-apache-hpa
+
+# Apply the advanced HPA
+kubectl apply -f advanced-hpa.yaml
+
+# Monitor the new HPA
+kubectl get hpa php-apache-advanced-hpa
+
+# Generate load again to test new configuration
+kubectl run load-generator-2 --image=busybox --restart=Never -- sleep 3600
+kubectl wait --for=condition=ready pod load-generator-2 --timeout=60s
+
+# Generate intensive load
+for i in {1..10}; do
+    kubectl exec load-generator-2 -- sh -c "while true; do wget -q -O- http://php-apache.default.svc.cluster.local; done" &
+done
+
+# Monitor scaling with new configuration
+watch -n 5 'kubectl get hpa php-apache-advanced-hpa && echo && kubectl get pods -l app=php-apache'
+Task 8: Troubleshooting and Verification
+Subtask 8.1: Common Troubleshooting Commands
+# Check if metrics-server is working
+kubectl get apiservice v1beta1.metrics.k8s.io -o yaml
+
+# Verify metrics are available
+kubectl top nodes
+kubectl top pods
+
+# Check HPA controller logs
+kubectl logs -n kube-system -l k8s-app=kube-controller-manager
+
+# Check metrics-server logs
+kubectl logs -n kube-system -l k8s-app=metrics-server
+Subtask 8.2: Verify HPA Functionality
+# Create verification script
+cat > verify-hpa.sh << 'EOF'
+#!/bin/bash
+
+echo "=== HPA Verification Report ==="
+echo
+
+echo "1. Checking Kubernetes cluster status..."
+kubectl cluster-info --request-timeout=10s
+echo
+
+echo "2. Checking metrics-server availability..."
+kubectl get pods -n kube-system -l k8s-app=metrics-server
+echo
+
+echo "3. Checking if metrics API is available..."
+kubectl top nodes 2>/dev/null && echo "✓ Metrics API is working" || echo "✗ Metrics API not available"
+echo
+
+echo "4. Checking HPA status..."
+kubectl get hpa
+echo
+
+echo "5. Checking target deployment..."
+kubectl get deployment php-apache
+echo
+
+echo "6. Checking pod resource usage..."
+kubectl top pods -l app=php-apache 2>/dev/null || echo "Metrics not available for pods"
+echo
+
+echo "7. Recent HPA events..."
+kubectl get events --sort-by=.metadata.creationTimestamp | grep -i horizontal | tail -3
+echo
+
+echo "=== Verification Complete ==="
+EOF
+
+chmod +x verify-hpa.sh
+./verify-hpa.sh
+Subtask 8.3: Performance Analysis
+# Create performance analysis script
+cat > analyze-hpa.sh << 'EOF'
+#!/bin/bash
+
+echo "=== HPA Performance Analysis ==="
+echo
+
+HPA_NAME="php-apache-advanced-hpa"
+
+echo "1. Current HPA Configuration:"
+kubectl get hpa $HPA_NAME -o yaml | grep -A 20 "spec:"
+echo
+
+echo "2. Current Metrics:"
+kubectl describe hpa $HPA_NAME | grep -A 10 "Metrics:"
+echo
+
+echo "3. Scaling Events (Last 10):"
+kubectl get events --sort-by=.metadata.creationTimestamp | grep -i "scaled" | tail -10
+echo
+
+echo "4. Current Resource Utilization:"
+kubectl top pods -l app=php-apache
+echo
+
+echo "5. Pod Distribution:"
+kubectl get pods -l app=php-apache -o wide
+echo
+
+echo "=== Analysis Complete ==="
+EOF
+
+chmod +x analyze-hpa.sh
+./analyze-hpa.sh
+Task 9: Cleanup and Resource Management
+Subtask 9.1: Stop All Load Generation
+# Kill all load generation processes
+pkill -f "wget.*php-apache"
+
+# Delete load generator pods
+kubectl delete pod load-generator-2 --ignore-not-found=true
+kubectl delete pod load-generator --ignore-not-found=true
+
+# Verify no load is running
+ps aux | grep wget
+Subtask 9.2: Clean Up Resources
+# Delete HPA
+kubectl delete hpa php-apache-advanced-hpa
+
+# Delete deployment and service
+kubectl delete -f php-apache-deployment.yaml
+
+# Verify cleanup
+kubectl get all
+kubectl get hpa
+Subtask 9.3: Optional: Clean Up Minikube
+# If you want to completely clean up the environment
+minikube stop
+minikube delete
+
+# Remove created files
+rm -f php-apache-deployment.yaml php-apache-hpa.yaml advanced-hpa.yaml
+rm -f load-test.sh monitor-hpa.sh verify-hpa.sh analyze-hpa.sh
+Troubleshooting Common Issues
+Issue 1: Metrics Not Available
+Problem: kubectl top pods returns "Metrics API not available"
+
+Solution:
+
+# Check metrics-server status
+kubectl get pods -n kube-system -l k8s-app=metrics-server
+
+# Restart metrics-server if needed
+kubectl rollout restart deployment metrics-server -n kube-system
+
+# Wait for metrics to be available (2-3 minutes)
+kubectl wait --for=condition=ready pod -l k8s-app=metrics-server -n kube-system --timeout=120s
+Issue 2: HPA Not Scaling
+Problem: HPA shows "unknown" for current metrics
+
+Solution:
+
+# Check if pods have resource requests defined
+kubectl describe pod -l app=php-apache | grep -A 5 "Requests:"
+
+# Verify HPA target exists
+kubectl get deployment php-apache
+
+# Check HPA events for errors
+kubectl describe hpa php-apache-hpa
+Issue 3: Scaling Too Slow or Fast
+Problem: Pods scale too aggressively or too slowly
+
+Solution:
+
+# Adjust HPA behavior settings
+kubectl patch hpa php-apache-hpa --patch '
+spec:
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 180
+'
+Key Concepts Summary
+Horizontal Pod Autoscaler (HPA): Automatically scales the number of pods based on resource utilization
+Metrics Server: Provides resource usage metrics for HPA decision-making
+Resource Requests: Must be defined for HPA to function properly
+Scaling Policies: Control how fast and when scaling occurs
+Stabilization Windows: Prevent rapid scaling oscillations
+Target Utilization: The desired resource usage percentage that triggers scaling
+Conclusion
+In this lab, you have successfully:
+
+Set up a complete Kubernetes environment with metrics-server
+Created and deployed a sample application with resource requests
+Implemented Horizontal Pod Autoscaling with both basic and advanced configurations
+Generated load to trigger automatic scaling events
+Monitored scaling behavior and analyzed performance metrics
+Learned troubleshooting techniques for common HPA issues
+Understood the importance of proper resource management in Kubernetes
+Why This Matters: Horizontal Pod Autoscaling is crucial for maintaining application performance while optimizing resource costs in production environments. It ensures your applications can handle varying loads automatically without manual intervention, making your infrastructure more resilient and cost-effective.
+
+The skills you've learned in this lab are directly applicable to real-world scenarios where applications experience fluctuating traffic patterns, such as e-commerce websites during sales events, news websites during breaking news, or any application with daily/seasonal usage patterns.
