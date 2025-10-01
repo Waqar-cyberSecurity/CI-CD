@@ -1,0 +1,875 @@
+Lab 10: Monitoring Kubernetes with Prometheus and Grafana
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Install and configure a single-node Kubernetes cluster using k3s
+Deploy Prometheus monitoring system using Helm charts
+Deploy Grafana visualization platform using Helm charts
+Configure Prometheus to scrape Kubernetes cluster metrics
+Create custom Grafana dashboards to visualize Kubernetes performance data
+Monitor pod, node, and cluster-level metrics in real-time
+Understand the fundamentals of Kubernetes observability and monitoring best practices
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Linux command line operations
+Familiarity with YAML configuration files
+Basic knowledge of Kubernetes concepts (pods, services, deployments)
+Understanding of containerization concepts
+Basic networking knowledge
+Note: Al Nafi provides you with a ready-to-use Linux-based cloud machine. Simply click Start Lab to begin. The provided machine is bare metal with no pre-installed tools, so you will install all required components during this lab.
+
+Lab Environment Setup
+Task 1: Install Required Tools and Dependencies
+Subtask 1.1: Update System and Install Basic Tools
+First, update your system and install essential tools:
+
+# Update package repositories
+sudo apt update && sudo apt upgrade -y
+
+# Install curl, wget, and other essential tools
+sudo apt install -y curl wget apt-transport-https ca-certificates gnupg lsb-release
+
+# Install Docker
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io
+
+# Add current user to docker group
+sudo usermod -aG docker $USER
+newgrp docker
+
+# Verify Docker installation
+docker --version
+Subtask 1.2: Install k3s Kubernetes Distribution
+Install k3s, a lightweight Kubernetes distribution perfect for single-node setups:
+
+# Install k3s
+curl -sfL https://get.k3s.io | sh -
+
+# Wait for k3s to be ready
+sudo systemctl status k3s
+
+# Set up kubectl configuration
+mkdir -p ~/.kube
+sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
+sudo chown $(id -u):$(id -g) ~/.kube/config
+
+# Install kubectl
+curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+
+# Verify Kubernetes cluster
+kubectl get nodes
+kubectl get pods -A
+Subtask 1.3: Install Helm Package Manager
+Install Helm to manage Kubernetes applications:
+
+# Download and install Helm
+curl https://baltocdn.com/helm/signing.asc | gpg --dearmor | sudo tee /usr/share/keyrings/helm.gpg > /dev/null
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/helm.gpg] https://baltocdn.com/helm/stable/debian/ all main" | sudo tee /etc/apt/sources.list.d/helm-stable-debian.list
+
+sudo apt update
+sudo apt install -y helm
+
+# Verify Helm installation
+helm version
+
+# Add Prometheus community Helm repository
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo add grafana https://grafana.github.io/helm-charts
+helm repo update
+Task 2: Deploy Prometheus Using Helm
+Subtask 2.1: Create Monitoring Namespace
+Create a dedicated namespace for monitoring components:
+
+# Create monitoring namespace
+kubectl create namespace monitoring
+
+# Verify namespace creation
+kubectl get namespaces
+Subtask 2.2: Create Prometheus Configuration
+Create a custom values file for Prometheus configuration:
+
+# Create Prometheus values file
+cat > prometheus-values.yaml << 'EOF'
+prometheus:
+  prometheusSpec:
+    retention: 30d
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 10Gi
+    additionalScrapeConfigs:
+      - job_name: 'kubernetes-pods'
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: true
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+
+grafana:
+  enabled: true
+  adminPassword: admin123
+  service:
+    type: NodePort
+    nodePort: 30080
+  persistence:
+    enabled: true
+    size: 5Gi
+
+alertmanager:
+  enabled: true
+  
+nodeExporter:
+  enabled: true
+
+kubeStateMetrics:
+  enabled: true
+EOF
+Subtask 2.3: Deploy Prometheus Stack
+Deploy the complete Prometheus monitoring stack:
+
+# Install kube-prometheus-stack
+helm install prometheus prometheus-community/kube-prometheus-stack \
+  --namespace monitoring \
+  --values prometheus-values.yaml \
+  --wait
+
+# Verify Prometheus deployment
+kubectl get pods -n monitoring
+
+# Check services
+kubectl get svc -n monitoring
+Subtask 2.4: Access Prometheus Web Interface
+Set up access to Prometheus web interface:
+
+# Port forward Prometheus service
+kubectl port-forward -n monitoring svc/prometheus-kube-prometheus-prometheus 9090:9090 &
+
+# Get the process ID for later cleanup
+PROMETHEUS_PID=$!
+echo "Prometheus port-forward PID: $PROMETHEUS_PID"
+
+# Test Prometheus accessibility (in another terminal or background)
+sleep 5
+curl -s http://localhost:9090/api/v1/status/config | head -20
+Task 3: Configure Prometheus to Monitor Kubernetes Resources
+Subtask 3.1: Verify Default Kubernetes Monitoring
+Check that Prometheus is automatically discovering Kubernetes targets:
+
+# Create a test script to check Prometheus targets
+cat > check-prometheus-targets.sh << 'EOF'
+#!/bin/bash
+echo "Checking Prometheus targets..."
+curl -s http://localhost:9090/api/v1/targets | jq '.data.activeTargets[] | {job: .labels.job, instance: .labels.instance, health: .health}' 2>/dev/null || echo "jq not available, using curl only"
+curl -s http://localhost:9090/api/v1/targets | grep -o '"job":"[^"]*"' | sort | uniq
+EOF
+
+chmod +x check-prometheus-targets.sh
+
+# Install jq for JSON parsing
+sudo apt install -y jq
+
+# Run the check
+./check-prometheus-targets.sh
+Subtask 3.2: Create Custom ServiceMonitor
+Create a ServiceMonitor to scrape additional application metrics:
+
+# Create a sample application with metrics endpoint
+cat > sample-app.yaml << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sample-metrics-app
+  namespace: default
+  labels:
+    app: sample-metrics-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: sample-metrics-app
+  template:
+    metadata:
+      labels:
+        app: sample-metrics-app
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+      - name: metrics-app
+        image: prom/node-exporter:latest
+        ports:
+        - containerPort: 9100
+          name: metrics
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sample-metrics-service
+  namespace: default
+  labels:
+    app: sample-metrics-app
+spec:
+  selector:
+    app: sample-metrics-app
+  ports:
+  - port: 9100
+    targetPort: 9100
+    name: metrics
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: sample-app-monitor
+  namespace: monitoring
+  labels:
+    app: sample-metrics-app
+spec:
+  selector:
+    matchLabels:
+      app: sample-metrics-app
+  namespaceSelector:
+    matchNames:
+    - default
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics
+EOF
+
+# Deploy the sample application
+kubectl apply -f sample-app.yaml
+
+# Verify deployment
+kubectl get pods -l app=sample-metrics-app
+kubectl get servicemonitor -n monitoring
+Subtask 3.3: Configure Additional Scrape Configs
+Add custom scrape configurations for specific monitoring needs:
+
+# Create additional scrape config
+cat > additional-scrape-config.yaml << 'EOF'
+apiVersion: v1
+kind: Secret
+metadata:
+  name: additional-scrape-configs
+  namespace: monitoring
+stringData:
+  additional-scrape-configs.yaml: |
+    - job_name: 'kubernetes-service-endpoints'
+      kubernetes_sd_configs:
+        - role: endpoints
+      relabel_configs:
+        - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scrape]
+          action: keep
+          regex: true
+        - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scheme]
+          action: replace
+          target_label: __scheme__
+          regex: (https?)
+        - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_path]
+          action: replace
+          target_label: __metrics_path__
+          regex: (.+)
+        - source_labels: [__address__, __meta_kubernetes_service_annotation_prometheus_io_port]
+          action: replace
+          target_label: __address__
+          regex: ([^:]+)(?::\d+)?;(\d+)
+          replacement: $1:$2
+        - action: labelmap
+          regex: __meta_kubernetes_service_label_(.+)
+        - source_labels: [__meta_kubernetes_namespace]
+          action: replace
+          target_label: kubernetes_namespace
+        - source_labels: [__meta_kubernetes_service_name]
+          action: replace
+          target_label: kubernetes_name
+EOF
+
+# Apply the additional scrape config
+kubectl apply -f additional-scrape-config.yaml
+Task 4: Deploy and Configure Grafana
+Subtask 4.1: Access Grafana Dashboard
+Since Grafana was deployed as part of the Prometheus stack, access it:
+
+# Get Grafana admin password
+kubectl get secret -n monitoring prometheus-grafana -o jsonpath="{.data.admin-password}" | base64 --decode
+echo
+
+# Port forward Grafana service
+kubectl port-forward -n monitoring svc/prometheus-grafana 3000:80 &
+
+# Get the process ID for later cleanup
+GRAFANA_PID=$!
+echo "Grafana port-forward PID: $GRAFANA_PID"
+
+# Wait for Grafana to be ready
+sleep 10
+curl -s http://localhost:3000/api/health
+Subtask 4.2: Configure Prometheus Data Source
+Create a script to configure Prometheus as a data source in Grafana:
+
+# Create Grafana configuration script
+cat > configure-grafana.sh << 'EOF'
+#!/bin/bash
+
+GRAFANA_URL="http://localhost:3000"
+GRAFANA_USER="admin"
+GRAFANA_PASS=$(kubectl get secret -n monitoring prometheus-grafana -o jsonpath="{.data.admin-password}" | base64 --decode)
+
+# Wait for Grafana to be ready
+echo "Waiting for Grafana to be ready..."
+until curl -s $GRAFANA_URL/api/health | grep -q "ok"; do
+  sleep 5
+done
+
+echo "Grafana is ready!"
+
+# Check if Prometheus datasource already exists
+DATASOURCE_EXISTS=$(curl -s -u $GRAFANA_USER:$GRAFANA_PASS $GRAFANA_URL/api/datasources/name/Prometheus | grep -o '"name":"Prometheus"' || echo "not found")
+
+if [[ "$DATASOURCE_EXISTS" == "not found" ]]; then
+  echo "Adding Prometheus datasource..."
+  curl -X POST \
+    -H "Content-Type: application/json" \
+    -u $GRAFANA_USER:$GRAFANA_PASS \
+    $GRAFANA_URL/api/datasources \
+    -d '{
+      "name": "Prometheus",
+      "type": "prometheus",
+      "url": "http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090",
+      "access": "proxy",
+      "isDefault": true
+    }'
+else
+  echo "Prometheus datasource already exists"
+fi
+EOF
+
+chmod +x configure-grafana.sh
+./configure-grafana.sh
+Subtask 4.3: Create Custom Kubernetes Dashboard
+Create a comprehensive Kubernetes monitoring dashboard:
+
+# Create Kubernetes dashboard JSON
+cat > kubernetes-dashboard.json << 'EOF'
+{
+  "dashboard": {
+    "id": null,
+    "title": "Kubernetes Cluster Monitoring",
+    "tags": ["kubernetes"],
+    "timezone": "browser",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Cluster CPU Usage",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "100 - (avg(irate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)",
+            "legendFormat": "CPU Usage %"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100
+          }
+        },
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+      },
+      {
+        "id": 2,
+        "title": "Cluster Memory Usage",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "100 * (1 - ((node_memory_MemAvailable_bytes) / (node_memory_MemTotal_bytes)))",
+            "legendFormat": "Memory Usage %"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100
+          }
+        },
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+      },
+      {
+        "id": 3,
+        "title": "Pod Count by Namespace",
+        "type": "bargauge",
+        "targets": [
+          {
+            "expr": "count by (namespace) (kube_pod_info)",
+            "legendFormat": "{{namespace}}"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8}
+      },
+      {
+        "id": 4,
+        "title": "Node Resource Usage",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "100 - (avg by (instance) (irate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)",
+            "legendFormat": "CPU % - {{instance}}"
+          },
+          {
+            "expr": "100 * (1 - ((node_memory_MemAvailable_bytes) / (node_memory_MemTotal_bytes)))",
+            "legendFormat": "Memory % - {{instance}}"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16}
+      }
+    ],
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "refresh": "30s"
+  }
+}
+EOF
+
+# Import the dashboard
+GRAFANA_URL="http://localhost:3000"
+GRAFANA_USER="admin"
+GRAFANA_PASS=$(kubectl get secret -n monitoring prometheus-grafana -o jsonpath="{.data.admin-password}" | base64 --decode)
+
+curl -X POST \
+  -H "Content-Type: application/json" \
+  -u $GRAFANA_USER:$GRAFANA_PASS \
+  $GRAFANA_URL/api/dashboards/db \
+  -d @kubernetes-dashboard.json
+Subtask 4.4: Import Pre-built Kubernetes Dashboards
+Import popular community dashboards for comprehensive monitoring:
+
+# Create script to import popular dashboards
+cat > import-dashboards.sh << 'EOF'
+#!/bin/bash
+
+GRAFANA_URL="http://localhost:3000"
+GRAFANA_USER="admin"
+GRAFANA_PASS=$(kubectl get secret -n monitoring prometheus-grafana -o jsonpath="{.data.admin-password}" | base64 --decode)
+
+# Function to import dashboard by ID
+import_dashboard() {
+  local dashboard_id=$1
+  local dashboard_name=$2
+  
+  echo "Importing dashboard: $dashboard_name (ID: $dashboard_id)"
+  
+  # Download dashboard JSON from Grafana.com
+  curl -s "https://grafana.com/api/dashboards/$dashboard_id/revisions/1/download" > temp_dashboard.json
+  
+  # Wrap in import format
+  jq '{dashboard: ., overwrite: true, inputs: []}' temp_dashboard.json > import_dashboard.json
+  
+  # Import to Grafana
+  curl -X POST \
+    -H "Content-Type: application/json" \
+    -u $GRAFANA_USER:$GRAFANA_PASS \
+    $GRAFANA_URL/api/dashboards/import \
+    -d @import_dashboard.json
+  
+  rm temp_dashboard.json import_dashboard.json
+}
+
+# Import popular Kubernetes dashboards
+import_dashboard "6417" "Kubernetes Cluster (Prometheus)"
+import_dashboard "8588" "Kubernetes Deployment Statefulset Daemonset metrics"
+import_dashboard "13332" "Kubernetes Pods"
+
+echo "Dashboard import completed!"
+EOF
+
+chmod +x import-dashboards.sh
+./import-dashboards.sh
+Task 5: Create Advanced Monitoring Configurations
+Subtask 5.1: Set Up Alerting Rules
+Create custom alerting rules for Kubernetes monitoring:
+
+# Create PrometheusRule for custom alerts
+cat > kubernetes-alerts.yaml << 'EOF'
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: kubernetes-alerts
+  namespace: monitoring
+  labels:
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+  - name: kubernetes.rules
+    rules:
+    - alert: KubernetesPodCrashLooping
+      expr: rate(kube_pod_container_status_restarts_total[15m]) > 0
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Pod {{ $labels.pod }} is crash looping"
+        description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} is restarting frequently"
+    
+    - alert: KubernetesNodeNotReady
+      expr: kube_node_status_condition{condition="Ready",status="true"} == 0
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Node {{ $labels.node }} is not ready"
+        description: "Node {{ $labels.node }} has been not ready for more than 5 minutes"
+    
+    - alert: KubernetesPodNotRunning
+      expr: kube_pod_status_phase{phase!="Running"} > 0
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Pod {{ $labels.pod }} not running"
+        description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} is not in Running state"
+    
+    - alert: HighCPUUsage
+      expr: 100 - (avg(irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High CPU usage detected"
+        description: "CPU usage is above 80% for more than 5 minutes"
+    
+    - alert: HighMemoryUsage
+      expr: 100 * (1 - ((node_memory_MemAvailable_bytes) / (node_memory_MemTotal_bytes))) > 85
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High memory usage detected"
+        description: "Memory usage is above 85% for more than 5 minutes"
+EOF
+
+# Apply the alerting rules
+kubectl apply -f kubernetes-alerts.yaml
+
+# Verify the rules are loaded
+kubectl get prometheusrules -n monitoring
+Subtask 5.2: Configure Alertmanager
+Configure Alertmanager for alert routing and notifications:
+
+# Create Alertmanager configuration
+cat > alertmanager-config.yaml << 'EOF'
+apiVersion: v1
+kind: Secret
+metadata:
+  name: alertmanager-prometheus-kube-prometheus-alertmanager
+  namespace: monitoring
+stringData:
+  alertmanager.yml: |
+    global:
+      smtp_smarthost: 'localhost:587'
+      smtp_from: 'alertmanager@kubernetes.local'
+    
+    route:
+      group_by: ['alertname', 'cluster', 'service']
+      group_wait: 10s
+      group_interval: 10s
+      repeat_interval: 1h
+      receiver: 'web.hook'
+      routes:
+      - match:
+          severity: critical
+        receiver: 'critical-alerts'
+      - match:
+          severity: warning
+        receiver: 'warning-alerts'
+    
+    receivers:
+    - name: 'web.hook'
+      webhook_configs:
+      - url: 'http://localhost:5001/webhook'
+        send_resolved: true
+    
+    - name: 'critical-alerts'
+      webhook_configs:
+      - url: 'http://localhost:5001/critical'
+        send_resolved: true
+    
+    - name: 'warning-alerts'
+      webhook_configs:
+      - url: 'http://localhost:5001/warning'
+        send_resolved: true
+    
+    inhibit_rules:
+    - source_match:
+        severity: 'critical'
+      target_match:
+        severity: 'warning'
+      equal: ['alertname', 'cluster', 'service']
+EOF
+
+# Apply the Alertmanager configuration
+kubectl apply -f alertmanager-config.yaml
+
+# Restart Alertmanager to pick up new config
+kubectl rollout restart statefulset/alertmanager-prometheus-kube-prometheus-alertmanager -n monitoring
+Subtask 5.3: Create Resource Usage Dashboard
+Create a detailed resource usage dashboard:
+
+# Create resource usage dashboard
+cat > resource-dashboard.json << 'EOF'
+{
+  "dashboard": {
+    "id": null,
+    "title": "Kubernetes Resource Usage",
+    "tags": ["kubernetes", "resources"],
+    "timezone": "browser",
+    "panels": [
+      {
+        "id": 1,
+        "title": "CPU Usage by Pod",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "sum(rate(container_cpu_usage_seconds_total{container!=\"POD\",container!=\"\"}[5m])) by (pod, namespace)",
+            "legendFormat": "{{namespace}}/{{pod}}"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "cores"
+          }
+        },
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+      },
+      {
+        "id": 2,
+        "title": "Memory Usage by Pod",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "sum(container_memory_working_set_bytes{container!=\"POD\",container!=\"\"}) by (pod, namespace)",
+            "legendFormat": "{{namespace}}/{{pod}}"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "bytes"
+          }
+        },
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+      },
+      {
+        "id": 3,
+        "title": "Network I/O by Pod",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "sum(rate(container_network_receive_bytes_total[5m])) by (pod, namespace)",
+            "legendFormat": "RX {{namespace}}/{{pod}}"
+          },
+          {
+            "expr": "sum(rate(container_network_transmit_bytes_total[5m])) by (pod, namespace)",
+            "legendFormat": "TX {{namespace}}/{{pod}}"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "Bps"
+          }
+        },
+        "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8}
+      },
+      {
+        "id": 4,
+        "title": "Disk I/O by Pod",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "sum(rate(container_fs_reads_bytes_total[5m])) by (pod, namespace)",
+            "legendFormat": "Read {{namespace}}/{{pod}}"
+          },
+          {
+            "expr": "sum(rate(container_fs_writes_bytes_total[5m])) by (pod, namespace)",
+            "legendFormat": "Write {{namespace}}/{{pod}}"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "Bps"
+          }
+        },
+        "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16}
+      }
+    ],
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "refresh": "30s"
+  }
+}
+EOF
+
+# Import the resource dashboard
+GRAFANA_URL="http://localhost:3000"
+GRAFANA_USER="admin"
+GRAFANA_PASS=$(kubectl get secret -n monitoring prometheus-grafana -o jsonpath="{.data.admin-password}" | base64 --decode)
+
+curl -X POST \
+  -H "Content-Type: application/json" \
+  -u $GRAFANA_USER:$GRAFANA_PASS \
+  $GRAFANA_URL/api/dashboards/db \
+  -d @resource-dashboard.json
+Task 6: Testing and Validation
+Subtask 6.1: Generate Test Load
+Create test workloads to generate metrics:
+
+# Create a CPU-intensive workload
+cat > cpu-stress-test.yaml << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cpu-stress-test
+  labels:
+    app: cpu-stress
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: cpu-stress
+  template:
+    metadata:
+      labels:
+        app: cpu-stress
+    spec:
+      containers:
+      - name: cpu-stress
+        image: progrium/stress
+        args: ["--cpu", "1", "--timeout", "300s"]
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+EOF
+
+# Deploy the stress test
+kubectl apply -f cpu-stress-test.yaml
+
+# Create a memory-intensive workload
+cat > memory-stress-test.yaml << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: memory-stress-test
+  labels:
+    app: memory-stress
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: memory-stress
+  template:
+    metadata:
+      labels:
+        app: memory-stress
+    spec:
+      containers:
+      - name: memory-stress
+        image: progrium/stress
+        args: ["--vm", "1", "--vm-bytes", "256M", "--timeout", "300s"]
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 512Mi
+EOF
+
+# Deploy the memory stress test
+kubectl apply -f memory-stress-test.yaml
+
+# Monitor the deployments
+kubectl get pods -l app=cpu-stress
+kubectl get pods -l app=memory-stress
+Subtask 6.2: Verify Metrics Collection
+Verify that metrics are being collected properly:
+
+# Create verification script
+cat > verify-metrics.sh << 'EOF'
+#!/bin/bash
+
+echo "=== Verifying Prometheus Metrics Collection ==="
+
+# Check if Prometheus is collecting node metrics
+echo "1. Checking node metrics..."
+curl -s "http://localhost:9090/api/v1/query?query=up{job=\"node-exporter\"}" | jq '.data.result[].value[1]' 2>/dev/null || echo "Node exporter metrics available"
+
+# Check if Kubernetes API metrics are available
+echo "2. Checking Kubernetes API metrics..."
+curl -s "http://localhost:9090/api/v1/query?query=up{job=\"apiserver\"}" | jq '.data.result[].value[1]' 2>/dev/null || echo "API server metrics available"
+
+# Check if pod metrics are available
+echo "3. Checking pod metrics..."
+curl -s "http://localhost:9090/api/v1/query?query=kube_pod_info" | jq '.data.result | length' 2>/dev/null || echo "Pod metrics available"
+
+# Check if our stress test pods are visible
+echo "4. Checking stress test pod metrics..."
+curl -s "http://localhost:9090/api/v1/query?query=kube_pod_info{pod=~\".*stress.*\"}" | jq '.data.result[].metric.pod' 2>/dev/null || echo "Stress test pods visible in metrics"
+
+# Check CPU usage metrics
+echo "5. Checking CPU usage metrics..."
+curl -s "http://localhost:9090/api/v1/query?query=rate(container_cpu_usage_seconds_total[5m])" | jq '.data.result | length' 2>/dev/null || echo "CPU metrics available"
+
+# Check memory usage metrics
+echo "6. Checking memory usage metrics..."
+curl -s "http://localhost:9090/api/v1/query?query=container_memory_working_set_bytes" | jq '.data.result | length' 2>/dev/null || echo "Memory metrics available"
+
+echo "=== Metrics verification completed ==="
+EOF
+
+chmod +x verify-metrics.sh
+./verify-metrics.sh
+Subtask 6.3: Test Alerting
+Test the alerting system by triggering alerts:
+
+# Check current alerts
+echo "Checking current alerts..."
+curl -s http://localhost:9090/api/v1/alerts | jq '.data.alerts[] | {alertname: .labels.alertname, state: .state}' 2>/dev/null || curl -s http://localhost:9090/api/v1/alerts
+
+# Create a pod that will trigger alerts
+cat > failing-pod.yaml << 'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: failing-pod
+  labels:
+    app: failing-test
+spec:
+  containers:
+  - name: failing-container
+    image: busybox
+    command: ["
