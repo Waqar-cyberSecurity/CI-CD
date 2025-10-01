@@ -1,0 +1,701 @@
+Lab 7: Kubernetes Ingress and API Gateway
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Understand the concept of Kubernetes Ingress and its role in cluster networking
+Deploy and configure an Nginx Ingress controller in a Kubernetes cluster
+Create Ingress resources to route HTTP/HTTPS traffic to different services
+Configure path-based and host-based routing using Ingress rules
+Test external access to cluster services through the Ingress controller
+Troubleshoot common Ingress configuration issues
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Kubernetes concepts (Pods, Services, Deployments)
+Familiarity with YAML configuration files
+Basic knowledge of HTTP/HTTPS protocols and routing concepts
+Experience with command-line interface operations
+Understanding of DNS concepts and host file modifications
+Lab Environment
+Al Nafi Cloud Machine: This lab uses a Linux-based cloud machine provided by Al Nafi. Simply click Start Lab to access your dedicated environment. The machine comes as bare metal with no pre-installed tools, so you will install all required components during the lab exercises.
+
+System Requirements:
+
+Linux machine with at least 4GB RAM and 2 CPU cores
+Internet connectivity for downloading packages and container images
+Root or sudo access for system-level installations
+Task 1: Environment Setup and Kubernetes Installation
+Subtask 1.1: Install Docker
+First, we need to install Docker as the container runtime for our Kubernetes cluster.
+
+# Update the system packages
+sudo apt update && sudo apt upgrade -y
+
+# Install required packages
+sudo apt install -y apt-transport-https ca-certificates curl gnupg lsb-release
+
+# Add Docker's official GPG key
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+
+# Add Docker repository
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# Update package index and install Docker
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io
+
+# Add current user to docker group
+sudo usermod -aG docker $USER
+
+# Start and enable Docker service
+sudo systemctl start docker
+sudo systemctl enable docker
+
+# Verify Docker installation
+docker --version
+Subtask 1.2: Install Kubernetes Components
+Install kubectl, kubeadm, and kubelet for Kubernetes cluster management.
+
+# Add Kubernetes signing key
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+# Add Kubernetes repository
+echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
+
+# Update package index and install Kubernetes components
+sudo apt update
+sudo apt install -y kubelet kubeadm kubectl
+
+# Hold packages to prevent automatic updates
+sudo apt-mark hold kubelet kubeadm kubectl
+
+# Verify installations
+kubectl version --client
+kubeadm version
+Subtask 1.3: Initialize Kubernetes Cluster
+Set up a single-node Kubernetes cluster using kubeadm.
+
+# Disable swap (required for Kubernetes)
+sudo swapoff -a
+sudo sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+
+# Initialize the cluster
+sudo kubeadm init --pod-network-cidr=10.244.0.0/16 --apiserver-advertise-address=$(hostname -I | awk '{print $1}')
+
+# Configure kubectl for the current user
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+# Remove taint from master node to allow pod scheduling
+kubectl taint nodes --all node-role.kubernetes.io/control-plane-
+
+# Verify cluster status
+kubectl get nodes
+kubectl get pods --all-namespaces
+Subtask 1.4: Install Pod Network Add-on
+Install Flannel as the pod network add-on for cluster networking.
+
+# Apply Flannel network add-on
+kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+
+# Wait for all pods to be ready
+kubectl wait --for=condition=Ready pods --all --all-namespaces --timeout=300s
+
+# Verify network setup
+kubectl get pods -n kube-flannel
+kubectl get nodes -o wide
+Task 2: Deploy Nginx Ingress Controller
+Subtask 2.1: Install Nginx Ingress Controller
+Deploy the official Nginx Ingress controller to handle incoming traffic routing.
+
+# Apply the Nginx Ingress controller manifest
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.8.2/deploy/static/provider/baremetal/deploy.yaml
+
+# Verify the installation
+kubectl get pods -n ingress-nginx
+
+# Wait for the ingress controller to be ready
+kubectl wait --namespace ingress-nginx \
+  --for=condition=ready pod \
+  --selector=app.kubernetes.io/component=controller \
+  --timeout=120s
+
+# Check the ingress controller service
+kubectl get svc -n ingress-nginx
+Subtask 2.2: Verify Ingress Controller Status
+Ensure the Nginx Ingress controller is running properly and accessible.
+
+# Get detailed information about the ingress controller
+kubectl describe deployment ingress-nginx-controller -n ingress-nginx
+
+# Check the ingress controller logs
+kubectl logs -n ingress-nginx deployment/ingress-nginx-controller
+
+# Get the NodePort for the ingress controller
+kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath='{.spec.ports[?(@.name=="http")].nodePort}'
+echo ""
+kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath='{.spec.ports[?(@.name=="https")].nodePort}'
+echo ""
+Subtask 2.3: Configure Ingress Controller Access
+Set up access to the ingress controller for external traffic routing.
+
+# Get the machine's IP address
+MACHINE_IP=$(hostname -I | awk '{print $1}')
+echo "Machine IP: $MACHINE_IP"
+
+# Get HTTP and HTTPS NodePorts
+HTTP_PORT=$(kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath='{.spec.ports[?(@.name=="http")].nodePort}')
+HTTPS_PORT=$(kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath='{.spec.ports[?(@.name=="https")].nodePort}')
+
+echo "HTTP NodePort: $HTTP_PORT"
+echo "HTTPS NodePort: $HTTPS_PORT"
+
+# Test ingress controller accessibility
+curl -I http://$MACHINE_IP:$HTTP_PORT
+Task 3: Create Sample Applications for Ingress Testing
+Subtask 3.1: Deploy First Application (App1)
+Create a simple web application to test ingress routing.
+
+# Create app1 deployment
+cat << EOF | kubectl apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app1
+  labels:
+    app: app1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: app1
+  template:
+    metadata:
+      labels:
+        app: app1
+    spec:
+      containers:
+      - name: app1
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: html
+          mountPath: /usr/share/nginx/html
+      volumes:
+      - name: html
+        configMap:
+          name: app1-html
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app1-html
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Application 1</title>
+        <style>
+            body { font-family: Arial, sans-serif; background-color: #e3f2fd; text-align: center; padding: 50px; }
+            h1 { color: #1976d2; }
+        </style>
+    </head>
+    <body>
+        <h1>Welcome to Application 1</h1>
+        <p>This is the first application served through Kubernetes Ingress</p>
+        <p>Path: /app1</p>
+    </body>
+    </html>
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app1-service
+spec:
+  selector:
+    app: app1
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+  type: ClusterIP
+EOF
+
+# Verify app1 deployment
+kubectl get pods -l app=app1
+kubectl get svc app1-service
+Subtask 3.2: Deploy Second Application (App2)
+Create a second web application for testing multiple service routing.
+
+# Create app2 deployment
+cat << EOF | kubectl apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app2
+  labels:
+    app: app2
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: app2
+  template:
+    metadata:
+      labels:
+        app: app2
+    spec:
+      containers:
+      - name: app2
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: html
+          mountPath: /usr/share/nginx/html
+      volumes:
+      - name: html
+        configMap:
+          name: app2-html
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app2-html
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Application 2</title>
+        <style>
+            body { font-family: Arial, sans-serif; background-color: #f3e5f5; text-align: center; padding: 50px; }
+            h1 { color: #7b1fa2; }
+        </style>
+    </head>
+    <body>
+        <h1>Welcome to Application 2</h1>
+        <p>This is the second application served through Kubernetes Ingress</p>
+        <p>Path: /app2</p>
+    </body>
+    </html>
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app2-service
+spec:
+  selector:
+    app: app2
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+  type: ClusterIP
+EOF
+
+# Verify app2 deployment
+kubectl get pods -l app=app2
+kubectl get svc app2-service
+Subtask 3.3: Deploy Default Backend Application
+Create a default backend application for handling unmatched requests.
+
+# Create default backend
+cat << EOF | kubectl apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: default-backend
+  labels:
+    app: default-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: default-backend
+  template:
+    metadata:
+      labels:
+        app: default-backend
+    spec:
+      containers:
+      - name: default-backend
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: html
+          mountPath: /usr/share/nginx/html
+      volumes:
+      - name: html
+        configMap:
+          name: default-html
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: default-html
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Default Backend</title>
+        <style>
+            body { font-family: Arial, sans-serif; background-color: #ffebee; text-align: center; padding: 50px; }
+            h1 { color: #c62828; }
+        </style>
+    </head>
+    <body>
+        <h1>Default Backend</h1>
+        <p>This is the default backend for unmatched routes</p>
+        <p>Available paths: /app1, /app2</p>
+    </body>
+    </html>
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: default-backend-service
+spec:
+  selector:
+    app: default-backend
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+  type: ClusterIP
+EOF
+
+# Verify all applications are running
+kubectl get pods
+kubectl get svc
+Task 4: Create and Configure Ingress Resources
+Subtask 4.1: Create Path-Based Ingress Resource
+Configure an Ingress resource to route traffic based on URL paths.
+
+# Create path-based ingress
+cat << EOF | kubectl apply -f -
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: path-based-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  ingressClassName: nginx
+  defaultBackend:
+    service:
+      name: default-backend-service
+      port:
+        number: 80
+  rules:
+  - http:
+      paths:
+      - path: /app1
+        pathType: Prefix
+        backend:
+          service:
+            name: app1-service
+            port:
+              number: 80
+      - path: /app2
+        pathType: Prefix
+        backend:
+          service:
+            name: app2-service
+            port:
+              number: 80
+EOF
+
+# Verify ingress creation
+kubectl get ingress
+kubectl describe ingress path-based-ingress
+Subtask 4.2: Create Host-Based Ingress Resource
+Configure an Ingress resource to route traffic based on hostnames.
+
+# Create host-based ingress
+cat << EOF | kubectl apply -f -
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: host-based-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: app1.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: app1-service
+            port:
+              number: 80
+  - host: app2.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: app2-service
+            port:
+              number: 80
+EOF
+
+# Verify host-based ingress
+kubectl get ingress host-based-ingress
+kubectl describe ingress host-based-ingress
+Subtask 4.3: Configure Local DNS Resolution
+Set up local DNS resolution for testing host-based routing.
+
+# Get machine IP
+MACHINE_IP=$(hostname -I | awk '{print $1}')
+
+# Add entries to /etc/hosts for local testing
+echo "$MACHINE_IP app1.local" | sudo tee -a /etc/hosts
+echo "$MACHINE_IP app2.local" | sudo tee -a /etc/hosts
+
+# Verify hosts file entries
+grep "\.local" /etc/hosts
+
+# Check ingress controller endpoints
+kubectl get endpoints -n ingress-nginx
+Task 5: Test External Access via Ingress
+Subtask 5.1: Test Path-Based Routing
+Verify that path-based routing works correctly through the Ingress controller.
+
+# Get the HTTP NodePort
+HTTP_PORT=$(kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath='{.spec.ports[?(@.name=="http")].nodePort}')
+MACHINE_IP=$(hostname -I | awk '{print $1}')
+
+echo "Testing path-based routing..."
+echo "Base URL: http://$MACHINE_IP:$HTTP_PORT"
+
+# Test default backend
+echo "Testing default backend (root path):"
+curl -s http://$MACHINE_IP:$HTTP_PORT/ | grep -o '<title>.*</title>'
+
+# Test app1 path
+echo "Testing /app1 path:"
+curl -s http://$MACHINE_IP:$HTTP_PORT/app1 | grep -o '<title>.*</title>'
+
+# Test app2 path
+echo "Testing /app2 path:"
+curl -s http://$MACHINE_IP:$HTTP_PORT/app2 | grep -o '<title>.*</title>'
+
+# Test non-existent path
+echo "Testing non-existent path /app3:"
+curl -s http://$MACHINE_IP:$HTTP_PORT/app3 | grep -o '<title>.*</title>'
+Subtask 5.2: Test Host-Based Routing
+Verify that host-based routing functions properly with different hostnames.
+
+# Test host-based routing
+echo "Testing host-based routing..."
+
+# Test app1.local
+echo "Testing app1.local:"
+curl -s -H "Host: app1.local" http://$MACHINE_IP:$HTTP_PORT/ | grep -o '<title>.*</title>'
+
+# Test app2.local
+echo "Testing app2.local:"
+curl -s -H "Host: app2.local" http://$MACHINE_IP:$HTTP_PORT/ | grep -o '<title>.*</title>'
+
+# Test with actual hostname resolution
+echo "Testing with hostname resolution:"
+curl -s http://app1.local:$HTTP_PORT/ | grep -o '<title>.*</title>'
+curl -s http://app2.local:$HTTP_PORT/ | grep -o '<title>.*</title>'
+Subtask 5.3: Test Advanced Ingress Features
+Test additional Ingress features like URL rewriting and custom headers.
+
+# Create advanced ingress with custom annotations
+cat << EOF | kubectl apply -f -
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: advanced-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/add-base-url: "true"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header X-Ingress-Controller "nginx" always;
+      add_header X-Route-Type "advanced" always;
+spec:
+  ingressClassName: nginx
+  rules:
+  - http:
+      paths:
+      - path: /advanced/app1
+        pathType: Prefix
+        backend:
+          service:
+            name: app1-service
+            port:
+              number: 80
+      - path: /advanced/app2
+        pathType: Prefix
+        backend:
+          service:
+            name: app2-service
+            port:
+              number: 80
+EOF
+
+# Test advanced routing with custom headers
+echo "Testing advanced ingress features..."
+curl -I http://$MACHINE_IP:$HTTP_PORT/advanced/app1
+curl -I http://$MACHINE_IP:$HTTP_PORT/advanced/app2
+Task 6: Monitor and Troubleshoot Ingress
+Subtask 6.1: Monitor Ingress Controller Logs
+Learn how to monitor and troubleshoot Ingress controller issues.
+
+# View ingress controller logs
+echo "Viewing Ingress controller logs..."
+kubectl logs -n ingress-nginx deployment/ingress-nginx-controller --tail=20
+
+# Monitor logs in real-time (run in background)
+kubectl logs -n ingress-nginx deployment/ingress-nginx-controller -f &
+LOG_PID=$!
+
+# Generate some traffic to see logs
+curl -s http://$MACHINE_IP:$HTTP_PORT/app1 > /dev/null
+curl -s http://$MACHINE_IP:$HTTP_PORT/app2 > /dev/null
+curl -s http://$MACHINE_IP:$HTTP_PORT/nonexistent > /dev/null
+
+# Stop log monitoring
+sleep 5
+kill $LOG_PID 2>/dev/null
+Subtask 6.2: Inspect Ingress Configuration
+Examine the generated Nginx configuration and troubleshoot common issues.
+
+# Get ingress controller pod name
+INGRESS_POD=$(kubectl get pods -n ingress-nginx -l app.kubernetes.io/component=controller -o jsonpath='{.items[0].metadata.name}')
+
+# View the generated nginx configuration
+echo "Viewing generated Nginx configuration..."
+kubectl exec -n ingress-nginx $INGRESS_POD -- cat /etc/nginx/nginx.conf | grep -A 10 -B 5 "server_name"
+
+# Check ingress status and events
+kubectl get ingress -o wide
+kubectl describe ingress path-based-ingress
+kubectl describe ingress host-based-ingress
+Subtask 6.3: Validate Ingress Resources
+Perform comprehensive validation of all Ingress resources and their functionality.
+
+# Create a comprehensive test script
+cat << 'EOF' > ingress_test.sh
+#!/bin/bash
+
+MACHINE_IP=$(hostname -I | awk '{print $1}')
+HTTP_PORT=$(kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath='{.spec.ports[?(@.name=="http")].nodePort}')
+
+echo "=== Ingress Validation Report ==="
+echo "Machine IP: $MACHINE_IP"
+echo "HTTP Port: $HTTP_PORT"
+echo "Date: $(date)"
+echo ""
+
+echo "1. Testing Path-Based Routing:"
+echo "   /app1 -> $(curl -s -w "%{http_code}" -o /dev/null http://$MACHINE_IP:$HTTP_PORT/app1)"
+echo "   /app2 -> $(curl -s -w "%{http_code}" -o /dev/null http://$MACHINE_IP:$HTTP_PORT/app2)"
+echo "   / (default) -> $(curl -s -w "%{http_code}" -o /dev/null http://$MACHINE_IP:$HTTP_PORT/)"
+echo ""
+
+echo "2. Testing Host-Based Routing:"
+echo "   app1.local -> $(curl -s -w "%{http_code}" -o /dev/null -H "Host: app1.local" http://$MACHINE_IP:$HTTP_PORT/)"
+echo "   app2.local -> $(curl -s -w "%{http_code}" -o /dev/null -H "Host: app2.local" http://$MACHINE_IP:$HTTP_PORT/)"
+echo ""
+
+echo "3. Ingress Resources Status:"
+kubectl get ingress -o custom-columns=NAME:.metadata.name,HOSTS:.spec.rules[*].host,ADDRESS:.status.loadBalancer.ingress[*].ip,PORTS:.spec.tls[*].secretName,AGE:.metadata.creationTimestamp
+
+echo ""
+echo "4. Backend Services Status:"
+kubectl get svc -o custom-columns=NAME:.metadata.name,TYPE:.spec.type,CLUSTER-IP:.spec.clusterIP,EXTERNAL-IP:.status.loadBalancer.ingress[*].ip,PORT:.spec.ports[*].port
+
+echo ""
+echo "=== End of Report ==="
+EOF
+
+chmod +x ingress_test.sh
+./ingress_test.sh
+Troubleshooting Common Issues
+Issue 1: Ingress Controller Not Ready
+If the Ingress controller pods are not ready:
+
+# Check pod status and events
+kubectl get pods -n ingress-nginx
+kubectl describe pods -n ingress-nginx
+
+# Check for resource constraints
+kubectl top nodes
+kubectl top pods -n ingress-nginx
+
+# Restart the ingress controller if needed
+kubectl rollout restart deployment/ingress-nginx-controller -n ingress-nginx
+Issue 2: 404 Errors on Valid Paths
+If you receive 404 errors on configured paths:
+
+# Verify ingress rules
+kubectl get ingress -o yaml
+
+# Check service endpoints
+kubectl get endpoints
+
+# Verify pod labels match service selectors
+kubectl get pods --show-labels
+kubectl describe svc app1-service
+Issue 3: Host-Based Routing Not Working
+If host-based routing fails:
+
+# Verify /etc/hosts entries
+cat /etc/hosts | grep local
+
+# Test with explicit Host header
+curl -v -H "Host: app1.local" http://$MACHINE_IP:$HTTP_PORT/
+
+# Check DNS resolution
+nslookup app1.local
+Lab Summary and Conclusion
+In this comprehensive lab, you have successfully:
+
+Technical Accomplishments:
+
+Set up a complete Kubernetes cluster with networking components
+Deployed and configured the Nginx Ingress controller for traffic management
+Created multiple sample applications with different routing requirements
+Implemented both path-based and host-based routing strategies using Ingress resources
+Configured advanced Ingress features including URL rewriting and custom headers
+Tested external access to cluster services through the Ingress controller
+Learned monitoring and troubleshooting techniques for Ingress-related issues
+Key Concepts Mastered:
+
+Ingress Controllers: Understanding how they act as reverse proxies and load balancers for Kubernetes services
+Ingress Resources: Configuration objects that define routing rules for HTTP/HTTPS traffic
+Path-Based Routing: Directing traffic to different services based on URL paths
+Host-Based Routing: Routing traffic based on the requested hostname
+Service Discovery: How Ingress controllers discover and route to backend services
+Load Balancing: Distributing traffic across multiple pod replicas
+Real-World Applications: This lab simulates enterprise scenarios where organizations need to expose multiple applications through a single entry point. The skills learned here are directly applicable to:
+
+Microservices Architecture: Routing traffic to different microservices based on API paths
+Multi-Tenant Applications: Serving different customers through hostname-based routing
+Blue-Green Deployments: Using Ingress to switch traffic between application versions
+API Gateway Patterns: Implementing centralized routing and traffic management
+Production Considerations: While this lab used a single-node cluster for learning purposes, production deployments would typically include:
+
+High-availability Ingress controller deployments across multiple nodes
+TLS/SSL termination with proper certificate management
+Rate limiting and security policies
+Integration with external load balancers and CDNs
+Monitoring and alerting for Ingress performance and availability
+The knowledge gained from this lab provides a solid foundation for implementing robust, scalable ingress solutions in production Kubernetes environments, enabling efficient traffic management and service exposure for modern containerized applications.
