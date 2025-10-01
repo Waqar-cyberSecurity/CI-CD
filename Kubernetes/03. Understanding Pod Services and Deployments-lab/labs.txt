@@ -1,0 +1,427 @@
+Lab 3: Understanding Pods, Services, and Deployments
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Install and configure a Kubernetes cluster on a single Linux machine using Minikube
+Create and manage Kubernetes Deployments
+Expose applications using Kubernetes Services
+Scale deployments up and down
+Use kubectl commands to inspect and manage Pods, Services, and Deployments
+Understand the relationship between Pods, Services, and Deployments in Kubernetes
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Linux command line operations
+Familiarity with containerization concepts (Docker basics)
+Understanding of YAML file structure
+Basic networking concepts (ports, IP addresses)
+Text editor knowledge (nano, vim, or similar)
+Lab Environment
+Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated Linux machine. The provided machine is bare metal with no pre-installed tools, so you will install all required tools during the lab exercises.
+
+Task 1: Environment Setup and Kubernetes Installation
+Subtask 1.1: Update System and Install Dependencies
+First, update your system and install the necessary dependencies:
+
+# Update package lists
+sudo apt update && sudo apt upgrade -y
+
+# Install required packages
+sudo apt install -y curl wget apt-transport-https ca-certificates gnupg lsb-release
+
+# Install Docker
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io
+
+# Add current user to docker group
+sudo usermod -aG docker $USER
+
+# Start and enable Docker
+sudo systemctl start docker
+sudo systemctl enable docker
+Subtask 1.2: Install kubectl
+Install the Kubernetes command-line tool:
+
+# Download kubectl
+curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+
+# Make kubectl executable
+chmod +x kubectl
+
+# Move kubectl to PATH
+sudo mv kubectl /usr/local/bin/
+
+# Verify installation
+kubectl version --client
+Subtask 1.3: Install and Start Minikube
+Install Minikube to run Kubernetes locally:
+
+# Download Minikube
+curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+
+# Install Minikube
+sudo install minikube-linux-amd64 /usr/local/bin/minikube
+
+# Start Minikube cluster
+minikube start --driver=docker
+
+# Verify cluster is running
+kubectl cluster-info
+kubectl get nodes
+Note: If you encounter permission issues with Docker, log out and log back in, or run newgrp docker to refresh group membership.
+
+Task 2: Create a Deployment and Expose it via a Service
+Subtask 2.1: Create a Simple Web Application Deployment
+Create a deployment YAML file for a simple nginx web server:
+
+# Create a directory for lab files
+mkdir ~/k8s-lab3
+cd ~/k8s-lab3
+
+# Create deployment YAML file
+cat > nginx-deployment.yaml << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+  labels:
+    app: nginx
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "250m"
+          limits:
+            memory: "128Mi"
+            cpu: "500m"
+EOF
+Subtask 2.2: Deploy the Application
+Apply the deployment to your Kubernetes cluster:
+
+# Apply the deployment
+kubectl apply -f nginx-deployment.yaml
+
+# Verify deployment creation
+kubectl get deployments
+
+# Check the status of pods
+kubectl get pods
+
+# Get detailed information about the deployment
+kubectl describe deployment nginx-deployment
+Subtask 2.3: Create a Service to Expose the Deployment
+Create a service YAML file to expose the nginx deployment:
+
+# Create service YAML file
+cat > nginx-service.yaml << 'EOF'
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-service
+  labels:
+    app: nginx
+spec:
+  type: NodePort
+  selector:
+    app: nginx
+  ports:
+  - port: 80
+    targetPort: 80
+    nodePort: 30080
+    protocol: TCP
+EOF
+Apply the service:
+
+# Apply the service
+kubectl apply -f nginx-service.yaml
+
+# Verify service creation
+kubectl get services
+
+# Get detailed service information
+kubectl describe service nginx-service
+Subtask 2.4: Test the Service
+Test that your service is working correctly:
+
+# Get Minikube IP
+minikube ip
+
+# Test the service using curl (replace MINIKUBE_IP with actual IP)
+MINIKUBE_IP=$(minikube ip)
+curl http://$MINIKUBE_IP:30080
+
+# Alternative: Use minikube service command
+minikube service nginx-service --url
+You should see the nginx welcome page HTML content.
+
+Task 3: Scale the Deployment
+Subtask 3.1: Scale Up the Deployment
+Increase the number of replicas in your deployment:
+
+# Scale deployment to 5 replicas
+kubectl scale deployment nginx-deployment --replicas=5
+
+# Verify scaling
+kubectl get pods
+
+# Watch pods being created in real-time
+kubectl get pods -w
+Press Ctrl+C to stop watching.
+
+Subtask 3.2: Scale Down the Deployment
+Reduce the number of replicas:
+
+# Scale deployment down to 2 replicas
+kubectl scale deployment nginx-deployment --replicas=2
+
+# Verify scaling down
+kubectl get pods
+
+# Check deployment status
+kubectl get deployment nginx-deployment
+Subtask 3.3: Update Deployment Using YAML
+Modify the deployment file and apply changes:
+
+# Edit the deployment file to change replicas to 4
+sed -i 's/replicas: 3/replicas: 4/' nginx-deployment.yaml
+
+# Apply the updated deployment
+kubectl apply -f nginx-deployment.yaml
+
+# Verify the change
+kubectl get pods
+kubectl get deployment nginx-deployment
+Task 4: Use kubectl to Inspect Pods and Services
+Subtask 4.1: Detailed Pod Inspection
+Examine pods in detail using various kubectl commands:
+
+# List all pods with additional information
+kubectl get pods -o wide
+
+# Get detailed information about a specific pod
+POD_NAME=$(kubectl get pods -l app=nginx -o jsonpath='{.items[0].metadata.name}')
+kubectl describe pod $POD_NAME
+
+# View pod logs
+kubectl logs $POD_NAME
+
+# Get pod information in YAML format
+kubectl get pod $POD_NAME -o yaml
+
+# Get pod information in JSON format
+kubectl get pod $POD_NAME -o json
+Subtask 4.2: Service Inspection and Endpoints
+Examine services and their endpoints:
+
+# List all services
+kubectl get services
+
+# Get detailed service information
+kubectl describe service nginx-service
+
+# Check service endpoints
+kubectl get endpoints nginx-service
+
+# View service in YAML format
+kubectl get service nginx-service -o yaml
+Subtask 4.3: Advanced kubectl Commands
+Use advanced kubectl commands for better insights:
+
+# Get all resources in the default namespace
+kubectl get all
+
+# Filter pods by labels
+kubectl get pods -l app=nginx
+
+# Get pods with custom columns
+kubectl get pods -o custom-columns=NAME:.metadata.name,STATUS:.status.phase,NODE:.spec.nodeName
+
+# Check resource usage (if metrics server is available)
+kubectl top pods 2>/dev/null || echo "Metrics server not available"
+
+# Get events related to your deployment
+kubectl get events --field-selector involvedObject.name=nginx-deployment
+Subtask 4.4: Interactive Pod Access
+Access a running pod for troubleshooting:
+
+# Execute commands inside a pod
+kubectl exec -it $POD_NAME -- /bin/bash
+
+# Once inside the pod, you can run commands like:
+# nginx -v
+# ps aux
+# exit
+
+# Run a single command without interactive shell
+kubectl exec $POD_NAME -- nginx -v
+
+# Port forward from local machine to pod
+kubectl port-forward $POD_NAME 8080:80 &
+
+# Test port forwarding
+curl http://localhost:8080
+
+# Kill the port-forward process
+pkill -f "kubectl port-forward"
+Task 5: Advanced Operations and Cleanup
+Subtask 5.1: Rolling Updates
+Perform a rolling update of your deployment:
+
+# Update the nginx image version
+kubectl set image deployment/nginx-deployment nginx=nginx:1.22
+
+# Watch the rolling update
+kubectl rollout status deployment/nginx-deployment
+
+# Check rollout history
+kubectl rollout history deployment/nginx-deployment
+
+# Rollback to previous version if needed
+kubectl rollout undo deployment/nginx-deployment
+Subtask 5.2: Create Additional Resources
+Create a ConfigMap and update your deployment to use it:
+
+# Create a ConfigMap
+kubectl create configmap nginx-config --from-literal=server_name=my-nginx-server
+
+# View the ConfigMap
+kubectl get configmap nginx-config -o yaml
+
+# Create an updated deployment that uses the ConfigMap
+cat > nginx-deployment-with-config.yaml << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment-v2
+  labels:
+    app: nginx-v2
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: nginx-v2
+  template:
+    metadata:
+      labels:
+        app: nginx-v2
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.22
+        ports:
+        - containerPort: 80
+        env:
+        - name: SERVER_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: nginx-config
+              key: server_name
+EOF
+
+# Apply the new deployment
+kubectl apply -f nginx-deployment-with-config.yaml
+
+# Verify the new deployment
+kubectl get deployments
+kubectl get pods -l app=nginx-v2
+Subtask 5.3: Resource Cleanup
+Clean up the resources created during the lab:
+
+# Delete deployments
+kubectl delete deployment nginx-deployment
+kubectl delete deployment nginx-deployment-v2
+
+# Delete services
+kubectl delete service nginx-service
+
+# Delete ConfigMap
+kubectl delete configmap nginx-config
+
+# Verify cleanup
+kubectl get all
+
+# Stop Minikube (optional)
+minikube stop
+Troubleshooting Tips
+Common Issues and Solutions
+Issue 1: Pods stuck in Pending state
+
+# Check node resources
+kubectl describe nodes
+
+# Check pod events
+kubectl describe pod <pod-name>
+Issue 2: Service not accessible
+
+# Verify service endpoints
+kubectl get endpoints <service-name>
+
+# Check if pods are running and ready
+kubectl get pods -l app=<app-label>
+
+# Verify service selector matches pod labels
+kubectl get service <service-name> -o yaml
+Issue 3: Docker permission denied
+
+# Add user to docker group and refresh
+sudo usermod -aG docker $USER
+newgrp docker
+
+# Or restart the session
+Issue 4: Minikube won't start
+
+# Delete and recreate Minikube cluster
+minikube delete
+minikube start --driver=docker
+
+# Check system resources
+free -h
+df -h
+Key Concepts Summary
+Pods
+Pods are the smallest deployable units in Kubernetes
+Each pod contains one or more containers that share storage and network
+Pods are ephemeral and can be created, destroyed, and recreated
+Deployments
+Deployments manage ReplicaSets and provide declarative updates to applications
+They ensure a specified number of pod replicas are running at any time
+Support rolling updates and rollbacks
+Services
+Services provide stable network endpoints for accessing pods
+They abstract away the dynamic nature of pods
+Types include ClusterIP, NodePort, and LoadBalancer
+kubectl Commands
+kubectl is the primary tool for interacting with Kubernetes clusters
+Common operations: get, describe, create, apply, delete, scale
+Supports various output formats: yaml, json, wide, custom-columns
+Conclusion
+In this lab, you have successfully:
+
+Set up a complete Kubernetes environment using Minikube on a single Linux machine
+Created and managed Kubernetes Deployments with multiple replicas
+Exposed applications using Services with NodePort configuration
+Scaled deployments up and down dynamically
+Used various kubectl commands to inspect and manage cluster resources
+Performed rolling updates and rollbacks
+Implemented ConfigMaps for configuration management
+This hands-on experience provides you with fundamental skills for working with Kubernetes in production environments. You now understand how Pods, Services, and Deployments work together to create scalable, resilient applications. These concepts form the foundation for more advanced Kubernetes topics such as persistent storage, networking policies, and cluster administration.
+
+The skills you've developed in this lab are directly applicable to real-world scenarios where you need to deploy, scale, and manage containerized applications in Kubernetes clusters.
