@@ -1,2 +1,2 @@
-<img src="kube.png" alt="logo" width="800"/>
+<img src="kube.png" alt="logo" width="600"/>
 
