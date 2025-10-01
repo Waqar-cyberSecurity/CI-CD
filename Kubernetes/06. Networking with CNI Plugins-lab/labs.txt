@@ -1,0 +1,462 @@
+Lab 6: Networking with CNI Plugins
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Understand the fundamentals of Container Network Interface (CNI) plugins
+Install and configure the Calico CNI plugin in a Kubernetes environment
+Set up pod-to-pod connectivity using CNI plugins
+Create and execute pod-to-pod communication tests
+Troubleshoot basic networking issues in Kubernetes clusters
+Verify inter-pod networking functionality across different nodes
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Kubernetes concepts (pods, services, deployments)
+Familiarity with Linux command line operations
+Knowledge of basic networking concepts (IP addresses, routing, DNS)
+Experience with YAML configuration files
+Understanding of container technologies
+Lab Environment
+Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated environment. The provided Linux machine is bare metal with no pre-installed tools, so you will need to install all required tools during the lab exercises.
+
+Important Note: All tasks in this lab will be performed on a single Linux machine. No additional virtual machines or remote hosts are required.
+
+Task 1: Install and Configure the Calico CNI Plugin
+Subtask 1.1: Set Up the Base Environment
+First, we need to install Docker and Kubernetes components on our Linux machine.
+
+Step 1: Update the system packages
+
+sudo apt update && sudo apt upgrade -y
+Step 2: Install Docker
+
+# Install Docker dependencies
+sudo apt install -y apt-transport-https ca-certificates curl gnupg lsb-release
+
+# Add Docker's official GPG key
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+
+# Add Docker repository
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# Install Docker
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io
+
+# Start and enable Docker
+sudo systemctl start docker
+sudo systemctl enable docker
+
+# Add current user to docker group
+sudo usermod -aG docker $USER
+Step 3: Install Kubernetes components
+
+# Add Kubernetes GPG key
+curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
+
+# Add Kubernetes repository
+echo "deb https://apt.kubernetes.io/ kubernetes-xenial main" | sudo tee /etc/apt/sources.list.d/kubernetes.list
+
+# Install Kubernetes components
+sudo apt update
+sudo apt install -y kubelet kubeadm kubectl
+
+# Hold packages to prevent automatic updates
+sudo apt-mark hold kubelet kubeadm kubectl
+Step 4: Configure system settings for Kubernetes
+
+# Disable swap
+sudo swapoff -a
+sudo sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+
+# Load required kernel modules
+cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
+overlay
+br_netfilter
+EOF
+
+sudo modprobe overlay
+sudo modprobe br_netfilter
+
+# Set required sysctl parameters
+cat <<EOF | sudo tee /etc/sysctl.d/k8s.conf
+net.bridge.bridge-nf-call-iptables  = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+net.ipv4.ip_forward                 = 1
+EOF
+
+sudo sysctl --system
+Subtask 1.2: Initialize Kubernetes Cluster
+Step 1: Initialize the Kubernetes cluster
+
+# Initialize cluster without CNI plugin
+sudo kubeadm init --pod-network-cidr=192.168.0.0/16 --skip-phases=addon/kube-proxy
+Step 2: Configure kubectl for the current user
+
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+Step 3: Remove taint from master node (since we're using a single node)
+
+kubectl taint nodes --all node-role.kubernetes.io/control-plane-
+Subtask 1.3: Install Calico CNI Plugin
+Step 1: Download and apply Calico manifest
+
+# Download Calico manifest
+curl https://raw.githubusercontent.com/projectcalico/calico/v3.26.1/manifests/calico.yaml -O
+
+# Apply Calico to the cluster
+kubectl apply -f calico.yaml
+Step 2: Verify Calico installation
+
+# Check if Calico pods are running
+kubectl get pods -n kube-system | grep calico
+
+# Wait for all pods to be in Running state
+kubectl wait --for=condition=Ready pod -l k8s-app=calico-node -n kube-system --timeout=300s
+Step 3: Verify node status
+
+# Check node status - should show Ready
+kubectl get nodes
+
+# Get detailed node information
+kubectl describe node $(hostname)
+Task 2: Create a Simple Pod-to-Pod Communication Test
+Subtask 2.1: Create Test Pods
+Step 1: Create the first test pod
+
+cat <<EOF > pod1.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-pod-1
+  labels:
+    app: test-pod-1
+spec:
+  containers:
+  - name: nginx
+    image: nginx:latest
+    ports:
+    - containerPort: 80
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "250m"
+      limits:
+        memory: "128Mi"
+        cpu: "500m"
+EOF
+
+kubectl apply -f pod1.yaml
+Step 2: Create the second test pod
+
+cat <<EOF > pod2.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-pod-2
+  labels:
+    app: test-pod-2
+spec:
+  containers:
+  - name: busybox
+    image: busybox:latest
+    command: ['sleep', '3600']
+    resources:
+      requests:
+        memory: "32Mi"
+        cpu: "100m"
+      limits:
+        memory: "64Mi"
+        cpu: "200m"
+EOF
+
+kubectl apply -f pod2.yaml
+Step 3: Verify pods are running
+
+# Check pod status
+kubectl get pods -o wide
+
+# Wait for pods to be ready
+kubectl wait --for=condition=Ready pod/test-pod-1 --timeout=120s
+kubectl wait --for=condition=Ready pod/test-pod-2 --timeout=120s
+Subtask 2.2: Examine Pod Network Configuration
+Step 1: Get pod IP addresses
+
+# Get detailed pod information including IP addresses
+kubectl get pods -o wide
+
+# Store IP addresses in variables for later use
+POD1_IP=$(kubectl get pod test-pod-1 -o jsonpath='{.status.podIP}')
+POD2_IP=$(kubectl get pod test-pod-2 -o jsonpath='{.status.podIP}')
+
+echo "Pod 1 IP: $POD1_IP"
+echo "Pod 2 IP: $POD2_IP"
+Step 2: Examine network interfaces
+
+# Check network interfaces on the host
+ip addr show
+
+# Look for Calico-created interfaces
+ip route show | grep cali
+Step 3: Inspect Calico network configuration
+
+# Check Calico node status
+kubectl exec -n kube-system -it $(kubectl get pods -n kube-system -l k8s-app=calico-node -o jsonpath='{.items[0].metadata.name}') -- calicoctl node status
+
+# View IP pool configuration
+kubectl exec -n kube-system -it $(kubectl get pods -n kube-system -l k8s-app=calico-node -o jsonpath='{.items[0].metadata.name}') -- calicoctl get ippool -o wide
+Task 3: Test Inter-Pod Networking
+Subtask 3.1: Basic Connectivity Tests
+Step 1: Test ping connectivity between pods
+
+# Ping from pod2 to pod1
+kubectl exec test-pod-2 -- ping -c 4 $POD1_IP
+
+# Verify reverse connectivity
+kubectl exec test-pod-1 -- ping -c 4 $POD2_IP
+Step 2: Test HTTP connectivity
+
+# Test HTTP connection from pod2 to pod1 (nginx)
+kubectl exec test-pod-2 -- wget -qO- http://$POD1_IP
+
+# Test with curl if available
+kubectl exec test-pod-2 -- wget -qO- --timeout=10 http://$POD1_IP
+Step 3: Test DNS resolution
+
+# Create a service for pod1 to test DNS
+cat <<EOF > service1.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: test-service-1
+spec:
+  selector:
+    app: test-pod-1
+  ports:
+  - port: 80
+    targetPort: 80
+  type: ClusterIP
+EOF
+
+kubectl apply -f service1.yaml
+
+# Test DNS resolution from pod2
+kubectl exec test-pod-2 -- nslookup test-service-1.default.svc.cluster.local
+
+# Test service connectivity
+kubectl exec test-pod-2 -- wget -qO- http://test-service-1.default.svc.cluster.local
+Subtask 3.2: Advanced Network Testing
+Step 1: Create additional pods for comprehensive testing
+
+cat <<EOF > pod3.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-pod-3
+  labels:
+    app: test-pod-3
+spec:
+  containers:
+  - name: alpine
+    image: alpine:latest
+    command: ['sleep', '3600']
+    resources:
+      requests:
+        memory: "32Mi"
+        cpu: "100m"
+      limits:
+        memory: "64Mi"
+        cpu: "200m"
+EOF
+
+kubectl apply -f pod3.yaml
+kubectl wait --for=condition=Ready pod/test-pod-3 --timeout=120s
+Step 2: Test multi-pod connectivity
+
+# Get IP of the third pod
+POD3_IP=$(kubectl get pod test-pod-3 -o jsonpath='{.status.podIP}')
+echo "Pod 3 IP: $POD3_IP"
+
+# Test connectivity from pod3 to both pod1 and pod2
+kubectl exec test-pod-3 -- ping -c 2 $POD1_IP
+kubectl exec test-pod-3 -- ping -c 2 $POD2_IP
+
+# Install network tools in alpine pod for advanced testing
+kubectl exec test-pod-3 -- apk add --no-cache curl netcat-openbsd
+
+# Test port connectivity
+kubectl exec test-pod-3 -- nc -zv $POD1_IP 80
+Step 3: Monitor network traffic
+
+# Check network statistics
+kubectl exec test-pod-1 -- cat /proc/net/dev
+
+# Monitor active connections
+kubectl exec test-pod-2 -- netstat -an 2>/dev/null || kubectl exec test-pod-2 -- ss -an
+Subtask 3.3: Network Policy Testing
+Step 1: Create a network policy to test isolation
+
+cat <<EOF > network-policy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app: test-pod-1
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: test-pod-2
+    ports:
+    - protocol: TCP
+      port: 80
+EOF
+
+kubectl apply -f network-policy.yaml
+Step 2: Test network policy enforcement
+
+# This should work (pod2 to pod1)
+kubectl exec test-pod-2 -- wget -qO- --timeout=5 http://$POD1_IP
+
+# This should be blocked (pod3 to pod1)
+kubectl exec test-pod-3 -- wget -qO- --timeout=5 http://$POD1_IP || echo "Connection blocked by network policy"
+Step 3: Verify network policy status
+
+# Check network policy
+kubectl get networkpolicy
+
+# Describe the network policy
+kubectl describe networkpolicy test-network-policy
+Troubleshooting Common Issues
+Issue 1: Pods Not Getting IP Addresses
+Symptoms: Pods remain in Pending or ContainerCreating state
+
+Solution:
+
+# Check Calico pod logs
+kubectl logs -n kube-system -l k8s-app=calico-node
+
+# Restart Calico pods if necessary
+kubectl delete pods -n kube-system -l k8s-app=calico-node
+Issue 2: Pod-to-Pod Communication Fails
+Symptoms: Ping or HTTP requests timeout
+
+Solution:
+
+# Check if IP forwarding is enabled
+sysctl net.ipv4.ip_forward
+
+# Verify iptables rules
+sudo iptables -L -n | grep ACCEPT
+
+# Check Calico node status
+kubectl exec -n kube-system -it $(kubectl get pods -n kube-system -l k8s-app=calico-node -o jsonpath='{.items[0].metadata.name}') -- calicoctl node status
+Issue 3: DNS Resolution Problems
+Symptoms: Service names cannot be resolved
+
+Solution:
+
+# Check CoreDNS pods
+kubectl get pods -n kube-system -l k8s-app=kube-dns
+
+# Check DNS configuration in pods
+kubectl exec test-pod-2 -- cat /etc/resolv.conf
+
+# Test DNS directly
+kubectl exec test-pod-2 -- nslookup kubernetes.default.svc.cluster.local
+Verification and Testing
+Final Verification Steps
+Step 1: Comprehensive connectivity test
+
+# Create a test script
+cat <<EOF > connectivity-test.sh
+#!/bin/bash
+
+echo "=== Pod Connectivity Test ==="
+echo "Pod 1 IP: \$(kubectl get pod test-pod-1 -o jsonpath='{.status.podIP}')"
+echo "Pod 2 IP: \$(kubectl get pod test-pod-2 -o jsonpath='{.status.podIP}')"
+echo "Pod 3 IP: \$(kubectl get pod test-pod-3 -o jsonpath='{.status.podIP}')"
+
+echo -e "\n=== Testing Pod-to-Pod Ping ==="
+kubectl exec test-pod-2 -- ping -c 2 \$(kubectl get pod test-pod-1 -o jsonpath='{.status.podIP}')
+
+echo -e "\n=== Testing HTTP Connectivity ==="
+kubectl exec test-pod-2 -- wget -qO- --timeout=5 http://\$(kubectl get pod test-pod-1 -o jsonpath='{.status.podIP}')
+
+echo -e "\n=== Testing Service DNS ==="
+kubectl exec test-pod-2 -- nslookup test-service-1.default.svc.cluster.local
+
+echo -e "\n=== Network Policy Test ==="
+kubectl exec test-pod-3 -- timeout 5 wget -qO- http://\$(kubectl get pod test-pod-1 -o jsonpath='{.status.podIP}') || echo "Blocked by network policy (expected)"
+
+echo -e "\n=== Test Complete ==="
+EOF
+
+chmod +x connectivity-test.sh
+./connectivity-test.sh
+Step 2: Generate network report
+
+cat <<EOF > network-report.sh
+#!/bin/bash
+
+echo "=== Kubernetes Network Report ==="
+echo "Date: \$(date)"
+echo
+
+echo "=== Node Status ==="
+kubectl get nodes -o wide
+
+echo -e "\n=== Pod Status ==="
+kubectl get pods -o wide
+
+echo -e "\n=== Services ==="
+kubectl get services
+
+echo -e "\n=== Network Policies ==="
+kubectl get networkpolicies
+
+echo -e "\n=== Calico Status ==="
+kubectl get pods -n kube-system | grep calico
+
+echo -e "\n=== IP Pool Information ==="
+kubectl exec -n kube-system -it \$(kubectl get pods -n kube-system -l k8s-app=calico-node -o jsonpath='{.items[0].metadata.name}') -- calicoctl get ippool -o wide 2>/dev/null || echo "Unable to retrieve IP pool info"
+
+EOF
+
+chmod +x network-report.sh
+./network-report.sh
+Cleanup
+To clean up the lab environment:
+
+# Delete test pods and services
+kubectl delete pod test-pod-1 test-pod-2 test-pod-3
+kubectl delete service test-service-1
+kubectl delete networkpolicy test-network-policy
+
+# Remove YAML files
+rm -f pod1.yaml pod2.yaml pod3.yaml service1.yaml network-policy.yaml calico.yaml
+
+# Remove test scripts
+rm -f connectivity-test.sh network-report.sh
+Conclusion
+In this lab, you have successfully:
+
+Installed and configured Calico CNI plugin in a Kubernetes environment, providing robust networking capabilities for container communication
+Set up pod-to-pod connectivity using CNI plugins, enabling seamless communication between containers across the cluster
+Created comprehensive communication tests to verify network functionality, including ping tests, HTTP connectivity, and DNS resolution
+Implemented and tested network policies to understand how to control and secure pod-to-pod communication
+Gained hands-on experience with Kubernetes networking concepts and troubleshooting techniques
+Why This Matters: Container Network Interface (CNI) plugins are fundamental to Kubernetes networking. Understanding how to configure and manage CNI plugins like Calico is essential for:
+
+Production Deployments: Ensuring reliable communication between microservices
+Security Implementation: Controlling network access through policies
+Troubleshooting: Diagnosing and resolving network-related issues
+Performance Optimization: Understanding network paths and potential bottlenecks
+Compliance: Meeting security and isolation requirements in enterprise environments
+The skills you've developed in this lab form the foundation for managing complex Kubernetes networking scenarios in real-world applications, from simple web applications to large-scale distributed systems.
