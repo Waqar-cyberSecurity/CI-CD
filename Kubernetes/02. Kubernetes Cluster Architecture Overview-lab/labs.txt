@@ -1,0 +1,454 @@
+Lab 2: Kubernetes Cluster Architecture Overview
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Understand the core components of Kubernetes control plane architecture
+Identify and examine worker node components in a Kubernetes cluster
+Navigate and inspect key Kubernetes services including kube-apiserver, kubelet, and etcd
+Use systemctl commands to manage Kubernetes services
+Analyze the communication flow between different Kubernetes components
+Troubleshoot basic Kubernetes service issues using system logs
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Linux command line operations
+Familiarity with system services and process management
+Knowledge of containerization concepts
+Understanding of YAML file structure
+Basic networking concepts (ports, IP addresses, protocols)
+Lab Environment Setup
+Note: Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated Linux environment. The provided machine is bare metal with no pre-installed tools, so you will install all required components during the lab exercises.
+
+Task 1: Install and Configure Kubernetes Components
+Subtask 1.1: Prepare the System Environment
+First, we need to update the system and install necessary dependencies.
+
+# Update system packages
+sudo apt update && sudo apt upgrade -y
+
+# Install required dependencies
+sudo apt install -y apt-transport-https ca-certificates curl gpg
+
+# Disable swap (required for Kubernetes)
+sudo swapoff -a
+sudo sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+Subtask 1.2: Install Container Runtime (containerd)
+Kubernetes requires a container runtime. We'll install containerd.
+
+# Install containerd
+sudo apt install -y containerd
+
+# Create containerd configuration directory
+sudo mkdir -p /etc/containerd
+
+# Generate default containerd configuration
+sudo containerd config default | sudo tee /etc/containerd/config.toml
+
+# Enable SystemdCgroup in containerd configuration
+sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+
+# Restart and enable containerd service
+sudo systemctl restart containerd
+sudo systemctl enable containerd
+
+# Verify containerd is running
+sudo systemctl status containerd
+Subtask 1.3: Install Kubernetes Components
+Now we'll install the core Kubernetes components: kubeadm, kubelet, and kubectl.
+
+# Add Kubernetes GPG key
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+# Add Kubernetes repository
+echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
+
+# Update package index
+sudo apt update
+
+# Install Kubernetes components
+sudo apt install -y kubelet kubeadm kubectl
+
+# Hold Kubernetes packages to prevent automatic updates
+sudo apt-mark hold kubelet kubeadm kubectl
+
+# Enable kubelet service
+sudo systemctl enable kubelet
+Task 2: Initialize Kubernetes Cluster and Identify Components
+Subtask 2.1: Initialize the Control Plane
+# Initialize Kubernetes cluster
+sudo kubeadm init --pod-network-cidr=10.244.0.0/16
+
+# Set up kubectl for regular user
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+# Verify cluster initialization
+kubectl cluster-info
+Subtask 2.2: Install Pod Network (Flannel)
+# Apply Flannel network plugin
+kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+
+# Remove taint from control plane node to allow pod scheduling
+kubectl taint nodes --all node-role.kubernetes.io/control-plane-
+
+# Wait for all pods to be ready
+kubectl get pods --all-namespaces -w
+Task 3: Examine Kubernetes Control Plane Components
+Subtask 3.1: Identify and Inspect kube-apiserver
+The kube-apiserver is the central management component that exposes the Kubernetes API.
+
+# Check if kube-apiserver is running as a static pod
+kubectl get pods -n kube-system | grep apiserver
+
+# Examine kube-apiserver configuration
+kubectl describe pod -n kube-system $(kubectl get pods -n kube-system | grep apiserver | awk '{print $1}')
+
+# View kube-apiserver logs
+kubectl logs -n kube-system $(kubectl get pods -n kube-system | grep apiserver | awk '{print $1}')
+
+# Check kube-apiserver process details
+ps aux | grep kube-apiserver
+
+# Verify API server is listening on port 6443
+sudo netstat -tlnp | grep 6443
+Subtask 3.2: Examine etcd Component
+etcd is the distributed key-value store that holds all cluster data.
+
+# Check etcd pod status
+kubectl get pods -n kube-system | grep etcd
+
+# Examine etcd configuration
+kubectl describe pod -n kube-system $(kubectl get pods -n kube-system | grep etcd | awk '{print $1}')
+
+# View etcd logs
+kubectl logs -n kube-system $(kubectl get pods -n kube-system | grep etcd | awk '{print $1}')
+
+# Check etcd process
+ps aux | grep etcd
+
+# Verify etcd is listening on port 2379
+sudo netstat -tlnp | grep 2379
+Subtask 3.3: Examine kube-controller-manager
+The kube-controller-manager runs controller processes that regulate the state of the cluster.
+
+# Check controller manager pod
+kubectl get pods -n kube-system | grep controller-manager
+
+# Examine controller manager configuration
+kubectl describe pod -n kube-system $(kubectl get pods -n kube-system | grep controller-manager | awk '{print $1}')
+
+# View controller manager logs
+kubectl logs -n kube-system $(kubectl get pods -n kube-system | grep controller-manager | awk '{print $1}')
+
+# Check controller manager process
+ps aux | grep kube-controller-manager
+Subtask 3.4: Examine kube-scheduler
+The kube-scheduler assigns pods to nodes based on resource requirements and constraints.
+
+# Check scheduler pod status
+kubectl get pods -n kube-system | grep scheduler
+
+# Examine scheduler configuration
+kubectl describe pod -n kube-system $(kubectl get pods -n kube-system | grep scheduler | awk '{print $1}')
+
+# View scheduler logs
+kubectl logs -n kube-system $(kubectl get pods -n kube-system | grep scheduler | awk '{print $1}')
+
+# Check scheduler process
+ps aux | grep kube-scheduler
+Task 4: Examine Worker Node Components
+Subtask 4.1: Inspect kubelet Service
+The kubelet is the primary node agent that communicates with the control plane.
+
+# Check kubelet service status
+sudo systemctl status kubelet
+
+# View kubelet configuration
+sudo cat /var/lib/kubelet/config.yaml
+
+# Examine kubelet logs
+sudo journalctl -u kubelet -f --no-pager
+
+# Check kubelet process details
+ps aux | grep kubelet
+
+# Verify kubelet is listening on port 10250
+sudo netstat -tlnp | grep 10250
+Subtask 4.2: Examine kube-proxy
+kube-proxy maintains network rules and enables service communication.
+
+# Check kube-proxy pods
+kubectl get pods -n kube-system | grep kube-proxy
+
+# Examine kube-proxy configuration
+kubectl describe daemonset -n kube-system kube-proxy
+
+# View kube-proxy logs
+kubectl logs -n kube-system $(kubectl get pods -n kube-system | grep kube-proxy | awk '{print $1}')
+
+# Check iptables rules managed by kube-proxy
+sudo iptables -t nat -L | head -20
+Subtask 4.3: Examine Container Runtime
+# Check containerd service status
+sudo systemctl status containerd
+
+# List running containers
+sudo ctr containers list
+
+# Check containerd configuration
+sudo cat /etc/containerd/config.toml | grep -A 5 -B 5 SystemdCgroup
+
+# View containerd logs
+sudo journalctl -u containerd --no-pager | tail -20
+Task 5: Managing Kubernetes Services with systemctl
+Subtask 5.1: Practice Starting and Stopping kubelet Service
+# Stop kubelet service
+sudo systemctl stop kubelet
+
+# Check kubelet status (should be inactive)
+sudo systemctl status kubelet
+
+# Verify node status changes
+kubectl get nodes
+
+# Start kubelet service
+sudo systemctl start kubelet
+
+# Verify kubelet is running
+sudo systemctl status kubelet
+
+# Check node status recovery
+kubectl get nodes
+Subtask 5.2: Practice Managing containerd Service
+# Stop containerd service
+sudo systemctl stop containerd
+
+# Check containerd status
+sudo systemctl status containerd
+
+# Try to list containers (should fail)
+sudo ctr containers list
+
+# Start containerd service
+sudo systemctl start containerd
+
+# Verify containerd is running
+sudo systemctl status containerd
+
+# Verify containers are accessible again
+sudo ctr containers list
+Subtask 5.3: Service Management Best Practices
+# Enable services to start at boot
+sudo systemctl enable kubelet
+sudo systemctl enable containerd
+
+# Check if services are enabled
+sudo systemctl is-enabled kubelet
+sudo systemctl is-enabled containerd
+
+# Restart services (stop and start in one command)
+sudo systemctl restart kubelet
+sudo systemctl restart containerd
+
+# Reload service configuration without restarting
+sudo systemctl reload-or-restart kubelet
+Task 6: Analyze Component Communication and Dependencies
+Subtask 6.1: Examine Component Interactions
+# Create a test deployment to observe component interactions
+kubectl create deployment test-nginx --image=nginx:latest
+
+# Watch pod creation process
+kubectl get pods -w &
+
+# Scale the deployment to see scheduler in action
+kubectl scale deployment test-nginx --replicas=3
+
+# Check events to see component interactions
+kubectl get events --sort-by=.metadata.creationTimestamp
+
+# Stop the watch process
+kill %1
+Subtask 6.2: Verify Component Health
+# Check all system pods status
+kubectl get pods -n kube-system
+
+# Get detailed cluster information
+kubectl cluster-info dump > cluster-info.txt
+
+# Check component status
+kubectl get componentstatuses
+
+# Verify node readiness
+kubectl describe nodes
+Task 7: Troubleshooting Common Issues
+Subtask 7.1: Diagnose Service Issues
+# Create a script to check all Kubernetes services
+cat << 'EOF' > check_k8s_services.sh
+#!/bin/bash
+
+echo "=== Checking Kubernetes Services ==="
+echo "1. Checking kubelet service:"
+sudo systemctl is-active kubelet
+
+echo "2. Checking containerd service:"
+sudo systemctl is-active containerd
+
+echo "3. Checking system pods:"
+kubectl get pods -n kube-system --no-headers | awk '{print $1 " - " $3}'
+
+echo "4. Checking node status:"
+kubectl get nodes --no-headers | awk '{print $1 " - " $2}'
+
+echo "5. Checking cluster endpoints:"
+kubectl cluster-info | grep -E "(Kubernetes|CoreDNS)"
+EOF
+
+# Make script executable and run it
+chmod +x check_k8s_services.sh
+./check_k8s_services.sh
+Subtask 7.2: Log Analysis
+# Create a log analysis script
+cat << 'EOF' > analyze_k8s_logs.sh
+#!/bin/bash
+
+echo "=== Kubernetes Component Logs Analysis ==="
+
+echo "1. Recent kubelet errors:"
+sudo journalctl -u kubelet --since "10 minutes ago" | grep -i error | tail -5
+
+echo "2. Recent containerd errors:"
+sudo journalctl -u containerd --since "10 minutes ago" | grep -i error | tail -5
+
+echo "3. API server pod logs (last 10 lines):"
+kubectl logs -n kube-system $(kubectl get pods -n kube-system | grep apiserver | awk '{print $1}') --tail=10
+
+echo "4. etcd pod logs (last 10 lines):"
+kubectl logs -n kube-system $(kubectl get pods -n kube-system | grep etcd | awk '{print $1}') --tail=10
+EOF
+
+# Make script executable and run it
+chmod +x analyze_k8s_logs.sh
+./analyze_k8s_logs.sh
+Task 8: Create Architecture Documentation
+Subtask 8.1: Document Your Cluster Architecture
+# Create a comprehensive cluster report
+cat << 'EOF' > cluster_architecture_report.sh
+#!/bin/bash
+
+echo "=== Kubernetes Cluster Architecture Report ==="
+echo "Generated on: $(date)"
+echo ""
+
+echo "=== CONTROL PLANE COMPONENTS ==="
+echo "1. API Server:"
+kubectl get pods -n kube-system | grep apiserver
+echo ""
+
+echo "2. etcd:"
+kubectl get pods -n kube-system | grep etcd
+echo ""
+
+echo "3. Controller Manager:"
+kubectl get pods -n kube-system | grep controller-manager
+echo ""
+
+echo "4. Scheduler:"
+kubectl get pods -n kube-system | grep scheduler
+echo ""
+
+echo "=== WORKER NODE COMPONENTS ==="
+echo "1. kubelet status:"
+sudo systemctl is-active kubelet
+echo ""
+
+echo "2. kube-proxy:"
+kubectl get pods -n kube-system | grep kube-proxy
+echo ""
+
+echo "3. Container Runtime (containerd):"
+sudo systemctl is-active containerd
+echo ""
+
+echo "=== CLUSTER INFORMATION ==="
+echo "1. Cluster Info:"
+kubectl cluster-info
+echo ""
+
+echo "2. Node Status:"
+kubectl get nodes -o wide
+echo ""
+
+echo "3. System Pods:"
+kubectl get pods -n kube-system
+echo ""
+
+echo "=== NETWORK CONFIGURATION ==="
+echo "1. Service CIDR and Pod CIDR:"
+kubectl cluster-info dump | grep -E "(service-cluster-ip-range|cluster-cidr)" | head -2
+echo ""
+
+echo "2. Active Network Interfaces:"
+ip addr show | grep -E "(inet|UP)" | grep -v "127.0.0.1"
+EOF
+
+# Make script executable and run it
+chmod +x cluster_architecture_report.sh
+./cluster_architecture_report.sh > my_cluster_report.txt
+
+# Display the report
+cat my_cluster_report.txt
+Troubleshooting Tips
+Common Issues and Solutions
+Issue 1: kubelet fails to start
+
+# Check kubelet logs for specific errors
+sudo journalctl -u kubelet --no-pager | tail -20
+
+# Verify swap is disabled
+free -h
+
+# Check if containerd is running
+sudo systemctl status containerd
+Issue 2: Pods stuck in Pending state
+
+# Check node resources
+kubectl describe nodes
+
+# Check pod events
+kubectl describe pod <pod-name>
+
+# Verify scheduler is running
+kubectl get pods -n kube-system | grep scheduler
+Issue 3: API server not responding
+
+# Check if API server pod is running
+kubectl get pods -n kube-system | grep apiserver
+
+# Verify API server port is listening
+sudo netstat -tlnp | grep 6443
+
+# Check etcd connectivity
+kubectl get pods -n kube-system | grep etcd
+Lab Cleanup
+# Remove test deployment
+kubectl delete deployment test-nginx
+
+# Clean up generated files
+rm -f cluster-info.txt my_cluster_report.txt
+rm -f check_k8s_services.sh analyze_k8s_logs.sh cluster_architecture_report.sh
+
+# Optional: Reset the cluster (if needed for next lab)
+# sudo kubeadm reset --force
+Conclusion
+In this lab, you have successfully:
+
+Installed and configured a complete Kubernetes cluster on a single Linux machine
+Identified and examined all major Kubernetes components including kube-apiserver, kubelet, etcd, kube-controller-manager, and kube-scheduler
+Practiced service management using systemctl commands to start, stop, and monitor Kubernetes services
+Analyzed component interactions and understood how different parts of Kubernetes work together
+Developed troubleshooting skills for diagnosing common Kubernetes issues
+Created documentation of your cluster architecture for future reference
+Understanding Kubernetes architecture is fundamental for anyone working with container orchestration. The knowledge gained from examining these components will help you troubleshoot issues, optimize performance, and make informed decisions when designing and managing Kubernetes clusters in production environments.
+
+The hands-on experience with systemctl commands and log analysis will be invaluable when managing Kubernetes clusters in real-world scenarios, where understanding the underlying system services is crucial for maintaining cluster health and reliability.
