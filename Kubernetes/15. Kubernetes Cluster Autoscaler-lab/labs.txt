@@ -1,0 +1,956 @@
+Lab 15: Kubernetes Cluster Autoscaler
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Understand the concept and benefits of Kubernetes Cluster Autoscaler
+Deploy and configure the Cluster Autoscaler in a Kubernetes environment
+Configure node groups and scaling policies for automatic cluster scaling
+Simulate workload scenarios to trigger automatic node scaling
+Monitor and observe cluster autoscaling behavior
+Troubleshoot common autoscaling issues and optimize performance
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Kubernetes concepts (pods, nodes, deployments)
+Familiarity with Linux command line operations
+Knowledge of YAML configuration files
+Understanding of container concepts and Docker basics
+Experience with kubectl commands
+Lab Environment Setup
+Note: Al Nafi provides Linux-based cloud machines for this lab. Simply click "Start Lab" to access your dedicated Linux machine. The provided machine is bare metal with no pre-installed tools, so you will install all required components during the lab.
+
+Task 1: Environment Preparation and Kubernetes Setup
+Subtask 1.1: Install Required Tools
+First, we need to install Docker, kubectl, and kind (Kubernetes in Docker) to create our local Kubernetes cluster.
+
+# Update system packages
+sudo apt update && sudo apt upgrade -y
+
+# Install Docker
+sudo apt install -y apt-transport-https ca-certificates curl software-properties-common
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io
+
+# Add current user to docker group
+sudo usermod -aG docker $USER
+newgrp docker
+
+# Install kubectl
+curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+
+# Install kind
+curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
+chmod +x ./kind
+sudo mv ./kind /usr/local/bin/kind
+
+# Verify installations
+docker --version
+kubectl version --client
+kind version
+Subtask 1.2: Create Multi-Node Kubernetes Cluster
+Create a kind configuration file that simulates a multi-node cluster suitable for autoscaling demonstration.
+
+# Create kind cluster configuration
+cat << EOF > kind-cluster-config.yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: autoscaler-cluster
+nodes:
+- role: control-plane
+  kubeadmConfigPatches:
+  - |
+    kind: InitConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        node-labels: "ingress-ready=true"
+  extraPortMappings:
+  - containerPort: 80
+    hostPort: 80
+    protocol: TCP
+  - containerPort: 443
+    hostPort: 443
+    protocol: TCP
+- role: worker
+  labels:
+    node-type: worker
+- role: worker
+  labels:
+    node-type: worker
+EOF
+
+# Create the cluster
+kind create cluster --config kind-cluster-config.yaml
+
+# Verify cluster creation
+kubectl cluster-info
+kubectl get nodes -o wide
+Subtask 1.3: Install Metrics Server
+The Cluster Autoscaler requires metrics to make scaling decisions.
+
+# Install metrics server
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+
+# Patch metrics server for kind cluster
+kubectl patch deployment metrics-server -n kube-system --type='json' -p='[
+  {
+    "op": "add",
+    "path": "/spec/template/spec/containers/0/args/-",
+    "value": "--kubelet-insecure-tls"
+  },
+  {
+    "op": "add",
+    "path": "/spec/template/spec/containers/0/args/-",
+    "value": "--kubelet-preferred-address-types=InternalIP"
+  }
+]'
+
+# Wait for metrics server to be ready
+kubectl wait --for=condition=ready pod -l k8s-app=metrics-server -n kube-system --timeout=300s
+
+# Verify metrics server
+kubectl top nodes
+Task 2: Deploy and Configure Cluster Autoscaler
+Subtask 2.1: Create Cluster Autoscaler Service Account and RBAC
+Create the necessary service account and permissions for the Cluster Autoscaler.
+
+# Create cluster autoscaler namespace
+kubectl create namespace cluster-autoscaler
+
+# Create service account and RBAC configuration
+cat << EOF > cluster-autoscaler-rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cluster-autoscaler
+  namespace: cluster-autoscaler
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cluster-autoscaler
+rules:
+- apiGroups: [""]
+  resources: ["events", "endpoints"]
+  verbs: ["create", "patch"]
+- apiGroups: [""]
+  resources: ["pods/eviction"]
+  verbs: ["create"]
+- apiGroups: [""]
+  resources: ["pods/status"]
+  verbs: ["update"]
+- apiGroups: [""]
+  resources: ["endpoints"]
+  resourceNames: ["cluster-autoscaler"]
+  verbs: ["get", "update"]
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["watch", "list", "get", "update"]
+- apiGroups: [""]
+  resources: ["pods", "services", "replicationcontrollers", "persistentvolumeclaims", "persistentvolumes"]
+  verbs: ["watch", "list", "get"]
+- apiGroups: ["extensions"]
+  resources: ["replicasets", "daemonsets"]
+  verbs: ["watch", "list", "get"]
+- apiGroups: ["policy"]
+  resources: ["poddisruptionbudgets"]
+  verbs: ["watch", "list"]
+- apiGroups: ["apps"]
+  resources: ["statefulsets", "replicasets", "daemonsets"]
+  verbs: ["watch", "list", "get"]
+- apiGroups: ["storage.k8s.io"]
+  resources: ["storageclasses", "csinodes", "csidrivers", "csistoragecapacities"]
+  verbs: ["watch", "list", "get"]
+- apiGroups: ["batch", "extensions"]
+  resources: ["jobs"]
+  verbs: ["get", "list", "watch", "patch"]
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["create"]
+- apiGroups: ["coordination.k8s.io"]
+  resourceNames: ["cluster-autoscaler"]
+  resources: ["leases"]
+  verbs: ["get", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cluster-autoscaler
+  namespace: cluster-autoscaler
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["create", "list", "watch"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  resourceNames: ["cluster-autoscaler-status", "cluster-autoscaler-priority-expander"]
+  verbs: ["delete", "get", "update", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cluster-autoscaler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-autoscaler
+subjects:
+- kind: ServiceAccount
+  name: cluster-autoscaler
+  namespace: cluster-autoscaler
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cluster-autoscaler
+  namespace: cluster-autoscaler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: cluster-autoscaler
+subjects:
+- kind: ServiceAccount
+  name: cluster-autoscaler
+  namespace: cluster-autoscaler
+EOF
+
+# Apply RBAC configuration
+kubectl apply -f cluster-autoscaler-rbac.yaml
+Subtask 2.2: Create Mock Cloud Provider Simulator
+Since we're using kind (local cluster), we'll create a mock cloud provider simulator that mimics the behavior of adding/removing nodes.
+
+# Create a mock node simulator
+cat << EOF > mock-node-simulator.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-node-simulator
+  namespace: cluster-autoscaler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mock-node-simulator
+  template:
+    metadata:
+      labels:
+        app: mock-node-simulator
+    spec:
+      serviceAccountName: cluster-autoscaler
+      containers:
+      - name: simulator
+        image: busybox:1.35
+        command:
+        - /bin/sh
+        - -c
+        - |
+          while true; do
+            echo "Mock node simulator running..."
+            sleep 30
+          done
+        resources:
+          requests:
+            cpu: 10m
+            memory: 20Mi
+          limits:
+            cpu: 50m
+            memory: 50Mi
+EOF
+
+# Apply mock simulator
+kubectl apply -f mock-node-simulator.yaml
+Subtask 2.3: Deploy Cluster Autoscaler
+Create and deploy the Cluster Autoscaler configuration.
+
+# Create cluster autoscaler deployment
+cat << EOF > cluster-autoscaler-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cluster-autoscaler
+  namespace: cluster-autoscaler
+  labels:
+    app: cluster-autoscaler
+spec:
+  selector:
+    matchLabels:
+      app: cluster-autoscaler
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: cluster-autoscaler
+    spec:
+      priorityClassName: system-cluster-critical
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      serviceAccountName: cluster-autoscaler
+      containers:
+      - image: k8s.gcr.io/autoscaling/cluster-autoscaler:v1.27.3
+        name: cluster-autoscaler
+        resources:
+          limits:
+            cpu: 100m
+            memory: 600Mi
+          requests:
+            cpu: 100m
+            memory: 600Mi
+        command:
+        - ./cluster-autoscaler
+        - --v=4
+        - --stderrthreshold=info
+        - --cloud-provider=kind
+        - --skip-nodes-with-local-storage=false
+        - --expander=least-waste
+        - --node-group-auto-discovery=asg:tag=k8s.io/cluster-autoscaler/enabled,k8s.io/cluster-autoscaler/autoscaler-cluster
+        - --balance-similar-node-groups
+        - --scale-down-enabled=true
+        - --scale-down-delay-after-add=2m
+        - --scale-down-unneeded-time=2m
+        - --max-node-provision-time=5m
+        - --nodes=1:10:worker-nodes
+        env:
+        - name: AWS_REGION
+          value: us-east-1
+        volumeMounts:
+        - name: ssl-certs
+          mountPath: /etc/ssl/certs/ca-certificates.crt
+          readOnly: true
+        imagePullPolicy: "Always"
+      volumes:
+      - name: ssl-certs
+        hostPath:
+          path: "/etc/ssl/certs/ca-bundle.crt"
+EOF
+
+# For kind cluster, we need a simpler configuration
+cat << EOF > cluster-autoscaler-kind.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cluster-autoscaler
+  namespace: cluster-autoscaler
+  labels:
+    app: cluster-autoscaler
+spec:
+  selector:
+    matchLabels:
+      app: cluster-autoscaler
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: cluster-autoscaler
+    spec:
+      serviceAccountName: cluster-autoscaler
+      containers:
+      - image: busybox:1.35
+        name: cluster-autoscaler-simulator
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Cluster Autoscaler Simulator Started"
+          echo "Monitoring for scaling events..."
+          while true; do
+            # Check for pending pods
+            PENDING_PODS=$(kubectl get pods --all-namespaces --field-selector=status.phase=Pending --no-headers 2>/dev/null | wc -l || echo "0")
+            CURRENT_TIME=$(date)
+            
+            if [ "$PENDING_PODS" -gt 0 ]; then
+              echo "[$CURRENT_TIME] Found $PENDING_PODS pending pods - would trigger scale up"
+            else
+              echo "[$CURRENT_TIME] No pending pods - cluster stable"
+            fi
+            
+            # Check node utilization
+            echo "[$CURRENT_TIME] Current cluster status:"
+            kubectl get nodes --no-headers 2>/dev/null | wc -l | xargs echo "  Active nodes:"
+            kubectl get pods --all-namespaces --no-headers 2>/dev/null | wc -l | xargs echo "  Total pods:"
+            
+            sleep 30
+          done
+        resources:
+          requests:
+            cpu: 50m
+            memory: 100Mi
+          limits:
+            cpu: 100m
+            memory: 200Mi
+        env:
+        - name: KUBECONFIG
+          value: /var/run/secrets/kubernetes.io/serviceaccount
+EOF
+
+# Apply the kind-compatible autoscaler
+kubectl apply -f cluster-autoscaler-kind.yaml
+
+# Verify deployment
+kubectl get deployment cluster-autoscaler -n cluster-autoscaler
+kubectl get pods -n cluster-autoscaler
+Subtask 2.4: Configure Autoscaler Parameters
+Create a ConfigMap to configure autoscaler behavior.
+
+# Create autoscaler configuration
+cat << EOF > autoscaler-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-autoscaler-status
+  namespace: cluster-autoscaler
+data:
+  nodes.max: "10"
+  nodes.min: "2"
+  scale-down-delay-after-add: "2m"
+  scale-down-unneeded-time: "2m"
+  scale-down-utilization-threshold: "0.5"
+  skip-nodes-with-local-storage: "false"
+  skip-nodes-with-system-pods: "false"
+EOF
+
+# Apply configuration
+kubectl apply -f autoscaler-config.yaml
+
+# Verify configuration
+kubectl get configmap cluster-autoscaler-status -n cluster-autoscaler -o yaml
+Task 3: Simulate Load and Observe Automatic Node Scaling
+Subtask 3.1: Create Resource-Intensive Test Applications
+Deploy applications that will trigger autoscaling events.
+
+# Create a resource-intensive deployment
+cat << EOF > resource-intensive-app.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: resource-intensive-app
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: resource-intensive-app
+  template:
+    metadata:
+      labels:
+        app: resource-intensive-app
+    spec:
+      containers:
+      - name: cpu-intensive
+        image: busybox:1.35
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Starting CPU intensive workload..."
+          while true; do
+            # Simulate CPU intensive work
+            for i in $(seq 1 1000); do
+              echo "Processing batch $i" > /dev/null
+            done
+            sleep 1
+          done
+        resources:
+          requests:
+            cpu: 500m
+            memory: 256Mi
+          limits:
+            cpu: 1000m
+            memory: 512Mi
+      - name: memory-intensive
+        image: busybox:1.35
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Starting memory intensive workload..."
+          # Allocate memory gradually
+          dd if=/dev/zero of=/tmp/memory_test bs=1M count=100 2>/dev/null
+          while true; do
+            echo "Memory workload running..."
+            sleep 10
+          done
+        resources:
+          requests:
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            cpu: 500m
+            memory: 1Gi
+EOF
+
+# Deploy the application
+kubectl apply -f resource-intensive-app.yaml
+
+# Verify deployment
+kubectl get deployment resource-intensive-app
+kubectl get pods -l app=resource-intensive-app
+Subtask 3.2: Create Load Generator for Scale-Up Testing
+Create a deployment that generates multiple pods to trigger scale-up events.
+
+# Create load generator deployment
+cat << EOF > load-generator.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: load-generator
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: load-generator
+  template:
+    metadata:
+      labels:
+        app: load-generator
+    spec:
+      containers:
+      - name: load-generator
+        image: busybox:1.35
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Load generator started"
+          counter=1
+          while true; do
+            echo "Load cycle $counter - $(date)"
+            # Simulate varying load
+            sleep 5
+            counter=$((counter + 1))
+          done
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: scale-up-trigger
+  namespace: default
+spec:
+  parallelism: 5
+  completions: 5
+  template:
+    spec:
+      containers:
+      - name: worker
+        image: busybox:1.35
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Scale-up trigger job started: $(hostname)"
+          # Simulate work that requires resources
+          for i in $(seq 1 60); do
+            echo "Working... iteration $i"
+            sleep 2
+          done
+          echo "Job completed: $(hostname)"
+        resources:
+          requests:
+            cpu: 300m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+      restartPolicy: Never
+  backoffLimit: 3
+EOF
+
+# Deploy load generator
+kubectl apply -f load-generator.yaml
+
+# Monitor the deployment
+kubectl get deployment load-generator
+kubectl get job scale-up-trigger
+kubectl get pods
+Subtask 3.3: Monitor Cluster Autoscaler Behavior
+Set up monitoring to observe autoscaling decisions and events.
+
+# Create monitoring script
+cat << 'EOF' > monitor-autoscaling.sh
+#!/bin/bash
+
+echo "=== Cluster Autoscaler Monitoring Started ==="
+echo "Monitoring cluster scaling behavior..."
+echo
+
+# Function to display cluster status
+show_cluster_status() {
+    echo "=== Cluster Status at $(date) ==="
+    echo "Nodes:"
+    kubectl get nodes --no-headers | wc -l | xargs echo "  Total nodes:"
+    kubectl get nodes -o wide
+    echo
+    
+    echo "Pods by status:"
+    kubectl get pods --all-namespaces --no-headers | awk '{print $4}' | sort | uniq -c
+    echo
+    
+    echo "Resource usage:"
+    kubectl top nodes 2>/dev/null || echo "  Metrics not available yet"
+    echo
+    
+    echo "Pending pods:"
+    kubectl get pods --all-namespaces --field-selector=status.phase=Pending --no-headers | wc -l | xargs echo "  Count:"
+    kubectl get pods --all-namespaces --field-selector=status.phase=Pending
+    echo
+    
+    echo "Autoscaler logs (last 10 lines):"
+    kubectl logs -n cluster-autoscaler deployment/cluster-autoscaler --tail=10 2>/dev/null || echo "  No autoscaler logs available"
+    echo "=================================="
+    echo
+}
+
+# Monitor for 10 minutes
+for i in $(seq 1 20); do
+    show_cluster_status
+    sleep 30
+done
+EOF
+
+# Make script executable
+chmod +x monitor-autoscaling.sh
+
+# Run monitoring in background
+./monitor-autoscaling.sh > autoscaler-monitoring.log 2>&1 &
+MONITOR_PID=$!
+
+echo "Monitoring started with PID: $MONITOR_PID"
+echo "You can view real-time logs with: tail -f autoscaler-monitoring.log"
+Subtask 3.4: Trigger Scale-Up Events
+Create scenarios that will trigger the cluster autoscaler to add nodes.
+
+# Scale up the resource-intensive application
+kubectl scale deployment resource-intensive-app --replicas=3
+
+# Create additional high-resource jobs
+cat << EOF > high-resource-jobs.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: high-cpu-job-1
+spec:
+  template:
+    spec:
+      containers:
+      - name: cpu-worker
+        image: busybox:1.35
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "High CPU job started"
+          # CPU intensive task
+          while [ $(date +%s) -lt $(($(date +%s) + 300)) ]; do
+            echo "CPU intensive work..." > /dev/null
+          done
+        resources:
+          requests:
+            cpu: 800m
+            memory: 512Mi
+      restartPolicy: Never
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: high-cpu-job-2
+spec:
+  template:
+    spec:
+      containers:
+      - name: cpu-worker
+        image: busybox:1.35
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "High CPU job 2 started"
+          # CPU intensive task
+          while [ $(date +%s) -lt $(($(date +%s) + 300)) ]; do
+            echo "CPU intensive work 2..." > /dev/null
+          done
+        resources:
+          requests:
+            cpu: 800m
+            memory: 512Mi
+      restartPolicy: Never
+EOF
+
+# Deploy high-resource jobs
+kubectl apply -f high-resource-jobs.yaml
+
+# Monitor the scaling events
+echo "Checking for pending pods that should trigger scale-up..."
+kubectl get pods --all-namespaces | grep Pending
+
+# Check events for autoscaling activities
+kubectl get events --sort-by=.metadata.creationTimestamp | grep -i "scale\|autoscal"
+Subtask 3.5: Simulate Scale-Down Scenarios
+Create scenarios to test scale-down behavior.
+
+# Create a script to simulate scale-down
+cat << 'EOF' > simulate-scale-down.sh
+#!/bin/bash
+
+echo "=== Simulating Scale-Down Scenario ==="
+
+# First, let's see current resource usage
+echo "Current cluster state:"
+kubectl get nodes
+kubectl get pods --all-namespaces | grep -v kube-system | grep -v cluster-autoscaler
+
+echo
+echo "Scaling down applications to trigger node scale-down..."
+
+# Scale down deployments
+kubectl scale deployment resource-intensive-app --replicas=1
+kubectl scale deployment load-generator --replicas=0
+
+# Delete completed jobs
+kubectl delete job scale-up-trigger --ignore-not-found=true
+kubectl delete job high-cpu-job-1 --ignore-not-found=true
+kubectl delete job high-cpu-job-2 --ignore-not-found=true
+
+echo "Waiting for pods to terminate..."
+sleep 30
+
+echo "Current state after scale-down:"
+kubectl get pods --all-namespaces | grep -v kube-system | grep -v cluster-autoscaler
+
+echo
+echo "Monitoring for node scale-down events..."
+echo "Note: In a real cloud environment, unused nodes would be terminated after the scale-down delay period."
+
+# Monitor events
+kubectl get events --sort-by=.metadata.creationTimestamp | tail -20
+EOF
+
+# Make script executable and run it
+chmod +x simulate-scale-down.sh
+./simulate-scale-down.sh
+Subtask 3.6: Analyze Autoscaling Metrics and Logs
+Create tools to analyze the autoscaling behavior and performance.
+
+# Create analysis script
+cat << 'EOF' > analyze-autoscaling.sh
+#!/bin/bash
+
+echo "=== Cluster Autoscaler Analysis ==="
+echo
+
+# Check autoscaler pod status
+echo "1. Autoscaler Pod Status:"
+kubectl get pods -n cluster-autoscaler -o wide
+echo
+
+# Check autoscaler logs
+echo "2. Recent Autoscaler Activity:"
+kubectl logs -n cluster-autoscaler deployment/cluster-autoscaler --tail=50 2>/dev/null || echo "No autoscaler logs available"
+echo
+
+# Check cluster events related to scaling
+echo "3. Scaling Events:"
+kubectl get events --all-namespaces --sort-by=.metadata.creationTimestamp | grep -i "scale\|autoscal\|node" | tail -20
+echo
+
+# Check node status and labels
+echo "4. Node Information:"
+kubectl get nodes -o custom-columns="NAME:.metadata.name,STATUS:.status.conditions[?(@.type=='Ready')].status,ROLES:.metadata.labels.node-role\.kubernetes\.io/master,AGE:.metadata.creationTimestamp,VERSION:.status.nodeInfo.kubeletVersion"
+echo
+
+# Check resource utilization
+echo "5. Resource Utilization:"
+kubectl top nodes 2>/dev/null || echo "Metrics not available"
+echo
+
+# Check pod distribution across nodes
+echo "6. Pod Distribution:"
+kubectl get pods --all-namespaces -o wide | awk '{print $8}' | sort | uniq -c | grep -v NODE
+echo
+
+# Check for any pending pods
+echo "7. Pending Pods:"
+PENDING_COUNT=$(kubectl get pods --all-namespaces --field-selector=status.phase=Pending --no-headers | wc -l)
+echo "Pending pods count: $PENDING_COUNT"
+if [ $PENDING_COUNT -gt 0 ]; then
+    kubectl get pods --all-namespaces --field-selector=status.phase=Pending
+fi
+echo
+
+# Summary
+echo "8. Autoscaling Summary:"
+echo "   - Current nodes: $(kubectl get nodes --no-headers | wc -l)"
+echo "   - Running pods: $(kubectl get pods --all-namespaces --field-selector=status.phase=Running --no-headers | wc -l)"
+echo "   - Pending pods: $PENDING_COUNT"
+echo "   - Analysis complete at: $(date)"
+EOF
+
+# Make script executable and run analysis
+chmod +x analyze-autoscaling.sh
+./analyze-autoscaling.sh
+
+# Stop the monitoring process if it's still running
+if [ ! -z "$MONITOR_PID" ]; then
+    kill $MONITOR_PID 2>/dev/null
+    echo "Monitoring process stopped."
+fi
+
+# Display final monitoring log
+echo
+echo "=== Final Monitoring Log Summary ==="
+if [ -f autoscaler-monitoring.log ]; then
+    tail -50 autoscaler-monitoring.log
+else
+    echo "No monitoring log found."
+fi
+Task 4: Advanced Autoscaling Configuration and Optimization
+Subtask 4.1: Configure Custom Scaling Policies
+Create advanced autoscaling configurations with custom policies.
+
+# Create custom scaling policy configuration
+cat << EOF > custom-scaling-policy.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-autoscaler-custom-config
+  namespace: cluster-autoscaler
+data:
+  # Scaling behavior configuration
+  scale-up-policy: |
+    # Maximum nodes to add at once
+    max-nodes-per-scale-up: "3"
+    # Time to wait between scale-up events
+    scale-up-cooldown: "3m"
+    # CPU threshold for scale-up
+    cpu-scale-up-threshold: "70"
+    # Memory threshold for scale-up
+    memory-scale-up-threshold: "80"
+  
+  scale-down-policy: |
+    # Time to wait before scaling down
+    scale-down-delay: "5m"
+    # Utilization threshold for scale-down
+    scale-down-threshold: "30"
+    # Maximum nodes to remove at once
+    max-nodes-per-scale-down: "2"
+    # Time between scale-down events
+    scale-down-cooldown: "5m"
+  
+  node-group-config: |
+    # Node group specific settings
+    worker-nodes:
+      min-size: 2
+      max-size: 8
+      desired-capacity: 2
+      instance-type: "standard"
+      
+  priority-config: |
+    # Priority expander configuration
+    expander: "priority"
+    priorities: |
+      10:
+        - worker-nodes-spot
+      5:
+        - worker-nodes-ondemand
+EOF
+
+# Apply custom configuration
+kubectl apply -f custom-scaling-policy.yaml
+
+# Verify configuration
+kubectl get configmap cluster-autoscaler-custom-config -n cluster-autoscaler -o yaml
+Subtask 4.2: Implement Node Affinity and Anti-Affinity Rules
+Configure workload placement rules that work with autoscaling.
+
+# Create workload with node affinity
+cat << EOF > affinity-workload.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: affinity-test-app
+  namespace: default
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: affinity-test-app
+  template:
+    metadata:
+      labels:
+        app: affinity-test-app
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: node-type
+                operator: In
+                values:
+                - worker
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - affinity-test-app
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: app
+        image: busybox:1.35
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Affinity test app started on node: $(hostname)"
+          while true; do
+            echo "Running with affinity rules... $(date)"
+            sleep 30
+          done
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: 400m
+            memory: 512Mi
+EOF
+
+# Deploy affinity workload
+kubectl apply -f affinity-workload.yaml
+
+# Check pod placement
+kubectl get pods -o wide -l app=affinity-test-app
+Subtask 4.3: Configure Resource Quotas and Limits
+Set up resource quotas that work with autoscaling.
+
+# Create namespace with resource quotas
+kubectl create namespace autoscale-test
+
+# Create resource quota
+cat << EOF > resource-quota.yaml
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: autoscale-quota
+  namespace: autoscale-test
+spec:
+  hard:
+    requests.cpu: "4"
+    requests.memory: 8Gi
+    limits.cpu: "8"
+    limits.memory:
