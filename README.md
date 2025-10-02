@@ -5,7 +5,10 @@
   <img src="https://img.shields.io/badge/rating-★★★★★-brightgreen" alt="Rating" />
   <img src="https://img.shields.io/github/stars/Waqar-cyberSecurity/Nodepad?style=social" alt="Stars" />
   <img src="https://img.shields.io/github/forks/Waqar-cyberSecurity/Nodepad?style=social" alt="Forks" />
-</p
+  <a href="https://github.com/Waqar-cyberSecurity">
+    <img src="https://img.shields.io/badge/GitHub-Profile-181717?style=flat&logo=github&logoColor=white" alt="GitHub Profile" />
+  </a>
+</p>
 
 
 ---
