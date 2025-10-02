@@ -8,6 +8,6 @@
 
 
 # CI/CD Pipelines. 🔄
-<img src="cicd1.png" alt="logo" width="600"/>
+<img src="cicd1.png" alt="logo" width="800"/>
 
 ---
