@@ -6,7 +6,7 @@
 
 
 
-# CI/CD pipelines. 🔄
-<img src="cicd.png" alt="logo" width="600"/>
+# CI/CD Pipelines. 🔄
+<img src="cicd1.png" alt="logo" width="600"/>
 
 ---
