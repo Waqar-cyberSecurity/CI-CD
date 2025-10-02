@@ -5,7 +5,8 @@
 </p>
 
 
-# CI/CD pipelines implementation with modern DevOps tools. 🔄
 
+# CI/CD pipelines. 🔄
+<img src="cicd.png" alt="logo" width="600"/>
 
-<img src="cicd.png" alt="logo" width="800"/>
+---
