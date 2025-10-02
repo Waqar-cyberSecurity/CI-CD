@@ -1,0 +1,441 @@
+Lab 19: Service Mesh with Istio
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Install and configure Istio service mesh on a Kubernetes cluster
+Deploy sample applications with Istio sidecar injection
+Implement service-to-service communication using Istio
+Configure traffic management policies including routing and load balancing
+Set up observability features including metrics, tracing, and logging
+Use Istio's security features for service authentication and authorization
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Kubernetes concepts (pods, services, deployments)
+Familiarity with YAML configuration files
+Basic knowledge of microservices architecture
+Understanding of networking concepts
+Experience with command-line interface operations
+Lab Environment
+Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated environment. The provided Linux machine is bare metal with no pre-installed tools, so you will install all required components during the lab exercises.
+
+Task 1: Install Kubernetes and Istio
+Subtask 1.1: Install Docker and Kubernetes
+First, we need to set up a Kubernetes cluster using kind (Kubernetes in Docker).
+
+# Update system packages
+sudo apt update && sudo apt upgrade -y
+
+# Install Docker
+sudo apt install -y docker.io
+sudo systemctl start docker
+sudo systemctl enable docker
+sudo usermod -aG docker $USER
+
+# Install kubectl
+curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+
+# Install kind
+curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
+chmod +x ./kind
+sudo mv ./kind /usr/local/bin/kind
+
+# Logout and login again to apply Docker group changes
+newgrp docker
+Subtask 1.2: Create Kubernetes Cluster
+Create a Kubernetes cluster optimized for Istio:
+
+# Create kind cluster configuration
+cat <<EOF > kind-config.yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane
+  kubeadmConfigPatches:
+  - |
+    kind: InitConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        node-labels: "ingress-ready=true"
+  extraPortMappings:
+  - containerPort: 80
+    hostPort: 80
+    protocol: TCP
+  - containerPort: 443
+    hostPort: 443
+    protocol: TCP
+  - containerPort: 15021
+    hostPort: 15021
+    protocol: TCP
+EOF
+
+# Create the cluster
+kind create cluster --config=kind-config.yaml --name=istio-lab
+
+# Verify cluster is running
+kubectl cluster-info
+kubectl get nodes
+Subtask 1.3: Download and Install Istio
+Download and install the latest version of Istio:
+
+# Download Istio
+curl -L https://istio.io/downloadIstio | sh -
+
+# Move to Istio directory and add to PATH
+cd istio-*
+export PATH=$PWD/bin:$PATH
+echo 'export PATH=$PWD/bin:$PATH' >> ~/.bashrc
+
+# Install Istio with demo profile
+istioctl install --set values.defaultRevision=default --set values.pilot.env.EXTERNAL_ISTIOD=false -y
+
+# Verify installation
+kubectl get pods -n istio-system
+kubectl get svc -n istio-system
+Subtask 1.4: Enable Istio Injection
+Enable automatic sidecar injection for the default namespace:
+
+# Label the default namespace for automatic injection
+kubectl label namespace default istio-injection=enabled
+
+# Verify the label
+kubectl get namespace -L istio-injection
+Task 2: Deploy Sample Application with Istio
+Subtask 2.1: Deploy Bookinfo Sample Application
+Deploy Istio's sample Bookinfo application to demonstrate service mesh capabilities:
+
+# Deploy the Bookinfo application
+kubectl apply -f samples/bookinfo/platform/kube/bookinfo.yaml
+
+# Verify all services and pods are running
+kubectl get services
+kubectl get pods
+
+# Wait for all pods to be ready
+kubectl wait --for=condition=Ready pod --all --timeout=300s
+Subtask 2.2: Create Istio Gateway and Virtual Service
+Configure ingress gateway to access the application:
+
+# Apply the Bookinfo gateway configuration
+kubectl apply -f samples/bookinfo/networking/bookinfo-gateway.yaml
+
+# Verify gateway and virtual service
+kubectl get gateway
+kubectl get virtualservice
+Subtask 2.3: Configure Port Forwarding
+Set up port forwarding to access the application:
+
+# Get the ingress gateway service
+kubectl get svc istio-ingressgateway -n istio-system
+
+# Set up port forwarding for the ingress gateway
+kubectl port-forward -n istio-system svc/istio-ingressgateway 8080:80 &
+
+# Test the application
+curl -s http://localhost:8080/productpage | grep -o "<title>.*</title>"
+Task 3: Configure Traffic Management and Observability
+Subtask 3.1: Configure Destination Rules
+Create destination rules to define service subsets:
+
+# Create destination rules for all services
+cat <<EOF | kubectl apply -f -
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: productpage
+spec:
+  host: productpage
+  subsets:
+  - name: v1
+    labels:
+      version: v1
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: reviews
+spec:
+  host: reviews
+  subsets:
+  - name: v1
+    labels:
+      version: v1
+  - name: v2
+    labels:
+      version: v2
+  - name: v3
+    labels:
+      version: v3
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: ratings
+spec:
+  host: ratings
+  subsets:
+  - name: v1
+    labels:
+      version: v1
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: details
+spec:
+  host: details
+  subsets:
+  - name: v1
+    labels:
+      version: v1
+EOF
+
+# Verify destination rules
+kubectl get destinationrules
+Subtask 3.2: Implement Traffic Routing
+Configure traffic routing to demonstrate canary deployments:
+
+# Route all traffic to v1 of reviews service
+cat <<EOF | kubectl apply -f -
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: reviews
+spec:
+  http:
+  - match:
+    - headers:
+        end-user:
+          exact: jason
+    route:
+    - destination:
+        host: reviews
+        subset: v2
+  - route:
+    - destination:
+        host: reviews
+        subset: v1
+EOF
+
+# Test the routing
+curl -s http://localhost:8080/productpage | grep -A 5 -B 5 "reviews"
+Subtask 3.3: Configure Load Balancing
+Implement weighted routing for canary deployments:
+
+# Configure 50/50 traffic split between v1 and v3
+cat <<EOF | kubectl apply -f -
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: reviews
+spec:
+  http:
+  - route:
+    - destination:
+        host: reviews
+        subset: v1
+      weight: 50
+    - destination:
+        host: reviews
+        subset: v3
+      weight: 50
+EOF
+
+# Verify the configuration
+kubectl get virtualservice reviews -o yaml
+Subtask 3.4: Install and Configure Observability Tools
+Install Prometheus, Grafana, and Jaeger for observability:
+
+# Install observability addons
+kubectl apply -f samples/addons/prometheus.yaml
+kubectl apply -f samples/addons/grafana.yaml
+kubectl apply -f samples/addons/jaeger.yaml
+kubectl apply -f samples/addons/kiali.yaml
+
+# Wait for all observability pods to be ready
+kubectl wait --for=condition=Ready pod --all -n istio-system --timeout=300s
+
+# Verify observability services
+kubectl get pods -n istio-system | grep -E "(prometheus|grafana|jaeger|kiali)"
+Subtask 3.5: Access Observability Dashboards
+Set up port forwarding to access monitoring dashboards:
+
+# Port forward for Kiali dashboard
+kubectl port-forward -n istio-system svc/kiali 20001:20001 &
+
+# Port forward for Grafana dashboard
+kubectl port-forward -n istio-system svc/grafana 3000:3000 &
+
+# Port forward for Jaeger dashboard
+kubectl port-forward -n istio-system svc/jaeger 16686:16686 &
+
+# Generate some traffic to see metrics
+for i in {1..100}; do
+  curl -s http://localhost:8080/productpage > /dev/null
+  sleep 0.1
+done
+Subtask 3.6: Configure Circuit Breaker
+Implement circuit breaker pattern for resilience:
+
+# Configure circuit breaker for ratings service
+cat <<EOF | kubectl apply -f -
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: ratings-circuit-breaker
+spec:
+  host: ratings
+  trafficPolicy:
+    outlierDetection:
+      consecutiveErrors: 3
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+    connectionPool:
+      tcp:
+        maxConnections: 1
+      http:
+        http1MaxPendingRequests: 1
+        maxRequestsPerConnection: 2
+        maxRetries: 3
+        consecutiveGatewayErrors: 3
+        interval: 30s
+        baseEjectionTime: 30s
+EOF
+
+# Verify circuit breaker configuration
+kubectl get destinationrule ratings-circuit-breaker -o yaml
+Subtask 3.7: Implement Security Policies
+Configure mutual TLS and authorization policies:
+
+# Enable strict mTLS for the entire mesh
+cat <<EOF | kubectl apply -f -
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: istio-system
+spec:
+  mtls:
+    mode: STRICT
+EOF
+
+# Create authorization policy
+cat <<EOF | kubectl apply -f -
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: productpage-viewer
+spec:
+  selector:
+    matchLabels:
+      app: productpage
+  rules:
+  - from:
+    - source:
+        principals: ["cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account"]
+  - to:
+    - operation:
+        methods: ["GET"]
+EOF
+
+# Verify security policies
+kubectl get peerauthentication
+kubectl get authorizationpolicy
+Verification and Testing
+Test Service Mesh Functionality
+Verify that all components are working correctly:
+
+# Check Istio proxy status
+istioctl proxy-status
+
+# Verify mTLS configuration
+istioctl authn tls-check productpage.default.svc.cluster.local
+
+# Check configuration synchronization
+istioctl proxy-config cluster productpage-v1-$(kubectl get pod -l app=productpage -o jsonpath='{.items[0].metadata.name}')
+
+# Generate traffic and check metrics
+echo "Generating traffic for 2 minutes..."
+timeout 120 bash -c 'while true; do curl -s http://localhost:8080/productpage > /dev/null; sleep 1; done'
+
+# Check service mesh metrics
+kubectl exec -n istio-system deployment/prometheus -- promtool query instant 'istio_requests_total'
+Access Dashboards
+Access the observability dashboards to view metrics and traces:
+
+echo "Access the following dashboards:"
+echo "Kiali (Service Mesh Topology): http://localhost:20001"
+echo "Grafana (Metrics): http://localhost:3000"
+echo "Jaeger (Distributed Tracing): http://localhost:16686"
+echo ""
+echo "Username for Kiali: admin"
+echo "Password for Kiali: admin"
+Troubleshooting Tips
+Common Issues and Solutions
+Issue 1: Pods not starting
+
+# Check pod status and logs
+kubectl get pods -o wide
+kubectl describe pod <pod-name>
+kubectl logs <pod-name> -c istio-proxy
+Issue 2: Sidecar injection not working
+
+# Verify namespace labeling
+kubectl get namespace default --show-labels
+
+# Check injection webhook
+kubectl get mutatingwebhookconfiguration istio-sidecar-injector -o yaml
+Issue 3: Traffic not routing correctly
+
+# Check virtual service configuration
+kubectl get virtualservice -o yaml
+
+# Verify destination rules
+kubectl get destinationrule -o yaml
+
+# Check Envoy configuration
+istioctl proxy-config route <pod-name>
+Issue 4: Observability tools not accessible
+
+# Check if observability pods are running
+kubectl get pods -n istio-system
+
+# Verify port forwarding
+ps aux | grep kubectl | grep port-forward
+
+# Restart port forwarding if needed
+pkill -f "kubectl port-forward"
+# Then restart the port-forward commands
+Cleanup
+To clean up the lab environment:
+
+# Stop port forwarding processes
+pkill -f "kubectl port-forward"
+
+# Delete the kind cluster
+kind delete cluster --name=istio-lab
+
+# Remove downloaded files
+cd ..
+rm -rf istio-*
+rm kind-config.yaml
+Conclusion
+In this lab, you have successfully:
+
+Installed Istio service mesh on a Kubernetes cluster, providing a powerful platform for microservices communication
+Deployed a sample application with automatic sidecar injection, demonstrating how Istio integrates with existing applications
+Configured traffic management including routing, load balancing, and circuit breaker patterns for resilient service communication
+Implemented observability features using Prometheus, Grafana, Jaeger, and Kiali for comprehensive monitoring and troubleshooting
+Applied security policies including mutual TLS and authorization rules to secure service-to-service communication
+Why This Matters:
+
+Service mesh technology like Istio is crucial in modern microservices architectures because it:
+
+Simplifies service communication by handling complex networking concerns at the infrastructure level
+Provides observability into service interactions without requiring application code changes
+Enhances security through automatic encryption and fine-grained access control
+Enables advanced traffic management for deployment strategies like canary releases and blue-green deployments
+Improves reliability through features like circuit breakers, retries, and timeouts
+Understanding service mesh concepts and Istio specifically prepares you for managing complex distributed systems in production environments, making your applications more secure, observable, and resilient.
