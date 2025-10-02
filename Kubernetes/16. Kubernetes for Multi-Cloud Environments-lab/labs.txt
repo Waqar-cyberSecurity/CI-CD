@@ -1,0 +1,961 @@
+Lab 16: Kubernetes for Multi-Cloud Environments
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Understand the concepts and benefits of multi-cloud Kubernetes deployments
+Set up and configure multiple Kubernetes clusters using open-source tools
+Implement networking solutions for cross-cluster communication
+Configure service discovery mechanisms between different clusters
+Deploy applications across multiple simulated cloud environments
+Manage and monitor multi-cluster Kubernetes environments
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Kubernetes concepts (pods, services, deployments)
+Familiarity with Linux command line operations
+Basic knowledge of networking concepts (DNS, load balancing)
+Understanding of YAML configuration files
+Experience with container technologies (Docker concepts)
+Lab Environment Setup
+Note: Al Nafi provides Linux-based cloud machines for this lab. Simply click "Start Lab" to access your dedicated Linux machine. The provided machine is bare metal with no pre-installed tools, so you will install all required tools during the lab exercises.
+
+Task 1: Environment Preparation and Tool Installation
+Subtask 1.1: Update System and Install Dependencies
+First, let's update the system and install essential tools:
+
+# Update package repositories
+sudo apt update && sudo apt upgrade -y
+
+# Install essential tools
+sudo apt install -y curl wget apt-transport-https ca-certificates gnupg lsb-release git vim
+
+# Install Docker
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io
+
+# Add current user to docker group
+sudo usermod -aG docker $USER
+newgrp docker
+
+# Verify Docker installation
+docker --version
+Subtask 1.2: Install Kubernetes Tools
+Install kubectl, kind (Kubernetes in Docker), and helm:
+
+# Install kubectl
+curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+
+# Install kind (Kubernetes in Docker)
+curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
+chmod +x ./kind
+sudo mv ./kind /usr/local/bin/kind
+
+# Install Helm
+curl https://baltocdn.com/helm/signing.asc | gpg --dearmor | sudo tee /usr/share/keyrings/helm.gpg > /dev/null
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/helm.gpg] https://baltocdn.com/helm/stable/debian/ all main" | sudo tee /etc/apt/sources.list.d/helm-stable-debian.list
+sudo apt update
+sudo apt install -y helm
+
+# Verify installations
+kubectl version --client
+kind version
+helm version
+Subtask 1.3: Create Working Directory Structure
+Set up organized directories for the lab:
+
+# Create main lab directory
+mkdir -p ~/multicloud-k8s-lab
+cd ~/multicloud-k8s-lab
+
+# Create subdirectories for different components
+mkdir -p {aws-cluster,gcp-cluster,networking,applications,monitoring}
+
+# Create configuration directory
+mkdir -p configs
+Task 2: Configure and Deploy Kubernetes Clusters
+Subtask 2.1: Create AWS-Simulated Cluster Configuration
+Create a configuration file for the first cluster (simulating AWS environment):
+
+# Create AWS cluster configuration
+cat > configs/aws-cluster-config.yaml << 'EOF'
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: aws-cluster
+networking:
+  podSubnet: "10.240.0.0/16"
+  serviceSubnet: "10.241.0.0/16"
+  apiServerAddress: "127.0.0.1"
+  apiServerPort: 6443
+nodes:
+- role: control-plane
+  kubeadmConfigPatches:
+  - |
+    kind: InitConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        node-labels: "cloud=aws,region=us-east-1"
+- role: worker
+  kubeadmConfigPatches:
+  - |
+    kind: JoinConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        node-labels: "cloud=aws,region=us-east-1"
+- role: worker
+  kubeadmConfigPatches:
+  - |
+    kind: JoinConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        node-labels: "cloud=aws,region=us-east-1"
+EOF
+Subtask 2.2: Create GCP-Simulated Cluster Configuration
+Create a configuration file for the second cluster (simulating GCP environment):
+
+# Create GCP cluster configuration
+cat > configs/gcp-cluster-config.yaml << 'EOF'
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: gcp-cluster
+networking:
+  podSubnet: "10.242.0.0/16"
+  serviceSubnet: "10.243.0.0/16"
+  apiServerAddress: "127.0.0.1"
+  apiServerPort: 6444
+nodes:
+- role: control-plane
+  kubeadmConfigPatches:
+  - |
+    kind: InitConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        node-labels: "cloud=gcp,region=us-central1"
+- role: worker
+  kubeadmConfigPatches:
+  - |
+    kind: JoinConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        node-labels: "cloud=gcp,region=us-central1"
+- role: worker
+  kubeadmConfigPatches:
+  - |
+    kind: JoinConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        node-labels: "cloud=gcp,region=us-central1"
+EOF
+Subtask 2.3: Deploy Both Clusters
+Deploy the AWS-simulated cluster:
+
+# Create AWS cluster
+kind create cluster --config=configs/aws-cluster-config.yaml --name=aws-cluster
+
+# Verify AWS cluster
+kubectl cluster-info --context kind-aws-cluster
+kubectl get nodes --context kind-aws-cluster
+Deploy the GCP-simulated cluster:
+
+# Create GCP cluster
+kind create cluster --config=configs/gcp-cluster-config.yaml --name=gcp-cluster
+
+# Verify GCP cluster
+kubectl cluster-info --context kind-gcp-cluster
+kubectl get nodes --context kind-gcp-cluster
+Subtask 2.4: Configure kubectl Contexts
+Set up convenient context switching:
+
+# List available contexts
+kubectl config get-contexts
+
+# Create aliases for easier context switching
+echo 'alias k-aws="kubectl --context kind-aws-cluster"' >> ~/.bashrc
+echo 'alias k-gcp="kubectl --context kind-gcp-cluster"' >> ~/.bashrc
+source ~/.bashrc
+
+# Test context switching
+k-aws get nodes
+k-gcp get nodes
+Task 3: Set Up Networking and Service Discovery
+Subtask 3.1: Install and Configure MetalLB Load Balancer
+Install MetalLB on both clusters for load balancing:
+
+# Install MetalLB on AWS cluster
+k-aws apply -f https://raw.githubusercontent.com/metallb/metallb/v0.13.12/config/manifests/metallb-native.yaml
+
+# Install MetalLB on GCP cluster
+k-gcp apply -f https://raw.githubusercontent.com/metallb/metallb/v0.13.12/config/manifests/metallb-native.yaml
+
+# Wait for MetalLB to be ready
+echo "Waiting for MetalLB to be ready..."
+k-aws wait --namespace metallb-system --for=condition=ready pod --selector=app=metallb --timeout=300s
+k-gcp wait --namespace metallb-system --for=condition=ready pod --selector=app=metallb --timeout=300s
+Configure IP address pools for MetalLB:
+
+# Create MetalLB configuration for AWS cluster
+cat > networking/metallb-aws-config.yaml << 'EOF'
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: aws-pool
+  namespace: metallb-system
+spec:
+  addresses:
+  - 172.18.255.200-172.18.255.250
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: aws-l2-adv
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+  - aws-pool
+EOF
+
+# Create MetalLB configuration for GCP cluster
+cat > networking/metallb-gcp-config.yaml << 'EOF'
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: gcp-pool
+  namespace: metallb-system
+spec:
+  addresses:
+  - 172.19.255.200-172.19.255.250
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: gcp-l2-adv
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+  - gcp-pool
+EOF
+
+# Apply MetalLB configurations
+k-aws apply -f networking/metallb-aws-config.yaml
+k-gcp apply -f networking/metallb-gcp-config.yaml
+Subtask 3.2: Install CoreDNS for Service Discovery
+Configure CoreDNS for cross-cluster service discovery:
+
+# Create custom CoreDNS configuration for AWS cluster
+cat > networking/coredns-aws-config.yaml << 'EOF'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns-custom
+  namespace: kube-system
+data:
+  Corefile: |
+    .:53 {
+        errors
+        health {
+           lameduck 5s
+        }
+        ready
+        kubernetes cluster.local in-addr.arpa ip6.arpa {
+           pods insecure
+           fallthrough in-addr.arpa ip6.arpa
+           ttl 30
+        }
+        prometheus :9153
+        forward . /etc/resolv.conf {
+           max_concurrent 1000
+        }
+        cache 30
+        loop
+        reload
+        loadbalance
+    }
+    gcp.local:53 {
+        errors
+        cache 30
+        forward . 172.19.0.1
+    }
+EOF
+
+# Create custom CoreDNS configuration for GCP cluster
+cat > networking/coredns-gcp-config.yaml << 'EOF'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns-custom
+  namespace: kube-system
+data:
+  Corefile: |
+    .:53 {
+        errors
+        health {
+           lameduck 5s
+        }
+        ready
+        kubernetes cluster.local in-addr.arpa ip6.arpa {
+           pods insecure
+           fallthrough in-addr.arpa ip6.arpa
+           ttl 30
+        }
+        prometheus :9153
+        forward . /etc/resolv.conf {
+           max_concurrent 1000
+        }
+        cache 30
+        loop
+        reload
+        loadbalance
+    }
+    aws.local:53 {
+        errors
+        cache 30
+        forward . 172.18.0.1
+    }
+EOF
+Subtask 3.3: Deploy Cross-Cluster Service Discovery
+Create a service discovery solution using External-DNS simulation:
+
+# Create namespace for cross-cluster services
+k-aws create namespace multicloud
+k-gcp create namespace multicloud
+
+# Create a service registry deployment for AWS cluster
+cat > networking/service-registry-aws.yaml << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: service-registry
+  namespace: multicloud
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: service-registry
+  template:
+    metadata:
+      labels:
+        app: service-registry
+    spec:
+      containers:
+      - name: registry
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: registry-config
+          mountPath: /etc/nginx/conf.d
+      volumes:
+      - name: registry-config
+        configMap:
+          name: registry-config
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: registry-config
+  namespace: multicloud
+data:
+  default.conf: |
+    server {
+        listen 80;
+        location /health {
+            return 200 'AWS Service Registry OK';
+            add_header Content-Type text/plain;
+        }
+        location /services {
+            return 200 '{"cluster": "aws", "services": ["web-app", "api-service"]}';
+            add_header Content-Type application/json;
+        }
+    }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: service-registry
+  namespace: multicloud
+spec:
+  selector:
+    app: service-registry
+  ports:
+  - port: 80
+    targetPort: 80
+  type: LoadBalancer
+EOF
+
+# Create a service registry deployment for GCP cluster
+cat > networking/service-registry-gcp.yaml << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: service-registry
+  namespace: multicloud
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: service-registry
+  template:
+    metadata:
+      labels:
+        app: service-registry
+    spec:
+      containers:
+      - name: registry
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: registry-config
+          mountPath: /etc/nginx/conf.d
+      volumes:
+      - name: registry-config
+        configMap:
+          name: registry-config
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: registry-config
+  namespace: multicloud
+data:
+  default.conf: |
+    server {
+        listen 80;
+        location /health {
+            return 200 'GCP Service Registry OK';
+            add_header Content-Type text/plain;
+        }
+        location /services {
+            return 200 '{"cluster": "gcp", "services": ["database", "cache-service"]}';
+            add_header Content-Type application/json;
+        }
+    }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: service-registry
+  namespace: multicloud
+spec:
+  selector:
+    app: service-registry
+  ports:
+  - port: 80
+    targetPort: 80
+  type: LoadBalancer
+EOF
+
+# Deploy service registries
+k-aws apply -f networking/service-registry-aws.yaml
+k-gcp apply -f networking/service-registry-gcp.yaml
+Subtask 3.4: Verify Cross-Cluster Networking
+Test the networking setup:
+
+# Wait for services to be ready
+echo "Waiting for services to be ready..."
+k-aws wait --namespace multicloud --for=condition=ready pod --selector=app=service-registry --timeout=300s
+k-gcp wait --namespace multicloud --for=condition=ready pod --selector=app=service-registry --timeout=300s
+
+# Get external IPs
+echo "AWS Service Registry External IP:"
+k-aws get service service-registry -n multicloud -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+echo ""
+
+echo "GCP Service Registry External IP:"
+k-gcp get service service-registry -n multicloud -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+echo ""
+
+# Test connectivity (store IPs for later use)
+AWS_REGISTRY_IP=$(k-aws get service service-registry -n multicloud -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+GCP_REGISTRY_IP=$(k-gcp get service service-registry -n multicloud -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+echo "AWS Registry IP: $AWS_REGISTRY_IP"
+echo "GCP Registry IP: $GCP_REGISTRY_IP"
+Task 4: Deploy Multi-Cloud Applications
+Subtask 4.1: Create a Multi-Tier Application
+Deploy a web application on AWS cluster and database on GCP cluster:
+
+# Create web application for AWS cluster
+cat > applications/web-app-aws.yaml << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-app
+  namespace: multicloud
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web-app
+      tier: frontend
+  template:
+    metadata:
+      labels:
+        app: web-app
+        tier: frontend
+    spec:
+      containers:
+      - name: web
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        env:
+        - name: CLUSTER_NAME
+          value: "AWS"
+        - name: DATABASE_URL
+          value: "http://database.gcp.local"
+        volumeMounts:
+        - name: web-config
+          mountPath: /etc/nginx/conf.d
+      volumes:
+      - name: web-config
+        configMap:
+          name: web-config
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-config
+  namespace: multicloud
+data:
+  default.conf: |
+    server {
+        listen 80;
+        location / {
+            return 200 'Web App running on AWS Cluster - Connected to GCP Database';
+            add_header Content-Type text/plain;
+        }
+        location /health {
+            return 200 'OK';
+            add_header Content-Type text/plain;
+        }
+    }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-app
+  namespace: multicloud
+spec:
+  selector:
+    app: web-app
+  ports:
+  - port: 80
+    targetPort: 80
+  type: LoadBalancer
+EOF
+
+# Create database application for GCP cluster
+cat > applications/database-gcp.yaml << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: database
+  namespace: multicloud
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: database
+      tier: backend
+  template:
+    metadata:
+      labels:
+        app: database
+        tier: backend
+    spec:
+      containers:
+      - name: db
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        env:
+        - name: CLUSTER_NAME
+          value: "GCP"
+        volumeMounts:
+        - name: db-config
+          mountPath: /etc/nginx/conf.d
+      volumes:
+      - name: db-config
+        configMap:
+          name: db-config
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: db-config
+  namespace: multicloud
+data:
+  default.conf: |
+    server {
+        listen 80;
+        location / {
+            return 200 '{"status": "connected", "cluster": "GCP", "data": "sample_data"}';
+            add_header Content-Type application/json;
+        }
+        location /health {
+            return 200 'Database OK';
+            add_header Content-Type text/plain;
+        }
+    }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: database
+  namespace: multicloud
+spec:
+  selector:
+    app: database
+  ports:
+  - port: 80
+    targetPort: 80
+  type: LoadBalancer
+EOF
+
+# Deploy applications
+k-aws apply -f applications/web-app-aws.yaml
+k-gcp apply -f applications/database-gcp.yaml
+Subtask 4.2: Create Cross-Cluster Service Endpoints
+Create endpoint services for cross-cluster communication:
+
+# Create external service endpoint in AWS cluster pointing to GCP database
+cat > applications/gcp-database-endpoint-aws.yaml << 'EOF'
+apiVersion: v1
+kind: Service
+metadata:
+  name: gcp-database
+  namespace: multicloud
+spec:
+  type: ExternalName
+  externalName: database.multicloud.svc.cluster.local
+  ports:
+  - port: 80
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: gcp-database-direct
+  namespace: multicloud
+subsets:
+- addresses:
+  - ip: 172.19.255.200  # This will be updated with actual GCP service IP
+  ports:
+  - port: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gcp-database-direct
+  namespace: multicloud
+spec:
+  ports:
+  - port: 80
+    targetPort: 80
+EOF
+
+# Create external service endpoint in GCP cluster pointing to AWS web app
+cat > applications/aws-webapp-endpoint-gcp.yaml << 'EOF'
+apiVersion: v1
+kind: Service
+metadata:
+  name: aws-webapp
+  namespace: multicloud
+spec:
+  type: ExternalName
+  externalName: web-app.multicloud.svc.cluster.local
+  ports:
+  - port: 80
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: aws-webapp-direct
+  namespace: multicloud
+subsets:
+- addresses:
+  - ip: 172.18.255.200  # This will be updated with actual AWS service IP
+  ports:
+  - port: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aws-webapp-direct
+  namespace: multicloud
+spec:
+  ports:
+  - port: 80
+    targetPort: 80
+EOF
+
+# Apply endpoint configurations
+k-aws apply -f applications/gcp-database-endpoint-aws.yaml
+k-gcp apply -f applications/aws-webapp-endpoint-gcp.yaml
+Subtask 4.3: Verify Multi-Cloud Application Deployment
+Test the deployed applications:
+
+# Wait for deployments to be ready
+echo "Waiting for applications to be ready..."
+k-aws wait --namespace multicloud --for=condition=ready pod --selector=app=web-app --timeout=300s
+k-gcp wait --namespace multicloud --for=condition=ready pod --selector=app=database --timeout=300s
+
+# Get application service IPs
+echo "Getting service external IPs..."
+AWS_WEBAPP_IP=$(k-aws get service web-app -n multicloud -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+GCP_DATABASE_IP=$(k-gcp get service database -n multicloud -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+echo "AWS Web App IP: $AWS_WEBAPP_IP"
+echo "GCP Database IP: $GCP_DATABASE_IP"
+
+# Test applications
+echo "Testing AWS Web Application:"
+curl -s http://$AWS_WEBAPP_IP/ || echo "Web app not yet accessible"
+
+echo "Testing GCP Database:"
+curl -s http://$GCP_DATABASE_IP/ || echo "Database not yet accessible"
+Task 5: Implement Monitoring and Management
+Subtask 5.1: Deploy Monitoring Stack
+Install Prometheus and Grafana for monitoring:
+
+# Add Prometheus Helm repository
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+
+# Install Prometheus on AWS cluster
+k-aws create namespace monitoring
+helm install prometheus prometheus-community/kube-prometheus-stack \
+  --namespace monitoring \
+  --kube-context kind-aws-cluster \
+  --set grafana.service.type=LoadBalancer \
+  --set prometheus.service.type=LoadBalancer
+
+# Install Prometheus on GCP cluster
+k-gcp create namespace monitoring
+helm install prometheus prometheus-community/kube-prometheus-stack \
+  --namespace monitoring \
+  --kube-context kind-gcp-cluster \
+  --set grafana.service.type=LoadBalancer \
+  --set prometheus.service.type=LoadBalancer
+Subtask 5.2: Create Multi-Cluster Dashboard
+Create a custom dashboard configuration:
+
+# Create multi-cluster monitoring configuration
+cat > monitoring/multicloud-dashboard.yaml << 'EOF'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: multicloud-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  multicloud-dashboard.json: |
+    {
+      "dashboard": {
+        "id": null,
+        "title": "Multi-Cloud Kubernetes Dashboard",
+        "tags": ["kubernetes", "multicloud"],
+        "style": "dark",
+        "timezone": "browser",
+        "panels": [
+          {
+            "id": 1,
+            "title": "Cluster Status",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "up{job=\"kubernetes-nodes\"}",
+                "legendFormat": "{{instance}}"
+              }
+            ],
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+          }
+        ],
+        "time": {"from": "now-1h", "to": "now"},
+        "refresh": "30s"
+      }
+    }
+EOF
+
+# Apply dashboard configuration to both clusters
+k-aws apply -f monitoring/multicloud-dashboard.yaml
+k-gcp apply -f monitoring/multicloud-dashboard.yaml
+Subtask 5.3: Verify Monitoring Setup
+Check monitoring services:
+
+# Wait for monitoring services to be ready
+echo "Waiting for monitoring services..."
+k-aws wait --namespace monitoring --for=condition=ready pod --selector=app.kubernetes.io/name=grafana --timeout=300s
+k-gcp wait --namespace monitoring --for=condition=ready pod --selector=app.kubernetes.io/name=grafana --timeout=300s
+
+# Get Grafana service IPs
+echo "AWS Grafana Service:"
+k-aws get service prometheus-grafana -n monitoring
+
+echo "GCP Grafana Service:"
+k-gcp get service prometheus-grafana -n monitoring
+
+# Get Grafana admin password
+echo "AWS Grafana admin password:"
+k-aws get secret prometheus-grafana -n monitoring -o jsonpath="{.data.admin-password}" | base64 --decode
+echo ""
+
+echo "GCP Grafana admin password:"
+k-gcp get secret prometheus-grafana -n monitoring -o jsonpath="{.data.admin-password}" | base64 --decode
+echo ""
+Task 6: Testing and Validation
+Subtask 6.1: Comprehensive Cluster Testing
+Perform comprehensive testing of the multi-cloud setup:
+
+# Create test script
+cat > test-multicloud.sh << 'EOF'
+#!/bin/bash
+
+echo "=== Multi-Cloud Kubernetes Test Suite ==="
+echo ""
+
+# Test 1: Cluster Connectivity
+echo "Test 1: Cluster Connectivity"
+echo "AWS Cluster nodes:"
+kubectl --context kind-aws-cluster get nodes
+echo ""
+echo "GCP Cluster nodes:"
+kubectl --context kind-gcp-cluster get nodes
+echo ""
+
+# Test 2: Service Discovery
+echo "Test 2: Service Discovery"
+echo "AWS Cluster services:"
+kubectl --context kind-aws-cluster get services -n multicloud
+echo ""
+echo "GCP Cluster services:"
+kubectl --context kind-gcp-cluster get services -n multicloud
+echo ""
+
+# Test 3: Cross-cluster communication test
+echo "Test 3: Cross-cluster Communication"
+AWS_POD=$(kubectl --context kind-aws-cluster get pods -n multicloud -l app=web-app -o jsonpath='{.items[0].metadata.name}')
+GCP_POD=$(kubectl --context kind-gcp-cluster get pods -n multicloud -l app=database -o jsonpath='{.items[0].metadata.name}')
+
+echo "Testing from AWS pod to GCP service..."
+kubectl --context kind-aws-cluster exec -n multicloud $AWS_POD -- wget -qO- --timeout=5 http://gcp-database-direct/ || echo "Cross-cluster communication test failed"
+
+echo "Testing from GCP pod to AWS service..."
+kubectl --context kind-gcp-cluster exec -n multicloud $GCP_POD -- wget -qO- --timeout=5 http://aws-webapp-direct/ || echo "Cross-cluster communication test failed"
+
+# Test 4: Load Balancer Status
+echo ""
+echo "Test 4: Load Balancer Status"
+echo "AWS LoadBalancer services:"
+kubectl --context kind-aws-cluster get services -n multicloud -o wide | grep LoadBalancer
+echo ""
+echo "GCP LoadBalancer services:"
+kubectl --context kind-gcp-cluster get services -n multicloud -o wide | grep LoadBalancer
+
+echo ""
+echo "=== Test Suite Complete ==="
+EOF
+
+chmod +x test-multicloud.sh
+./test-multicloud.sh
+Subtask 6.2: Performance and Resource Testing
+Create resource monitoring tests:
+
+# Create resource monitoring script
+cat > monitor-resources.sh << 'EOF'
+#!/bin/bash
+
+echo "=== Multi-Cloud Resource Monitoring ==="
+echo ""
+
+# Monitor AWS cluster resources
+echo "AWS Cluster Resource Usage:"
+kubectl --context kind-aws-cluster top nodes 2>/dev/null || echo "Metrics server not available"
+kubectl --context kind-aws-cluster get pods -n multicloud -o wide
+echo ""
+
+# Monitor GCP cluster resources
+echo "GCP Cluster Resource Usage:"
+kubectl --context kind-gcp-cluster top nodes 2>/dev/null || echo "Metrics server not available"
+kubectl --context kind-gcp-cluster get pods -n multicloud -o wide
+echo ""
+
+# Check cluster events
+echo "Recent AWS Cluster Events:"
+kubectl --context kind-aws-cluster get events -n multicloud --sort-by='.lastTimestamp' | tail -5
+echo ""
+
+echo "Recent GCP Cluster Events:"
+kubectl --context kind-gcp-cluster get events -n multicloud --sort-by='.lastTimestamp' | tail -5
+echo ""
+
+echo "=== Resource Monitoring Complete ==="
+EOF
+
+chmod +x monitor-resources.sh
+./monitor-resources.sh
+Troubleshooting Guide
+Common Issues and Solutions
+Issue 1: Clusters not starting
+
+# Check Docker status
+sudo systemctl status docker
+
+# Restart Docker if needed
+sudo systemctl restart docker
+
+# Delete and recreate clusters
+kind delete cluster --name aws-cluster
+kind delete cluster --name gcp-cluster
+# Then recreate using the configuration files
+Issue 2: Services not getting external IPs
+
+# Check MetalLB status
+k-aws get pods -n metallb-system
+k-gcp get pods -n metallb-system
+
+# Restart MetalLB if needed
+k-aws rollout restart deployment controller -n metallb-system
+k-gcp rollout restart deployment controller -n metallb-system
+Issue 3: Cross-cluster communication failing
+
+# Check network connectivity
+docker network ls
+docker network inspect kind
+
+# Verify service endpoints
+k-aws get endpoints -n multicloud
+k-gcp get endpoints -n multicloud
+Issue 4: Monitoring services not accessible
+
+# Check Helm releases
+helm list -A --kube-context kind-aws-cluster
+helm list -A --kube-context kind-gcp-cluster
+
+# Check pod status
+k-aws get pods -n monitoring
+k-gcp get pods -n monitoring
+Lab Cleanup
+When you're finished with the lab, clean up resources:
+
+# Delete Kubernetes clusters
+kind delete cluster --name aws-cluster
+kind delete cluster --name gcp-cluster
+
+# Remove lab directory
+cd ~
+rm -rf multicloud-k8s-lab
+
+# Clean up Docker resources
+docker system prune -f
+Conclusion
+In this comprehensive lab, you have successfully:
+
+Set up multiple Kubernetes clusters simulating different cloud environments (AWS and GCP) using kind
+Configured networking solutions including MetalLB load balancers and service discovery mechanisms
+**Implemente
