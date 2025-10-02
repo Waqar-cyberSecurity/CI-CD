@@ -6,9 +6,9 @@
   <img src="https://img.shields.io/github/stars/Waqar-cyberSecurity/Nodepad?style=social" alt="Stars" />
   <img src="https://img.shields.io/github/forks/Waqar-cyberSecurity/Nodepad?style=social" alt="Forks" />
 </p
+
   
 ---
-
 
 # CI/CD Pipelines. 🔄
 <img src="cicd1.png" alt="logo" width="800"/>
