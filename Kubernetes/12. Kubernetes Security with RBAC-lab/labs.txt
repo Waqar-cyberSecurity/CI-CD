@@ -1,0 +1,794 @@
+Lab 12: Kubernetes Security with RBAC
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Understand the fundamentals of Role-Based Access Control (RBAC) in Kubernetes
+Create and configure Roles and ClusterRoles for different permission levels
+Implement RoleBindings and ClusterRoleBindings to assign permissions to users and service accounts
+Test RBAC policies using kubectl auth can-i commands
+Configure and apply security policies to restrict resource access
+Troubleshoot common RBAC permission issues
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Kubernetes concepts (pods, services, deployments)
+Familiarity with Linux command line operations
+Basic knowledge of YAML file structure
+Understanding of user and group concepts in Linux systems
+Lab Environment
+Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated Linux machine. The provided machine is bare metal with no pre-installed tools, so you will install all required components during the lab exercises.
+
+Task 1: Environment Setup and Kubernetes Installation
+Subtask 1.1: Install Docker
+First, we need to install Docker as the container runtime for Kubernetes.
+
+# Update the system packages
+sudo apt update
+
+# Install required packages
+sudo apt install -y apt-transport-https ca-certificates curl gnupg lsb-release
+
+# Add Docker's official GPG key
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+
+# Add Docker repository
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# Update package index
+sudo apt update
+
+# Install Docker
+sudo apt install -y docker-ce docker-ce-cli containerd.io
+
+# Add current user to docker group
+sudo usermod -aG docker $USER
+
+# Start and enable Docker service
+sudo systemctl start docker
+sudo systemctl enable docker
+Subtask 1.2: Install kubectl
+Install the Kubernetes command-line tool.
+
+# Download kubectl
+curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+
+# Make kubectl executable
+chmod +x kubectl
+
+# Move kubectl to system PATH
+sudo mv kubectl /usr/local/bin/
+
+# Verify installation
+kubectl version --client
+Subtask 1.3: Install and Start Minikube
+Install Minikube to run a local Kubernetes cluster.
+
+# Download Minikube
+curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+
+# Install Minikube
+sudo install minikube-linux-amd64 /usr/local/bin/minikube
+
+# Start Minikube cluster
+minikube start --driver=docker
+
+# Verify cluster is running
+kubectl cluster-info
+
+# Check node status
+kubectl get nodes
+Subtask 1.4: Enable RBAC (Verification)
+Verify that RBAC is enabled in your Minikube cluster.
+
+# Check if RBAC is enabled
+kubectl api-versions | grep rbac
+
+# View current RBAC resources
+kubectl get clusterroles | head -10
+kubectl get clusterrolebindings | head -10
+Task 2: Create Roles and Role Bindings for User Permissions
+Subtask 2.1: Create a Namespace for Testing
+Create a dedicated namespace for our RBAC testing.
+
+# Create a test namespace
+kubectl create namespace rbac-test
+
+# Verify namespace creation
+kubectl get namespaces
+Subtask 2.2: Create Service Accounts
+Create service accounts that will represent different users in our RBAC setup.
+
+# Create service accounts
+kubectl create serviceaccount developer -n rbac-test
+kubectl create serviceaccount viewer -n rbac-test
+kubectl create serviceaccount admin -n rbac-test
+
+# Verify service accounts
+kubectl get serviceaccounts -n rbac-test
+Subtask 2.3: Create a Role for Developers
+Create a Role that allows developers to manage pods and deployments within the namespace.
+
+Create a file called developer-role.yaml:
+
+cat > developer-role.yaml << 'EOF'
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: rbac-test
+  name: developer-role
+rules:
+- apiGroups: [""]
+  resources: ["pods", "pods/log", "pods/status"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+EOF
+Apply the role:
+
+kubectl apply -f developer-role.yaml
+
+# Verify role creation
+kubectl get roles -n rbac-test
+kubectl describe role developer-role -n rbac-test
+Subtask 2.4: Create a Role for Viewers
+Create a Role that allows read-only access to resources.
+
+Create a file called viewer-role.yaml:
+
+cat > viewer-role.yaml << 'EOF'
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: rbac-test
+  name: viewer-role
+rules:
+- apiGroups: [""]
+  resources: ["pods", "pods/log", "pods/status", "services", "configmaps", "secrets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets", "daemonsets"]
+  verbs: ["get", "list", "watch"]
+EOF
+Apply the role:
+
+kubectl apply -f viewer-role.yaml
+
+# Verify role creation
+kubectl get roles -n rbac-test
+kubectl describe role viewer-role -n rbac-test
+Subtask 2.5: Create a ClusterRole for Cluster Admin
+Create a ClusterRole that provides administrative access across the cluster.
+
+Create a file called cluster-admin-role.yaml:
+
+cat > cluster-admin-role.yaml << 'EOF'
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: custom-cluster-admin
+rules:
+- apiGroups: ["*"]
+  resources: ["*"]
+  verbs: ["*"]
+- nonResourceURLs: ["*"]
+  verbs: ["*"]
+EOF
+Apply the cluster role:
+
+kubectl apply -f cluster-admin-role.yaml
+
+# Verify cluster role creation
+kubectl get clusterroles | grep custom-cluster-admin
+kubectl describe clusterrole custom-cluster-admin
+Subtask 2.6: Create RoleBindings
+Create RoleBindings to assign the roles to service accounts.
+
+Create a file called developer-rolebinding.yaml:
+
+cat > developer-rolebinding.yaml << 'EOF'
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: developer-binding
+  namespace: rbac-test
+subjects:
+- kind: ServiceAccount
+  name: developer
+  namespace: rbac-test
+roleRef:
+  kind: Role
+  name: developer-role
+  apiGroup: rbac.authorization.k8s.io
+EOF
+Create a file called viewer-rolebinding.yaml:
+
+cat > viewer-rolebinding.yaml << 'EOF'
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: viewer-binding
+  namespace: rbac-test
+subjects:
+- kind: ServiceAccount
+  name: viewer
+  namespace: rbac-test
+roleRef:
+  kind: Role
+  name: viewer-role
+  apiGroup: rbac.authorization.k8s.io
+EOF
+Apply the role bindings:
+
+kubectl apply -f developer-rolebinding.yaml
+kubectl apply -f viewer-rolebinding.yaml
+
+# Verify role bindings
+kubectl get rolebindings -n rbac-test
+kubectl describe rolebinding developer-binding -n rbac-test
+kubectl describe rolebinding viewer-binding -n rbac-test
+Subtask 2.7: Create ClusterRoleBinding
+Create a ClusterRoleBinding for the admin service account.
+
+Create a file called admin-clusterrolebinding.yaml:
+
+cat > admin-clusterrolebinding.yaml << 'EOF'
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: admin-cluster-binding
+subjects:
+- kind: ServiceAccount
+  name: admin
+  namespace: rbac-test
+roleRef:
+  kind: ClusterRole
+  name: custom-cluster-admin
+  apiGroup: rbac.authorization.k8s.io
+EOF
+Apply the cluster role binding:
+
+kubectl apply -f admin-clusterrolebinding.yaml
+
+# Verify cluster role binding
+kubectl get clusterrolebindings | grep admin-cluster-binding
+kubectl describe clusterrolebinding admin-cluster-binding
+Task 3: Test RBAC Policies with kubectl auth can-i
+Subtask 3.1: Test Developer Permissions
+Test what actions the developer service account can perform.
+
+# Test if developer can create pods in rbac-test namespace
+kubectl auth can-i create pods --as=system:serviceaccount:rbac-test:developer -n rbac-test
+
+# Test if developer can delete pods in rbac-test namespace
+kubectl auth can-i delete pods --as=system:serviceaccount:rbac-test:developer -n rbac-test
+
+# Test if developer can create deployments in rbac-test namespace
+kubectl auth can-i create deployments --as=system:serviceaccount:rbac-test:developer -n rbac-test
+
+# Test if developer can delete services (should be false)
+kubectl auth can-i delete services --as=system:serviceaccount:rbac-test:developer -n rbac-test
+
+# Test if developer can access resources in default namespace (should be false)
+kubectl auth can-i create pods --as=system:serviceaccount:rbac-test:developer -n default
+
+# Test if developer can create namespaces (should be false)
+kubectl auth can-i create namespaces --as=system:serviceaccount:rbac-test:developer
+Subtask 3.2: Test Viewer Permissions
+Test what actions the viewer service account can perform.
+
+# Test if viewer can list pods (should be true)
+kubectl auth can-i list pods --as=system:serviceaccount:rbac-test:viewer -n rbac-test
+
+# Test if viewer can get deployments (should be true)
+kubectl auth can-i get deployments --as=system:serviceaccount:rbac-test:viewer -n rbac-test
+
+# Test if viewer can create pods (should be false)
+kubectl auth can-i create pods --as=system:serviceaccount:rbac-test:viewer -n rbac-test
+
+# Test if viewer can delete services (should be false)
+kubectl auth can-i delete services --as=system:serviceaccount:rbac-test:viewer -n rbac-test
+
+# Test if viewer can update deployments (should be false)
+kubectl auth can-i update deployments --as=system:serviceaccount:rbac-test:viewer -n rbac-test
+Subtask 3.3: Test Admin Permissions
+Test what actions the admin service account can perform.
+
+# Test if admin can create pods in any namespace (should be true)
+kubectl auth can-i create pods --as=system:serviceaccount:rbac-test:admin -n rbac-test
+kubectl auth can-i create pods --as=system:serviceaccount:rbac-test:admin -n default
+
+# Test if admin can create namespaces (should be true)
+kubectl auth can-i create namespaces --as=system:serviceaccount:rbac-test:admin
+
+# Test if admin can delete cluster roles (should be true)
+kubectl auth can-i delete clusterroles --as=system:serviceaccount:rbac-test:admin
+
+# Test if admin can access all resources (should be true)
+kubectl auth can-i "*" "*" --as=system:serviceaccount:rbac-test:admin
+Subtask 3.4: Create Test Resources to Verify Permissions
+Create some test resources to demonstrate the RBAC policies in action.
+
+# Create a test deployment in rbac-test namespace
+cat > test-deployment.yaml << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-app
+  namespace: rbac-test
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: test-app
+  template:
+    metadata:
+      labels:
+        app: test-app
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:latest
+        ports:
+        - containerPort: 80
+EOF
+
+kubectl apply -f test-deployment.yaml
+
+# Create a test service
+cat > test-service.yaml << 'EOF'
+apiVersion: v1
+kind: Service
+metadata:
+  name: test-service
+  namespace: rbac-test
+spec:
+  selector:
+    app: test-app
+  ports:
+  - port: 80
+    targetPort: 80
+  type: ClusterIP
+EOF
+
+kubectl apply -f test-service.yaml
+
+# Verify resources are created
+kubectl get deployments,services,pods -n rbac-test
+Task 4: Configure and Apply Security Policies
+Subtask 4.1: Create Network Policies
+Create network policies to restrict network traffic between pods.
+
+Create a file called network-policy.yaml:
+
+cat > network-policy.yaml << 'EOF'
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all-ingress
+  namespace: rbac-test
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-same-namespace
+  namespace: rbac-test
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: rbac-test
+EOF
+Apply the network policies:
+
+kubectl apply -f network-policy.yaml
+
+# Verify network policies
+kubectl get networkpolicies -n rbac-test
+kubectl describe networkpolicy deny-all-ingress -n rbac-test
+Subtask 4.2: Create Pod Security Standards
+Create a namespace with Pod Security Standards enforced.
+
+# Create a new namespace with security standards
+kubectl create namespace secure-namespace
+
+# Label the namespace to enforce restricted security standards
+kubectl label namespace secure-namespace pod-security.kubernetes.io/enforce=restricted
+kubectl label namespace secure-namespace pod-security.kubernetes.io/audit=restricted
+kubectl label namespace secure-namespace pod-security.kubernetes.io/warn=restricted
+
+# Verify the labels
+kubectl get namespace secure-namespace --show-labels
+Subtask 4.3: Test Security Policies with Restricted Pods
+Create a pod that violates security policies to see the enforcement in action.
+
+Create a file called insecure-pod.yaml:
+
+cat > insecure-pod.yaml << 'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: insecure-pod
+  namespace: secure-namespace
+spec:
+  containers:
+  - name: nginx
+    image: nginx:latest
+    securityContext:
+      runAsUser: 0
+      privileged: true
+    ports:
+    - containerPort: 80
+EOF
+Try to apply the insecure pod:
+
+# This should fail due to security policy violations
+kubectl apply -f insecure-pod.yaml
+Create a secure pod that complies with the security standards:
+
+cat > secure-pod.yaml << 'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: secure-pod
+  namespace: secure-namespace
+spec:
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 2000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+  - name: nginx
+    image: nginx:latest
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      runAsUser: 1000
+      capabilities:
+        drop:
+        - ALL
+    ports:
+    - containerPort: 8080
+    volumeMounts:
+    - name: tmp
+      mountPath: /tmp
+    - name: var-cache
+      mountPath: /var/cache/nginx
+    - name: var-run
+      mountPath: /var/run
+  volumes:
+  - name: tmp
+    emptyDir: {}
+  - name: var-cache
+    emptyDir: {}
+  - name: var-run
+    emptyDir: {}
+EOF
+Apply the secure pod:
+
+kubectl apply -f secure-pod.yaml
+
+# Verify the secure pod is running
+kubectl get pods -n secure-namespace
+kubectl describe pod secure-pod -n secure-namespace
+Subtask 4.4: Create Resource Quotas and Limits
+Create resource quotas to limit resource consumption in the namespace.
+
+Create a file called resource-quota.yaml:
+
+cat > resource-quota.yaml << 'EOF'
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: rbac-test-quota
+  namespace: rbac-test
+spec:
+  hard:
+    requests.cpu: "2"
+    requests.memory: 4Gi
+    limits.cpu: "4"
+    limits.memory: 8Gi
+    pods: "10"
+    services: "5"
+    persistentvolumeclaims: "3"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: rbac-test-limits
+  namespace: rbac-test
+spec:
+  limits:
+  - default:
+      cpu: "500m"
+      memory: "512Mi"
+    defaultRequest:
+      cpu: "100m"
+      memory: "128Mi"
+    type: Container
+EOF
+Apply the resource quota and limits:
+
+kubectl apply -f resource-quota.yaml
+
+# Verify resource quota and limits
+kubectl get resourcequota -n rbac-test
+kubectl get limitrange -n rbac-test
+kubectl describe resourcequota rbac-test-quota -n rbac-test
+Subtask 4.5: Test Resource Limits
+Create a pod that exceeds the resource limits to test enforcement.
+
+Create a file called resource-test-pod.yaml:
+
+cat > resource-test-pod.yaml << 'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: resource-test-pod
+  namespace: rbac-test
+spec:
+  containers:
+  - name: nginx
+    image: nginx:latest
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "128Mi"
+      limits:
+        cpu: "200m"
+        memory: "256Mi"
+EOF
+Apply and verify the pod:
+
+kubectl apply -f resource-test-pod.yaml
+
+# Check resource usage
+kubectl get pods -n rbac-test
+kubectl describe resourcequota rbac-test-quota -n rbac-test
+Task 5: Advanced RBAC Testing and Troubleshooting
+Subtask 5.1: Create Custom kubectl Contexts
+Create custom kubectl contexts for different service accounts to simulate different users.
+
+# Get the service account tokens
+DEVELOPER_SECRET=$(kubectl get serviceaccount developer -n rbac-test -o jsonpath='{.secrets[0].name}')
+VIEWER_SECRET=$(kubectl get serviceaccount viewer -n rbac-test -o jsonpath='{.secrets[0].name}')
+
+# Note: In newer Kubernetes versions, you might need to create tokens manually
+kubectl create token developer -n rbac-test --duration=24h > developer-token.txt
+kubectl create token viewer -n rbac-test --duration=24h > viewer-token.txt
+
+# Get cluster information
+CLUSTER_NAME=$(kubectl config view --minify -o jsonpath='{.clusters[0].name}')
+CLUSTER_SERVER=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
+
+# Create contexts for different users
+kubectl config set-credentials developer --token=$(cat developer-token.txt)
+kubectl config set-credentials viewer --token=$(cat viewer-token.txt)
+
+kubectl config set-context developer-context --cluster=$CLUSTER_NAME --user=developer --namespace=rbac-test
+kubectl config set-context viewer-context --cluster=$CLUSTER_NAME --user=viewer --namespace=rbac-test
+
+# List all contexts
+kubectl config get-contexts
+Subtask 5.2: Test Different User Contexts
+Switch between contexts to test permissions.
+
+# Test with developer context
+kubectl config use-context developer-context
+
+# Try to create a pod (should work)
+kubectl run test-pod --image=nginx --dry-run=client -o yaml
+
+# Try to delete the deployment (should work)
+kubectl auth can-i delete deployments
+
+# Switch to viewer context
+kubectl config use-context viewer-context
+
+# Try to list pods (should work)
+kubectl auth can-i get pods
+
+# Try to create a pod (should fail)
+kubectl auth can-i create pods
+
+# Switch back to default context
+kubectl config use-context minikube
+Subtask 5.3: Audit RBAC Permissions
+Create a comprehensive audit of all RBAC permissions in the cluster.
+
+# Create an audit script
+cat > rbac-audit.sh << 'EOF'
+#!/bin/bash
+
+echo "=== RBAC Audit Report ==="
+echo "Date: $(date)"
+echo
+
+echo "=== Cluster Roles ==="
+kubectl get clusterroles --no-headers | wc -l
+echo "Total ClusterRoles found"
+echo
+
+echo "=== Roles by Namespace ==="
+for ns in $(kubectl get namespaces -o jsonpath='{.items[*].metadata.name}'); do
+    role_count=$(kubectl get roles -n $ns --no-headers 2>/dev/null | wc -l)
+    if [ $role_count -gt 0 ]; then
+        echo "Namespace: $ns - Roles: $role_count"
+    fi
+done
+echo
+
+echo "=== Service Accounts with Bindings ==="
+kubectl get rolebindings,clusterrolebindings -A -o json | jq -r '.items[] | select(.subjects[]?.kind == "ServiceAccount") | "\(.metadata.namespace // "cluster-wide") - \(.metadata.name) - \(.subjects[].name)"' | sort | uniq
+echo
+
+echo "=== Custom Roles in rbac-test namespace ==="
+kubectl get roles -n rbac-test -o custom-columns=NAME:.metadata.name,CREATED:.metadata.creationTimestamp
+echo
+
+echo "=== Role Bindings in rbac-test namespace ==="
+kubectl get rolebindings -n rbac-test -o custom-columns=NAME:.metadata.name,ROLE:.roleRef.name,SUBJECT:.subjects[0].name
+EOF
+
+chmod +x rbac-audit.sh
+./rbac-audit.sh
+Subtask 5.4: Common RBAC Troubleshooting
+Create scenarios to practice troubleshooting common RBAC issues.
+
+# Create a broken role binding
+cat > broken-rolebinding.yaml << 'EOF'
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: broken-binding
+  namespace: rbac-test
+subjects:
+- kind: ServiceAccount
+  name: nonexistent-user
+  namespace: rbac-test
+roleRef:
+  kind: Role
+  name: nonexistent-role
+  apiGroup: rbac.authorization.k8s.io
+EOF
+
+kubectl apply -f broken-rolebinding.yaml
+
+# Check for issues
+kubectl describe rolebinding broken-binding -n rbac-test
+
+# Fix the role binding
+cat > fixed-rolebinding.yaml << 'EOF'
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: broken-binding
+  namespace: rbac-test
+subjects:
+- kind: ServiceAccount
+  name: developer
+  namespace: rbac-test
+roleRef:
+  kind: Role
+  name: developer-role
+  apiGroup: rbac.authorization.k8s.io
+EOF
+
+kubectl apply -f fixed-rolebinding.yaml
+
+# Verify the fix
+kubectl describe rolebinding broken-binding -n rbac-test
+Verification and Testing
+Final Verification Steps
+Run these commands to verify that all RBAC configurations are working correctly:
+
+# 1. Verify all service accounts exist
+kubectl get serviceaccounts -n rbac-test
+
+# 2. Verify all roles and bindings
+kubectl get roles,rolebindings -n rbac-test
+kubectl get clusterroles | grep custom-cluster-admin
+kubectl get clusterrolebindings | grep admin-cluster-binding
+
+# 3. Test permissions for each service account
+echo "Testing Developer permissions:"
+kubectl auth can-i create pods --as=system:serviceaccount:rbac-test:developer -n rbac-test
+kubectl auth can-i delete deployments --as=system:serviceaccount:rbac-test:developer -n rbac-test
+
+echo "Testing Viewer permissions:"
+kubectl auth can-i get pods --as=system:serviceaccount:rbac-test:viewer -n rbac-test
+kubectl auth can-i create pods --as=system:serviceaccount:rbac-test:viewer -n rbac-test
+
+echo "Testing Admin permissions:"
+kubectl auth can-i "*" "*" --as=system:serviceaccount:rbac-test:admin
+
+# 4. Verify security policies
+kubectl get networkpolicies -n rbac-test
+kubectl get resourcequota,limitrange -n rbac-test
+
+# 5. Check pod security standards
+kubectl get namespace secure-namespace --show-labels
+kubectl get pods -n secure-namespace
+Troubleshooting Common Issues
+Issue 1: Permission Denied Errors
+If you encounter permission denied errors:
+
+# Check if the service account exists
+kubectl get serviceaccount <service-account-name> -n <namespace>
+
+# Check if the role binding exists and is correct
+kubectl describe rolebinding <binding-name> -n <namespace>
+
+# Verify the role has the required permissions
+kubectl describe role <role-name> -n <namespace>
+Issue 2: Network Policy Not Working
+If network policies are not being enforced:
+
+# Check if your cluster supports network policies
+kubectl get nodes -o wide
+
+# Verify network policy is applied
+kubectl describe networkpolicy <policy-name> -n <namespace>
+
+# Check pod labels match the policy selector
+kubectl get pods --show-labels -n <namespace>
+Issue 3: Resource Quota Exceeded
+If pods fail to start due to resource quotas:
+
+# Check current resource usage
+kubectl describe resourcequota -n <namespace>
+
+# Check pod resource requests
+kubectl describe pod <pod-name> -n <namespace>
+
+# Adjust resource requests or increase quota
+Cleanup
+To clean up the lab environment:
+
+# Delete all created resources
+kubectl delete namespace rbac-test
+kubectl delete namespace secure-namespace
+kubectl delete clusterrole custom-cluster-admin
+kubectl delete clusterrolebinding admin-cluster-binding
+
+# Remove custom contexts
+kubectl config delete-context developer-context
+kubectl config delete-context viewer-context
+kubectl config delete-user developer
+kubectl config delete-user viewer
+
+# Remove token files
+rm -f developer-token.txt viewer-token.txt
+
+# Stop Minikube (optional)
+minikube stop
+Conclusion
+In this comprehensive lab, you have successfully implemented and tested Role-Based Access Control (RBAC) in Kubernetes. You accomplished the following key objectives:
+
+Security Implementation: You created a robust security framework using RBAC to control access to Kubernetes resources, implementing the principle of least privilege by granting users only the minimum permissions necessary for their roles.
+
+Role Management: You designed and implemented different types of roles including namespace-scoped Roles for developers and viewers, and cluster-wide ClusterRoles for administrators, demonstrating how to structure permissions hierarchically.
+
+Access Control Testing: You thoroughly tested RBAC policies using the kubectl auth can-i command, verifying that each service account has appropriate permissions and restrictions, which is crucial for maintaining cluster security.
+
+Security Policies: You implemented additional security measures including Network Policies for network segmentation, Pod Security Standards for container security, and Resource Quotas for resource management.
+
+Real-world Application: The skills you developed in this lab are directly applicable to production Kubernetes environments where security is paramount. RBAC is a fundamental security control that every Kubernetes administrator must understand and implement correctly.
+
+Best Practices: You learned industry best practices for Kubernetes security, including how to audit RBAC permissions, troubleshoot common issues, and maintain security policies over time.
+
+This knowledge forms the foundation for securing Kubernetes clusters in enterprise environments, where proper access control can prevent security breaches and ensure compliance with organizational policies. The hands-on experience with creating, testing, and troubleshooting RBAC policies will serve you well in real-world Kubernetes deployments.
