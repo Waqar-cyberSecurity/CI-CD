@@ -1,0 +1,633 @@
+Lab 18: Kubernetes Disaster Recovery and Backup
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Understand the importance of disaster recovery and backup strategies for Kubernetes clusters
+Install and configure Velero for comprehensive Kubernetes backup solutions
+Create and manage backup policies for cluster resources and persistent volumes
+Perform restore operations from backups to recover cluster state
+Implement automated backup scheduling using cron jobs
+Test disaster recovery scenarios and validate backup integrity
+Configure backup storage locations and retention policies
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Kubernetes concepts (pods, deployments, services, persistent volumes)
+Familiarity with Linux command line operations
+Knowledge of YAML configuration files
+Understanding of container concepts and Docker basics
+Experience with kubectl commands
+Basic knowledge of storage concepts and file systems
+Lab Environment Setup
+Note: Al Nafi provides Linux-based cloud machines for this lab. Simply click "Start Lab" to access your dedicated Linux machine. The provided machine is bare metal with no pre-installed tools, so you will install all required components during the lab.
+
+Task 1: Deploy Velero for Kubernetes Backup
+Subtask 1.1: Install Required Dependencies
+First, we need to install Docker, kubectl, and set up a local Kubernetes cluster using kind.
+
+# Update system packages
+sudo apt update && sudo apt upgrade -y
+
+# Install Docker
+sudo apt install -y docker.io
+sudo systemctl start docker
+sudo systemctl enable docker
+sudo usermod -aG docker $USER
+
+# Install kubectl
+curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+
+# Install kind (Kubernetes in Docker)
+curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
+chmod +x ./kind
+sudo mv ./kind /usr/local/bin/kind
+
+# Install Helm
+curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+Note: You may need to log out and log back in for Docker group permissions to take effect.
+
+# Verify installations
+docker --version
+kubectl version --client
+kind version
+helm version
+Subtask 1.2: Create a Kubernetes Cluster
+# Create a kind cluster configuration file
+cat <<EOF > kind-config.yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane
+  extraPortMappings:
+  - containerPort: 30000
+    hostPort: 30000
+    protocol: TCP
+- role: worker
+- role: worker
+EOF
+
+# Create the cluster
+kind create cluster --config=kind-config.yaml --name=disaster-recovery-lab
+
+# Verify cluster is running
+kubectl cluster-info
+kubectl get nodes
+Subtask 1.3: Install MinIO for Backup Storage
+We'll use MinIO as our S3-compatible storage backend for Velero backups.
+
+# Create MinIO namespace
+kubectl create namespace minio
+
+# Create MinIO deployment
+cat <<EOF > minio-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: minio
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+      - name: minio
+        image: minio/minio:latest
+        args:
+        - server
+        - /data
+        - --console-address
+        - ":9001"
+        env:
+        - name: MINIO_ROOT_USER
+          value: "minioadmin"
+        - name: MINIO_ROOT_PASSWORD
+          value: "minioadmin123"
+        ports:
+        - containerPort: 9000
+        - containerPort: 9001
+        volumeMounts:
+        - name: data
+          mountPath: /data
+      volumes:
+      - name: data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-service
+  namespace: minio
+spec:
+  selector:
+    app: minio
+  ports:
+  - name: api
+    port: 9000
+    targetPort: 9000
+    nodePort: 30000
+  - name: console
+    port: 9001
+    targetPort: 9001
+    nodePort: 30001
+  type: NodePort
+EOF
+
+# Deploy MinIO
+kubectl apply -f minio-deployment.yaml
+
+# Wait for MinIO to be ready
+kubectl wait --for=condition=available --timeout=300s deployment/minio -n minio
+
+# Verify MinIO is running
+kubectl get pods -n minio
+kubectl get svc -n minio
+Subtask 1.4: Configure MinIO Bucket
+# Install MinIO client
+wget https://dl.min.io/client/mc/release/linux-amd64/mc
+chmod +x mc
+sudo mv mc /usr/local/bin/
+
+# Configure MinIO client
+mc alias set local http://localhost:30000 minioadmin minioadmin123
+
+# Create bucket for Velero backups
+mc mb local/velero-backups
+
+# Verify bucket creation
+mc ls local/
+Subtask 1.5: Install Velero
+# Download Velero CLI
+wget https://github.com/vmware-tanzu/velero/releases/download/v1.12.1/velero-v1.12.1-linux-amd64.tar.gz
+tar -xzf velero-v1.12.1-linux-amd64.tar.gz
+sudo mv velero-v1.12.1-linux-amd64/velero /usr/local/bin/
+
+# Verify Velero installation
+velero version --client-only
+
+# Create credentials file for MinIO
+cat <<EOF > credentials-velero
+[default]
+aws_access_key_id = minioadmin
+aws_secret_access_key = minioadmin123
+EOF
+
+# Install Velero in the cluster
+velero install \
+    --provider aws \
+    --plugins velero/velero-plugin-for-aws:v1.8.1 \
+    --bucket velero-backups \
+    --secret-file ./credentials-velero \
+    --use-volume-snapshots=false \
+    --backup-location-config region=minio,s3ForcePathStyle="true",s3Url=http://minio-service.minio.svc.cluster.local:9000
+
+# Wait for Velero to be ready
+kubectl wait --for=condition=available --timeout=300s deployment/velero -n velero
+
+# Verify Velero installation
+kubectl get pods -n velero
+velero backup-location get
+Task 2: Test Backup and Restore Operations Using Velero
+Subtask 2.1: Create Sample Applications for Testing
+# Create a test namespace
+kubectl create namespace test-app
+
+# Create a sample application with persistent storage
+cat <<EOF > sample-app.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: test-pvc
+  namespace: test-app
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-app
+  namespace: test-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: test-app
+  template:
+    metadata:
+      labels:
+        app: test-app
+    spec:
+      containers:
+      - name: app
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: data
+          mountPath: /usr/share/nginx/html
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: test-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: test-app-service
+  namespace: test-app
+spec:
+  selector:
+    app: test-app
+  ports:
+  - port: 80
+    targetPort: 80
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: test-config
+  namespace: test-app
+data:
+  config.txt: |
+    This is a test configuration file
+    Created for disaster recovery testing
+    Timestamp: $(date)
+EOF
+
+# Deploy the sample application
+kubectl apply -f sample-app.yaml
+
+# Wait for deployment to be ready
+kubectl wait --for=condition=available --timeout=300s deployment/test-app -n test-app
+
+# Verify the application is running
+kubectl get all -n test-app
+Subtask 2.2: Add Test Data to the Application
+# Create some test data in the persistent volume
+kubectl exec -n test-app deployment/test-app -- bash -c "echo 'Hello from test application - $(date)' > /usr/share/nginx/html/index.html"
+kubectl exec -n test-app deployment/test-app -- bash -c "echo 'Test data file' > /usr/share/nginx/html/testdata.txt"
+
+# Verify the data exists
+kubectl exec -n test-app deployment/test-app -- cat /usr/share/nginx/html/index.html
+kubectl exec -n test-app deployment/test-app -- ls -la /usr/share/nginx/html/
+Subtask 2.3: Create Your First Backup
+# Create a backup of the entire test-app namespace
+velero backup create test-app-backup-1 --include-namespaces test-app
+
+# Monitor backup progress
+velero backup describe test-app-backup-1
+
+# Wait for backup to complete
+while [[ $(velero backup get test-app-backup-1 -o json | jq -r '.status.phase') != "Completed" ]]; do
+  echo "Backup in progress..."
+  sleep 10
+done
+
+# Verify backup completion
+velero backup get
+velero backup describe test-app-backup-1 --details
+Subtask 2.4: Create a Selective Backup
+# Create a backup with specific labels
+kubectl label namespace test-app backup=important
+
+# Create a backup using label selectors
+velero backup create selective-backup --selector app=test-app
+
+# Create a backup excluding certain resources
+velero backup create config-backup --include-namespaces test-app --include-resources configmaps,secrets
+
+# List all backups
+velero backup get
+Subtask 2.5: Simulate a Disaster
+# Delete the entire test namespace to simulate disaster
+kubectl delete namespace test-app
+
+# Verify the namespace and all resources are gone
+kubectl get namespaces | grep test-app
+kubectl get all -n test-app 2>/dev/null || echo "Namespace test-app no longer exists"
+Subtask 2.6: Restore from Backup
+# Restore the application from backup
+velero restore create test-app-restore-1 --from-backup test-app-backup-1
+
+# Monitor restore progress
+velero restore describe test-app-restore-1
+
+# Wait for restore to complete
+while [[ $(velero restore get test-app-restore-1 -o json | jq -r '.status.phase') != "Completed" ]]; do
+  echo "Restore in progress..."
+  sleep 10
+done
+
+# Verify restore completion
+velero restore get
+kubectl get namespaces | grep test-app
+kubectl get all -n test-app
+Subtask 2.7: Verify Data Integrity After Restore
+# Wait for pods to be ready after restore
+kubectl wait --for=condition=available --timeout=300s deployment/test-app -n test-app
+
+# Verify the data was restored correctly
+kubectl exec -n test-app deployment/test-app -- cat /usr/share/nginx/html/index.html
+kubectl exec -n test-app deployment/test-app -- cat /usr/share/nginx/html/testdata.txt
+kubectl exec -n test-app deployment/test-app -- ls -la /usr/share/nginx/html/
+
+# Check ConfigMap was restored
+kubectl get configmap test-config -n test-app -o yaml
+Subtask 2.8: Test Partial Restore
+# Delete only the ConfigMap
+kubectl delete configmap test-config -n test-app
+
+# Restore only the ConfigMap from backup
+velero restore create config-restore --from-backup test-app-backup-1 --include-resources configmaps
+
+# Verify partial restore
+kubectl get configmap test-config -n test-app
+Task 3: Automate Backups Using Cron
+Subtask 3.1: Create Backup Schedules
+# Create a daily backup schedule
+velero schedule create daily-backup \
+    --schedule="0 2 * * *" \
+    --include-namespaces test-app \
+    --ttl 168h0m0s
+
+# Create a weekly full cluster backup
+velero schedule create weekly-full-backup \
+    --schedule="0 1 * * 0" \
+    --ttl 720h0m0s
+
+# Create an hourly backup for critical namespaces
+velero schedule create hourly-critical \
+    --schedule="0 * * * *" \
+    --selector backup=important \
+    --ttl 24h0m0s
+
+# List all schedules
+velero schedule get
+Subtask 3.2: Configure Advanced Backup Policies
+# Create a schedule with backup hooks for database consistency
+cat <<EOF > advanced-schedule.yaml
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: database-backup
+  namespace: velero
+spec:
+  schedule: "0 3 * * *"
+  template:
+    includedNamespaces:
+    - test-app
+    ttl: 168h0m0s
+    hooks:
+      resources:
+      - name: database-backup-hook
+        includedNamespaces:
+        - test-app
+        labelSelector:
+          matchLabels:
+            app: test-app
+        pre:
+        - exec:
+            container: app
+            command:
+            - /bin/bash
+            - -c
+            - echo "Pre-backup hook executed at $(date)"
+        post:
+        - exec:
+            container: app
+            command:
+            - /bin/bash
+            - -c
+            - echo "Post-backup hook executed at $(date)"
+EOF
+
+# Apply the advanced schedule
+kubectl apply -f advanced-schedule.yaml
+
+# Verify the schedule was created
+velero schedule get database-backup
+Subtask 3.3: Create Backup Retention Policies
+# Create a schedule with different retention policies
+velero schedule create monthly-archive \
+    --schedule="0 0 1 * *" \
+    --ttl 2160h0m0s \
+    --include-namespaces test-app
+
+# Create a schedule for configuration backups with longer retention
+velero schedule create config-archive \
+    --schedule="0 4 * * *" \
+    --include-resources configmaps,secrets \
+    --ttl 8760h0m0s
+
+# List all schedules with details
+velero schedule describe daily-backup
+velero schedule describe weekly-full-backup
+Subtask 3.4: Test Scheduled Backups
+# Manually trigger a scheduled backup to test
+velero backup create manual-test-from-schedule --from-schedule daily-backup
+
+# Wait for the backup to complete
+sleep 30
+
+# Check the backup status
+velero backup get manual-test-from-schedule
+velero backup describe manual-test-from-schedule
+
+# Verify backup appears in MinIO
+mc ls local/velero-backups/backups/
+Subtask 3.5: Monitor and Manage Backup Storage
+# Check backup storage usage
+mc du local/velero-backups/
+
+# List all backups in storage
+mc ls local/velero-backups/backups/ --recursive
+
+# Create a script to monitor backup health
+cat <<EOF > backup-monitor.sh
+#!/bin/bash
+
+echo "=== Velero Backup Status Report ==="
+echo "Generated at: \$(date)"
+echo
+
+echo "=== Active Schedules ==="
+velero schedule get
+
+echo
+echo "=== Recent Backups ==="
+velero backup get | head -10
+
+echo
+echo "=== Failed Backups ==="
+velero backup get | grep -i failed || echo "No failed backups found"
+
+echo
+echo "=== Storage Usage ==="
+mc du local/velero-backups/ 2>/dev/null || echo "Could not check storage usage"
+
+echo
+echo "=== Backup Location Status ==="
+velero backup-location get
+EOF
+
+chmod +x backup-monitor.sh
+
+# Run the monitoring script
+./backup-monitor.sh
+Subtask 3.6: Set Up Backup Notifications
+# Create a simple backup validation script
+cat <<EOF > validate-backups.sh
+#!/bin/bash
+
+# Check for recent successful backups
+RECENT_BACKUPS=\$(velero backup get --output json | jq -r '.items[] | select(.status.phase == "Completed" and (.status.completionTimestamp | fromdateiso8601) > (now - 86400)) | .metadata.name')
+
+if [ -z "\$RECENT_BACKUPS" ]; then
+    echo "WARNING: No successful backups in the last 24 hours!"
+    exit 1
+else
+    echo "SUCCESS: Found recent successful backups:"
+    echo "\$RECENT_BACKUPS"
+    exit 0
+fi
+EOF
+
+chmod +x validate-backups.sh
+
+# Test the validation script
+./validate-backups.sh
+Subtask 3.7: Create Backup Cleanup Automation
+# Create a cleanup script for old backups
+cat <<EOF > cleanup-old-backups.sh
+#!/bin/bash
+
+echo "Starting backup cleanup process..."
+
+# Delete backups older than 30 days (beyond TTL)
+OLD_BACKUPS=\$(velero backup get --output json | jq -r '.items[] | select((.status.completionTimestamp | fromdateiso8601) < (now - 2592000)) | .metadata.name')
+
+if [ -n "\$OLD_BACKUPS" ]; then
+    echo "Found old backups to clean up:"
+    echo "\$OLD_BACKUPS"
+    
+    for backup in \$OLD_BACKUPS; do
+        echo "Deleting backup: \$backup"
+        velero backup delete \$backup --confirm
+    done
+else
+    echo "No old backups found for cleanup"
+fi
+
+echo "Cleanup process completed"
+EOF
+
+chmod +x cleanup-old-backups.sh
+
+# Test the cleanup script (dry run)
+echo "Testing cleanup script (this will show what would be deleted):"
+./cleanup-old-backups.sh
+Subtask 3.8: Verify Automated Backup System
+# Create additional test data to verify ongoing backups
+kubectl exec -n test-app deployment/test-app -- bash -c "echo 'New data added at $(date)' >> /usr/share/nginx/html/newdata.txt"
+
+# Trigger a manual backup to test the current state
+velero backup create verification-backup --include-namespaces test-app
+
+# Wait for backup completion
+sleep 60
+
+# Check backup status
+velero backup describe verification-backup
+
+# Verify all schedules are active
+velero schedule get
+
+# Check that backups are being stored properly
+mc ls local/velero-backups/backups/ | tail -5
+
+echo "=== Automated Backup System Summary ==="
+echo "Active Schedules: $(velero schedule get | wc -l)"
+echo "Total Backups: $(velero backup get | wc -l)"
+echo "Recent Successful Backups: $(velero backup get | grep Completed | wc -l)"
+Troubleshooting Common Issues
+Issue 1: Velero Installation Problems
+# Check Velero pod logs
+kubectl logs -n velero deployment/velero
+
+# Verify backup location configuration
+velero backup-location get -o yaml
+
+# Test connectivity to MinIO
+kubectl exec -n velero deployment/velero -- wget -O- http://minio-service.minio.svc.cluster.local:9000/minio/health/live
+Issue 2: Backup Failures
+# Check specific backup logs
+velero backup logs <backup-name>
+
+# Verify resource permissions
+kubectl auth can-i "*" "*" --as=system:serviceaccount:velero:velero
+
+# Check storage space
+mc du local/velero-backups/
+Issue 3: Restore Issues
+# Check restore logs
+velero restore logs <restore-name>
+
+# Verify namespace conflicts
+kubectl get namespaces
+
+# Check resource conflicts
+kubectl get all -n <namespace>
+Lab Validation
+To verify your lab completion, run these validation commands:
+
+# Verify Velero is running
+kubectl get pods -n velero
+
+# Check backup schedules
+velero schedule get
+
+# Verify recent backups
+velero backup get | head -5
+
+# Test restore capability
+velero restore get | head -5
+
+# Verify MinIO storage
+mc ls local/velero-backups/
+
+echo "=== Lab Validation Complete ==="
+echo "If all commands above show expected results, your lab is successful!"
+Conclusion
+In this comprehensive lab, you have successfully:
+
+Deployed Velero as a robust backup solution for Kubernetes clusters, learning how to integrate it with S3-compatible storage
+Implemented comprehensive backup strategies including full cluster backups, namespace-specific backups, and selective resource backups
+Tested disaster recovery scenarios by simulating data loss and successfully restoring applications and data from backups
+Automated backup operations using cron-based scheduling with different retention policies and backup frequencies
+Configured advanced backup features including pre and post-backup hooks, label selectors, and storage optimization
+Established monitoring and maintenance procedures for ongoing backup health and storage management
+Why This Matters:
+
+Disaster recovery and backup strategies are critical for production Kubernetes environments. Data loss, cluster failures, and human errors can cause significant business disruption. By implementing automated backup solutions like Velero, organizations can:
+
+Ensure business continuity by quickly recovering from disasters
+Meet compliance requirements for data retention and recovery
+Reduce downtime through tested restore procedures
+Protect against data loss from various failure scenarios
+Enable confident cluster migrations and upgrades
+The skills you've developed in this lab are essential for any Kubernetes administrator or DevOps engineer responsible for maintaining production systems. Regular backup testing and automation ensure that when disasters occur, recovery is swift and reliable.
+
+Next Steps:
+
+Consider exploring advanced topics such as cross-region backup replication, backup encryption, application-consistent snapshots, and integration with cloud provider backup services to further enhance your disaster recovery capabilities.
