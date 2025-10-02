@@ -1,0 +1,858 @@
+Lab 17: Advanced Security Practices in Kubernetes
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Understand and implement Pod Security Standards in Kubernetes
+Configure and apply security policies to restrict privileged containers
+Install and use Trivy for container vulnerability scanning
+Deploy and run Kube-bench to assess Kubernetes cluster security
+Analyze security scan results and implement remediation strategies
+Apply security best practices for Kubernetes workloads
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Kubernetes concepts (pods, deployments, namespaces)
+Familiarity with Linux command line operations
+Basic knowledge of YAML configuration files
+Understanding of container security concepts
+Experience with kubectl commands
+Lab Environment
+Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated Linux machine. The provided machine is bare metal with no pre-installed tools, so you will install all required tools during the lab exercises.
+
+Task 1: Environment Setup and Kubernetes Installation
+Subtask 1.1: Update System and Install Dependencies
+First, update your system and install necessary dependencies:
+
+# Update package lists
+sudo apt update && sudo apt upgrade -y
+
+# Install required packages
+sudo apt install -y curl wget apt-transport-https ca-certificates gnupg lsb-release
+
+# Install Docker
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io
+
+# Add current user to docker group
+sudo usermod -aG docker $USER
+newgrp docker
+
+# Verify Docker installation
+docker --version
+Subtask 1.2: Install Kubernetes Components
+Install kubectl, kubeadm, and kubelet:
+
+# Add Kubernetes repository
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
+
+# Update package list and install Kubernetes components
+sudo apt update
+sudo apt install -y kubelet kubeadm kubectl
+
+# Hold packages to prevent automatic updates
+sudo apt-mark hold kubelet kubeadm kubectl
+
+# Verify installation
+kubectl version --client
+kubeadm version
+Subtask 1.3: Initialize Kubernetes Cluster
+Set up a single-node Kubernetes cluster:
+
+# Disable swap (required for Kubernetes)
+sudo swapoff -a
+sudo sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+
+# Initialize the cluster
+sudo kubeadm init --pod-network-cidr=10.244.0.0/16
+
+# Set up kubectl for regular user
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+# Install Flannel CNI plugin
+kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+
+# Remove taint from master node to allow pod scheduling
+kubectl taint nodes --all node-role.kubernetes.io/control-plane-
+
+# Verify cluster status
+kubectl get nodes
+kubectl get pods -A
+Wait for all pods to be in Running state before proceeding.
+
+Task 2: Implementing Pod Security Standards
+Subtask 2.1: Understanding Pod Security Standards
+Pod Security Standards define three different policies to broadly cover the security spectrum:
+
+Privileged: Unrestricted policy, providing the widest possible level of permissions
+Baseline: Minimally restrictive policy which prevents known privilege escalations
+Restricted: Heavily restricted policy, following current Pod hardening best practices
+Subtask 2.2: Create Test Namespaces with Security Policies
+Create namespaces with different security levels:
+
+# Create namespace with baseline security
+kubectl create namespace baseline-ns
+kubectl label namespace baseline-ns pod-security.kubernetes.io/enforce=baseline
+kubectl label namespace baseline-ns pod-security.kubernetes.io/audit=baseline
+kubectl label namespace baseline-ns pod-security.kubernetes.io/warn=baseline
+
+# Create namespace with restricted security
+kubectl create namespace restricted-ns
+kubectl label namespace restricted-ns pod-security.kubernetes.io/enforce=restricted
+kubectl label namespace restricted-ns pod-security.kubernetes.io/audit=restricted
+kubectl label namespace restricted-ns pod-security.kubernetes.io/warn=restricted
+
+# Create namespace with privileged security (for comparison)
+kubectl create namespace privileged-ns
+kubectl label namespace privileged-ns pod-security.kubernetes.io/enforce=privileged
+
+# Verify namespace labels
+kubectl get namespaces --show-labels
+Subtask 2.3: Test Privileged Container Restrictions
+Create test deployments to understand security policy enforcement:
+
+# Create a privileged pod manifest
+cat << 'EOF' > privileged-pod.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: privileged-test
+spec:
+  containers:
+  - name: test-container
+    image: nginx:latest
+    securityContext:
+      privileged: true
+      runAsUser: 0
+EOF
+
+# Try to deploy in different namespaces
+echo "Testing privileged pod in privileged namespace:"
+kubectl apply -f privileged-pod.yaml -n privileged-ns
+
+echo "Testing privileged pod in baseline namespace:"
+kubectl apply -f privileged-pod.yaml -n baseline-ns
+
+echo "Testing privileged pod in restricted namespace:"
+kubectl apply -f privileged-pod.yaml -n restricted-ns
+
+# Check pod status
+kubectl get pods -A | grep privileged-test
+Subtask 2.4: Create Compliant Restricted Pod
+Create a pod that complies with restricted security standards:
+
+# Create a restricted-compliant pod
+cat << 'EOF' > restricted-compliant-pod.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: restricted-compliant
+spec:
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+  - name: app-container
+    image: nginx:latest
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      runAsUser: 1000
+      runAsGroup: 1000
+      capabilities:
+        drop:
+        - ALL
+      seccompProfile:
+        type: RuntimeDefault
+    volumeMounts:
+    - name: tmp-volume
+      mountPath: /tmp
+    - name: var-cache-nginx
+      mountPath: /var/cache/nginx
+    - name: var-run
+      mountPath: /var/run
+  volumes:
+  - name: tmp-volume
+    emptyDir: {}
+  - name: var-cache-nginx
+    emptyDir: {}
+  - name: var-run
+    emptyDir: {}
+EOF
+
+# Deploy the compliant pod
+kubectl apply -f restricted-compliant-pod.yaml -n restricted-ns
+
+# Verify deployment
+kubectl get pods -n restricted-ns
+kubectl describe pod restricted-compliant -n restricted-ns
+Task 3: Installing and Using Trivy for Vulnerability Scanning
+Subtask 3.1: Install Trivy
+Install Trivy vulnerability scanner:
+
+# Install Trivy
+sudo apt-get update
+sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+
+wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee -a /etc/apt/sources.list.d/trivy.list
+
+sudo apt-get update
+sudo apt-get install -y trivy
+
+# Verify installation
+trivy --version
+Subtask 3.2: Scan Container Images
+Perform vulnerability scans on container images:
+
+# Scan a basic nginx image
+echo "Scanning nginx:latest image:"
+trivy image nginx:latest
+
+# Scan with specific severity levels
+echo "Scanning for HIGH and CRITICAL vulnerabilities only:"
+trivy image --severity HIGH,CRITICAL nginx:latest
+
+# Scan and output to JSON format
+trivy image --format json --output nginx-scan-results.json nginx:latest
+
+# View the JSON results
+cat nginx-scan-results.json | jq '.Results[0].Vulnerabilities | length'
+Subtask 3.3: Scan Kubernetes Cluster
+Use Trivy to scan your Kubernetes cluster:
+
+# Install Trivy Kubernetes integration
+kubectl create namespace trivy-system
+
+# Create Trivy operator deployment
+cat << 'EOF' > trivy-operator.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trivy-operator
+  namespace: trivy-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: trivy-operator
+  template:
+    metadata:
+      labels:
+        app: trivy-operator
+    spec:
+      serviceAccountName: trivy-operator
+      containers:
+      - name: trivy-operator
+        image: aquasec/trivy-operator:latest
+        env:
+        - name: OPERATOR_NAMESPACE
+          value: trivy-system
+        - name: OPERATOR_TARGET_NAMESPACES
+          value: ""
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: trivy-operator
+  namespace: trivy-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: trivy-operator
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "configmaps", "secrets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: trivy-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: trivy-operator
+subjects:
+- kind: ServiceAccount
+  name: trivy-operator
+  namespace: trivy-system
+EOF
+
+kubectl apply -f trivy-operator.yaml
+
+# Scan running workloads
+trivy k8s --report summary cluster
+Subtask 3.4: Create Vulnerability Report
+Generate comprehensive vulnerability reports:
+
+# Create a detailed scan report
+trivy k8s --format table --output cluster-security-report.txt cluster
+
+# View the report
+cat cluster-security-report.txt
+
+# Scan specific namespace
+trivy k8s --format json --output restricted-ns-scan.json namespace/restricted-ns
+
+# Create a summary of findings
+echo "=== Vulnerability Scan Summary ===" > security-summary.txt
+echo "Scan Date: $(date)" >> security-summary.txt
+echo "" >> security-summary.txt
+echo "High/Critical Vulnerabilities Found:" >> security-summary.txt
+trivy image --severity HIGH,CRITICAL --format table nginx:latest | grep -E "(HIGH|CRITICAL)" >> security-summary.txt
+
+cat security-summary.txt
+Task 4: Installing and Running Kube-bench
+Subtask 4.1: Install Kube-bench
+Install and configure Kube-bench for CIS Kubernetes Benchmark testing:
+
+# Download and install kube-bench
+curl -L https://github.com/aquasecurity/kube-bench/releases/latest/download/kube-bench_linux_amd64.tar.gz -o kube-bench.tar.gz
+
+tar -xzf kube-bench.tar.gz
+sudo mv kube-bench /usr/local/bin/
+sudo chmod +x /usr/local/bin/kube-bench
+
+# Verify installation
+kube-bench version
+Subtask 4.2: Run CIS Kubernetes Benchmark
+Execute comprehensive security benchmarks:
+
+# Run complete CIS benchmark
+echo "Running CIS Kubernetes Benchmark..."
+sudo kube-bench run --targets master,node,etcd,policies > kube-bench-results.txt
+
+# View results
+cat kube-bench-results.txt
+
+# Run specific sections
+echo "Running Master Node checks only:"
+sudo kube-bench run --targets master
+
+echo "Running Worker Node checks only:"
+sudo kube-bench run --targets node
+Subtask 4.3: Run Kube-bench as Kubernetes Job
+Deploy Kube-bench as a Kubernetes job for automated scanning:
+
+# Create kube-bench job manifest
+cat << 'EOF' > kube-bench-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kube-bench
+spec:
+  template:
+    spec:
+      hostPID: true
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: kube-bench
+        image: aquasec/kube-bench:latest
+        command: ["kube-bench", "run", "--targets", "master,node", "--version", "1.28"]
+        volumeMounts:
+        - name: var-lib-etcd
+          mountPath: /var/lib/etcd
+          readOnly: true
+        - name: var-lib-kubelet
+          mountPath: /var/lib/kubelet
+          readOnly: true
+        - name: var-lib-kube-scheduler
+          mountPath: /var/lib/kube-scheduler
+          readOnly: true
+        - name: var-lib-kube-controller-manager
+          mountPath: /var/lib/kube-controller-manager
+          readOnly: true
+        - name: etc-systemd
+          mountPath: /etc/systemd
+          readOnly: true
+        - name: lib-systemd
+          mountPath: /lib/systemd/
+          readOnly: true
+        - name: srv-kubernetes
+          mountPath: /srv/kubernetes/
+          readOnly: true
+        - name: etc-kubernetes
+          mountPath: /etc/kubernetes
+          readOnly: true
+        - name: usr-bin
+          mountPath: /usr/local/mount-from-host/bin
+          readOnly: true
+      restartPolicy: Never
+      volumes:
+      - name: var-lib-etcd
+        hostPath:
+          path: "/var/lib/etcd"
+      - name: var-lib-kubelet
+        hostPath:
+          path: "/var/lib/kubelet"
+      - name: var-lib-kube-scheduler
+        hostPath:
+          path: "/var/lib/kube-scheduler"
+      - name: var-lib-kube-controller-manager
+        hostPath:
+          path: "/var/lib/kube-controller-manager"
+      - name: etc-systemd
+        hostPath:
+          path: "/etc/systemd"
+      - name: lib-systemd
+        hostPath:
+          path: "/lib/systemd"
+      - name: srv-kubernetes
+        hostPath:
+          path: "/srv/kubernetes"
+      - name: etc-kubernetes
+        hostPath:
+          path: "/etc/kubernetes"
+      - name: usr-bin
+        hostPath:
+          path: "/usr/bin"
+EOF
+
+# Deploy the job
+kubectl apply -f kube-bench-job.yaml
+
+# Wait for job completion
+kubectl wait --for=condition=complete job/kube-bench --timeout=300s
+
+# View job results
+kubectl logs job/kube-bench > kube-bench-k8s-results.txt
+cat kube-bench-k8s-results.txt
+Subtask 4.4: Analyze and Remediate Findings
+Review and address security findings:
+
+# Create analysis script
+cat << 'EOF' > analyze-security.sh
+#!/bin/bash
+
+echo "=== KUBERNETES SECURITY ANALYSIS REPORT ==="
+echo "Generated on: $(date)"
+echo ""
+
+echo "=== KUBE-BENCH SUMMARY ==="
+if [ -f "kube-bench-results.txt" ]; then
+    echo "Total Tests Run: $(grep -c '\[INFO\]' kube-bench-results.txt)"
+    echo "Passed Tests: $(grep -c '\[PASS\]' kube-bench-results.txt)"
+    echo "Failed Tests: $(grep -c '\[FAIL\]' kube-bench-results.txt)"
+    echo "Warnings: $(grep -c '\[WARN\]' kube-bench-results.txt)"
+    echo ""
+    echo "Critical Failures:"
+    grep '\[FAIL\]' kube-bench-results.txt | head -10
+fi
+
+echo ""
+echo "=== TRIVY VULNERABILITY SUMMARY ==="
+if [ -f "nginx-scan-results.json" ]; then
+    echo "Vulnerabilities found in nginx:latest:"
+    cat nginx-scan-results.json | jq -r '.Results[0].Vulnerabilities[] | select(.Severity == "HIGH" or .Severity == "CRITICAL") | "\(.Severity): \(.VulnerabilityID) - \(.Title)"' | head -10
+fi
+
+echo ""
+echo "=== RECOMMENDATIONS ==="
+echo "1. Address all CRITICAL and HIGH severity vulnerabilities"
+echo "2. Implement failed CIS benchmark controls"
+echo "3. Use minimal base images"
+echo "4. Enable Pod Security Standards"
+echo "5. Regular security scanning in CI/CD pipeline"
+EOF
+
+chmod +x analyze-security.sh
+./analyze-security.sh > security-analysis-report.txt
+
+cat security-analysis-report.txt
+Task 5: Implementing Security Best Practices
+Subtask 5.1: Create Secure Deployment Template
+Create a template for secure Kubernetes deployments:
+
+# Create secure deployment template
+cat << 'EOF' > secure-deployment-template.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: secure-app
+  labels:
+    app: secure-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: secure-app
+  template:
+    metadata:
+      labels:
+        app: secure-app
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: app
+        image: nginx:1.21-alpine
+        ports:
+        - containerPort: 8080
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          capabilities:
+            drop:
+            - ALL
+            add:
+            - NET_BIND_SERVICE
+          seccompProfile:
+            type: RuntimeDefault
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "250m"
+          limits:
+            memory: "128Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        volumeMounts:
+        - name: tmp-volume
+          mountPath: /tmp
+        - name: var-cache-nginx
+          mountPath: /var/cache/nginx
+        - name: var-run
+          mountPath: /var/run
+        - name: nginx-config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+          readOnly: true
+      volumes:
+      - name: tmp-volume
+        emptyDir: {}
+      - name: var-cache-nginx
+        emptyDir: {}
+      - name: var-run
+        emptyDir: {}
+      - name: nginx-config
+        configMap:
+          name: nginx-config
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+data:
+  nginx.conf: |
+    user nginx;
+    worker_processes auto;
+    error_log /var/log/nginx/error.log warn;
+    pid /var/run/nginx.pid;
+    
+    events {
+        worker_connections 1024;
+    }
+    
+    http {
+        include /etc/nginx/mime.types;
+        default_type application/octet-stream;
+        
+        log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                        '$status $body_bytes_sent "$http_referer" '
+                        '"$http_user_agent" "$http_x_forwarded_for"';
+        
+        access_log /var/log/nginx/access.log main;
+        
+        sendfile on;
+        tcp_nopush on;
+        tcp_nodelay on;
+        keepalive_timeout 65;
+        types_hash_max_size 2048;
+        server_tokens off;
+        
+        server {
+            listen 8080;
+            server_name localhost;
+            
+            location / {
+                root /usr/share/nginx/html;
+                index index.html index.htm;
+            }
+            
+            error_page 500 502 503 504 /50x.html;
+            location = /50x.html {
+                root /usr/share/nginx/html;
+            }
+        }
+    }
+EOF
+
+# Deploy the secure application
+kubectl apply -f secure-deployment-template.yaml -n restricted-ns
+
+# Verify deployment
+kubectl get deployments -n restricted-ns
+kubectl get pods -n restricted-ns
+Subtask 5.2: Implement Network Policies
+Create network policies to restrict pod-to-pod communication:
+
+# Create network policy for secure application
+cat << 'EOF' > network-policy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: secure-app-netpol
+  namespace: restricted-ns
+spec:
+  podSelector:
+    matchLabels:
+      app: secure-app
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: restricted-ns
+    ports:
+    - protocol: TCP
+      port: 8080
+  egress:
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 53
+    - protocol: UDP
+      port: 53
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+EOF
+
+# Apply network policy
+kubectl apply -f network-policy.yaml
+
+# Verify network policy
+kubectl get networkpolicies -n restricted-ns
+kubectl describe networkpolicy secure-app-netpol -n restricted-ns
+Subtask 5.3: Create Resource Quotas and Limits
+Implement resource quotas to prevent resource exhaustion:
+
+# Create resource quota
+cat << 'EOF' > resource-quota.yaml
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: restricted-ns-quota
+  namespace: restricted-ns
+spec:
+  hard:
+    requests.cpu: "2"
+    requests.memory: 4Gi
+    limits.cpu: "4"
+    limits.memory: 8Gi
+    pods: "10"
+    persistentvolumeclaims: "4"
+    services: "5"
+    secrets: "10"
+    configmaps: "10"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: restricted-ns-limits
+  namespace: restricted-ns
+spec:
+  limits:
+  - default:
+      cpu: "500m"
+      memory: "512Mi"
+    defaultRequest:
+      cpu: "100m"
+      memory: "128Mi"
+    type: Container
+  - max:
+      cpu: "1"
+      memory: "1Gi"
+    min:
+      cpu: "50m"
+      memory: "64Mi"
+    type: Container
+EOF
+
+# Apply resource constraints
+kubectl apply -f resource-quota.yaml
+
+# Verify resource quota
+kubectl get resourcequota -n restricted-ns
+kubectl describe resourcequota restricted-ns-quota -n restricted-ns
+kubectl get limitrange -n restricted-ns
+Task 6: Final Security Assessment
+Subtask 6.1: Comprehensive Security Scan
+Perform a final comprehensive security assessment:
+
+# Run final security assessment
+cat << 'EOF' > final-security-assessment.sh
+#!/bin/bash
+
+echo "=== FINAL KUBERNETES SECURITY ASSESSMENT ==="
+echo "Assessment Date: $(date)"
+echo ""
+
+# Check Pod Security Standards
+echo "=== POD SECURITY STANDARDS STATUS ==="
+kubectl get namespaces -o custom-columns="NAME:.metadata.name,ENFORCE:.metadata.labels.pod-security\.kubernetes\.io/enforce,AUDIT:.metadata.labels.pod-security\.kubernetes\.io/audit,WARN:.metadata.labels.pod-security\.kubernetes\.io/warn"
+
+echo ""
+echo "=== RUNNING PODS SECURITY CONTEXT ==="
+kubectl get pods -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\t"}{.metadata.name}{"\t"}{.spec.securityContext.runAsNonRoot}{"\t"}{.spec.securityContext.runAsUser}{"\n"}{end}' | column -t
+
+echo ""
+echo "=== NETWORK POLICIES ==="
+kubectl get networkpolicies -A
+
+echo ""
+echo "=== RESOURCE QUOTAS ==="
+kubectl get resourcequota -A
+
+echo ""
+echo "=== RBAC SUMMARY ==="
+kubectl get clusterroles | wc -l
+kubectl get clusterrolebindings | wc -l
+kubectl get roles -A | wc -l
+kubectl get rolebindings -A | wc -l
+
+echo ""
+echo "=== SECURITY RECOMMENDATIONS ==="
+echo "1. All namespaces should have Pod Security Standards enforced"
+echo "2. All pods should run as non-root users"
+echo "3. Network policies should be implemented for all applications"
+echo "4. Resource quotas should be set for all namespaces"
+echo "5. Regular vulnerability scanning should be automated"
+echo "6. RBAC should follow principle of least privilege"
+EOF
+
+chmod +x final-security-assessment.sh
+./final-security-assessment.sh > final-security-report.txt
+
+cat final-security-report.txt
+Subtask 6.2: Create Security Monitoring Dashboard
+Set up basic security monitoring:
+
+# Create security monitoring script
+cat << 'EOF' > security-monitor.sh
+#!/bin/bash
+
+while true; do
+    clear
+    echo "=== KUBERNETES SECURITY MONITORING DASHBOARD ==="
+    echo "Last Updated: $(date)"
+    echo ""
+    
+    echo "=== CLUSTER STATUS ==="
+    kubectl get nodes --no-headers | wc -l | xargs echo "Nodes:"
+    kubectl get pods -A --field-selector=status.phase!=Running --no-headers | wc -l | xargs echo "Non-Running Pods:"
+    
+    echo ""
+    echo "=== SECURITY VIOLATIONS ==="
+    # Check for privileged pods
+    PRIVILEGED_PODS=$(kubectl get pods -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\t"}{.metadata.name}{"\t"}{.spec.containers[*].securityContext.privileged}{"\n"}{end}' | grep -c "true" || echo "0")
+    echo "Privileged Pods: $PRIVILEGED_PODS"
+    
+    # Check for root users
+    ROOT_PODS=$(kubectl get pods -A -o jsonpath='{range .items[*]}{.spec.securityContext.runAsUser}{"\n"}{end}' | grep -c "^0$" || echo "0")
+    echo "Pods running as root: $ROOT_PODS"
+    
+    echo ""
+    echo "=== RECENT EVENTS ==="
+    kubectl get events -A --sort-by='.lastTimestamp' | tail -5
+    
+    echo ""
+    echo "Press Ctrl+C to exit monitoring..."
+    sleep 30
+done
+EOF
+
+chmod +x security-monitor.sh
+
+# Run monitoring for 2 minutes then exit
+timeout 120 ./security-monitor.sh || echo "Security monitoring completed"
+Troubleshooting Tips
+Common Issues and Solutions
+Issue 1: Pod Security Standards not enforcing
+
+# Check if admission controller is enabled
+kubectl get pods -n kube-system | grep admission
+
+# Verify namespace labels
+kubectl get namespace restricted-ns -o yaml | grep labels -A 5
+Issue 2: Trivy scan fails
+
+# Update Trivy database
+trivy image --download-db-only
+
+# Check Docker daemon status
+sudo systemctl status docker
+Issue 3: Kube-bench job fails
+
+# Check job status
+kubectl describe job kube-bench
+
+# Check node taints
+kubectl describe nodes | grep -i taint
+Issue 4: Network policies not working
+
+# Verify CNI plugin supports network policies
+kubectl get pods -n kube-system | grep -E "(flannel|calico|weave)"
+
+# Check if network policy controller is running
+kubectl logs -n kube-system -l app=flannel
+Conclusion
+In this comprehensive lab, you have successfully implemented advanced security practices for Kubernetes workloads. You accomplished the following key objectives:
+
+Security Policy Implementation: You configured Pod Security Standards across different namespaces, demonstrating how to enforce baseline and restricted security policies that prevent privileged containers and enforce security best practices.
+
+Vulnerability Management: You installed and used Trivy to scan container images and Kubernetes clusters for security vulnerabilities, learning how to identify and assess security risks in your containerized applications.
+
+Security Benchmarking: You deployed and executed Kube-bench to assess your Kubernetes cluster against CIS Kubernetes Benchmark standards, identifying security gaps and areas for improvement.
+
+Practical Security Hardening: You created secure deployment templates, implemented network policies, and established resource quotas that demonstrate real-world security hardening techniques.
+
+Monitoring and Assessment: You developed security monitoring capabilities and comprehensive assessment reports that provide ongoing visibility into your cluster's security posture.
+
+These advanced security practices are essential for production Kubernetes environments where protecting workloads, data, and infrastructure from security threats is paramount. The skills you've developed in this lab form the foundation for implementing enterprise-grade security in Kubernetes deployments, ensuring compliance with security standards, and maintaining a robust security posture throughout the application lifecycle.
+
+The combination of preventive controls (Pod Security Standards), detective controls (vulnerability scanning), and monitoring capabilities provides a comprehensive security framework that you can adapt and extend for various organizational security requirements.
