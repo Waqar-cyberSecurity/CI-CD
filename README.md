@@ -6,6 +6,7 @@
   <img src="https://img.shields.io/github/stars/Waqar-cyberSecurity/Nodepad?style=social" alt="Stars" />
   <img src="https://img.shields.io/github/forks/Waqar-cyberSecurity/Nodepad?style=social" alt="Forks" />
 </p
+  
 ---
 
 
