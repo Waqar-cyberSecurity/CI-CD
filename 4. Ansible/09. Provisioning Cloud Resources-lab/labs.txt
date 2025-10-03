@@ -1,0 +1,547 @@
+Lab 9: Provisioning Cloud Resources
+Lab Objectives
+By the end of this lab, students will be able to:
+
+Install and configure Ansible on a Linux machine
+Set up AWS credentials and configure Ansible to interact with AWS services
+Create and manage AWS EC2 instances using Ansible playbooks
+Configure AWS security groups and networking resources
+Understand Infrastructure as Code (IaC) principles using Ansible
+Troubleshoot common issues when provisioning cloud resources
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of Linux command line operations
+Familiarity with YAML syntax
+Basic knowledge of AWS concepts (EC2, Security Groups, VPC)
+An active AWS account with programmatic access credentials
+Understanding of SSH key pairs and public key authentication
+Lab Environment
+Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated Linux environment. The provided Linux machine is bare metal with no pre-installed tools, so you will need to install all required tools during the lab exercises.
+
+Task 1: Set up Ansible to Interact with AWS
+Subtask 1.1: Install Required Packages
+First, update your system and install the necessary packages.
+
+# Update package repositories
+sudo apt update
+
+# Install Python3 and pip
+sudo apt install -y python3 python3-pip
+
+# Install Ansible
+sudo apt install -y ansible
+
+# Verify Ansible installation
+ansible --version
+Subtask 1.2: Install AWS SDK and Ansible AWS Collection
+Install the required Python libraries and Ansible collections for AWS integration.
+
+# Install boto3 and botocore (AWS SDK for Python)
+pip3 install boto3 botocore
+
+# Install Ansible AWS collection
+ansible-galaxy collection install amazon.aws
+
+# Verify the collection installation
+ansible-galaxy collection list | grep amazon.aws
+Subtask 1.3: Configure AWS Credentials
+Create AWS credentials file to authenticate with AWS services.
+
+# Create AWS credentials directory
+mkdir -p ~/.aws
+
+# Create credentials file
+cat > ~/.aws/credentials << EOF
+[default]
+aws_access_key_id = YOUR_ACCESS_KEY_ID
+aws_secret_access_key = YOUR_SECRET_ACCESS_KEY
+EOF
+
+# Create config file
+cat > ~/.aws/config << EOF
+[default]
+region = us-east-1
+output = json
+EOF
+
+# Set proper permissions
+chmod 600 ~/.aws/credentials
+chmod 600 ~/.aws/config
+Note: Replace YOUR_ACCESS_KEY_ID and YOUR_SECRET_ACCESS_KEY with your actual AWS credentials.
+
+Subtask 1.4: Test AWS Connection
+Create a simple test script to verify AWS connectivity.
+
+# Create test directory
+mkdir -p ~/ansible-aws-lab
+cd ~/ansible-aws-lab
+
+# Create a test playbook
+cat > test-aws-connection.yml << EOF
+---
+- name: Test AWS Connection
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Get AWS caller identity
+      amazon.aws.aws_caller_info:
+      register: caller_info
+    
+    - name: Display caller information
+      debug:
+        msg: "Connected to AWS as: {{ caller_info.account }}"
+EOF
+
+# Run the test playbook
+ansible-playbook test-aws-connection.yml
+Task 2: Provision an EC2 Instance
+Subtask 2.1: Create SSH Key Pair
+Generate an SSH key pair for secure access to EC2 instances.
+
+# Generate SSH key pair
+ssh-keygen -t rsa -b 2048 -f ~/.ssh/aws-lab-key -N ""
+
+# Display public key (you'll need this for AWS)
+cat ~/.ssh/aws-lab-key.pub
+Subtask 2.2: Create EC2 Key Pair in AWS
+Create a playbook to upload your SSH public key to AWS.
+
+cat > create-keypair.yml << EOF
+---
+- name: Create AWS Key Pair
+  hosts: localhost
+  gather_facts: no
+  vars:
+    key_name: "ansible-lab-keypair"
+    region: "us-east-1"
+  
+  tasks:
+    - name: Create EC2 key pair
+      amazon.aws.ec2_key:
+        name: "{{ key_name }}"
+        key_material: "{{ lookup('file', '~/.ssh/aws-lab-key.pub') }}"
+        region: "{{ region }}"
+        state: present
+      register: keypair_result
+    
+    - name: Display key pair information
+      debug:
+        msg: "Key pair '{{ key_name }}' created successfully"
+EOF
+
+# Run the playbook
+ansible-playbook create-keypair.yml
+Subtask 2.3: Create EC2 Instance Playbook
+Create a comprehensive playbook to provision an EC2 instance.
+
+cat > provision-ec2.yml << EOF
+---
+- name: Provision EC2 Instance
+  hosts: localhost
+  gather_facts: no
+  vars:
+    region: "us-east-1"
+    instance_type: "t2.micro"
+    ami_id: "ami-0c02fb55956c7d316"  # Amazon Linux 2 AMI
+    key_name: "ansible-lab-keypair"
+    security_group_name: "ansible-lab-sg"
+    instance_name: "ansible-provisioned-instance"
+  
+  tasks:
+    - name: Launch EC2 instance
+      amazon.aws.ec2_instance:
+        name: "{{ instance_name }}"
+        image_id: "{{ ami_id }}"
+        instance_type: "{{ instance_type }}"
+        key_name: "{{ key_name }}"
+        security_groups:
+          - "{{ security_group_name }}"
+        region: "{{ region }}"
+        state: present
+        wait: true
+        wait_timeout: 300
+        tags:
+          Environment: "Lab"
+          Project: "Ansible-AWS-Lab"
+          Owner: "Student"
+      register: ec2_result
+    
+    - name: Display instance information
+      debug:
+        msg: 
+          - "Instance ID: {{ ec2_result.instances[0].instance_id }}"
+          - "Public IP: {{ ec2_result.instances[0].public_ip_address }}"
+          - "Private IP: {{ ec2_result.instances[0].private_ip_address }}"
+          - "State: {{ ec2_result.instances[0].state.name }}"
+    
+    - name: Save instance information to file
+      copy:
+        content: |
+          Instance ID: {{ ec2_result.instances[0].instance_id }}
+          Public IP: {{ ec2_result.instances[0].public_ip_address }}
+          Private IP: {{ ec2_result.instances[0].private_ip_address }}
+          State: {{ ec2_result.instances[0].state.name }}
+        dest: ./instance-info.txt
+EOF
+Task 3: Configure Security Groups and Other Resources
+Subtask 3.1: Create Security Group
+Create a playbook to configure AWS security groups with proper rules.
+
+cat > create-security-group.yml << EOF
+---
+- name: Create and Configure Security Group
+  hosts: localhost
+  gather_facts: no
+  vars:
+    region: "us-east-1"
+    security_group_name: "ansible-lab-sg"
+    vpc_id: "default"  # Using default VPC
+  
+  tasks:
+    - name: Get default VPC information
+      amazon.aws.ec2_vpc_info:
+        region: "{{ region }}"
+        filters:
+          "is-default": "true"
+      register: vpc_info
+    
+    - name: Create security group
+      amazon.aws.ec2_security_group:
+        name: "{{ security_group_name }}"
+        description: "Security group for Ansible lab"
+        vpc_id: "{{ vpc_info.vpcs[0].vpc_id }}"
+        region: "{{ region }}"
+        rules:
+          - proto: tcp
+            ports:
+              - 22
+            cidr_ip: 0.0.0.0/0
+            rule_desc: "SSH access"
+          - proto: tcp
+            ports:
+              - 80
+            cidr_ip: 0.0.0.0/0
+            rule_desc: "HTTP access"
+          - proto: tcp
+            ports:
+              - 443
+            cidr_ip: 0.0.0.0/0
+            rule_desc: "HTTPS access"
+        rules_egress:
+          - proto: all
+            cidr_ip: 0.0.0.0/0
+            rule_desc: "All outbound traffic"
+        tags:
+          Name: "{{ security_group_name }}"
+          Environment: "Lab"
+          Project: "Ansible-AWS-Lab"
+        state: present
+      register: sg_result
+    
+    - name: Display security group information
+      debug:
+        msg: 
+          - "Security Group ID: {{ sg_result.group_id }}"
+          - "Security Group Name: {{ sg_result.group_name }}"
+EOF
+
+# Run the security group creation playbook
+ansible-playbook create-security-group.yml
+Subtask 3.2: Create Complete Infrastructure Playbook
+Create a comprehensive playbook that provisions all resources together.
+
+cat > complete-infrastructure.yml << EOF
+---
+- name: Complete AWS Infrastructure Provisioning
+  hosts: localhost
+  gather_facts: no
+  vars:
+    region: "us-east-1"
+    instance_type: "t2.micro"
+    ami_id: "ami-0c02fb55956c7d316"
+    key_name: "ansible-lab-keypair"
+    security_group_name: "ansible-lab-sg"
+    instance_name: "ansible-provisioned-instance"
+  
+  tasks:
+    - name: Get default VPC information
+      amazon.aws.ec2_vpc_info:
+        region: "{{ region }}"
+        filters:
+          "is-default": "true"
+      register: vpc_info
+    
+    - name: Create security group
+      amazon.aws.ec2_security_group:
+        name: "{{ security_group_name }}"
+        description: "Security group for Ansible lab"
+        vpc_id: "{{ vpc_info.vpcs[0].vpc_id }}"
+        region: "{{ region }}"
+        rules:
+          - proto: tcp
+            ports:
+              - 22
+            cidr_ip: 0.0.0.0/0
+            rule_desc: "SSH access"
+          - proto: tcp
+            ports:
+              - 80
+            cidr_ip: 0.0.0.0/0
+            rule_desc: "HTTP access"
+        rules_egress:
+          - proto: all
+            cidr_ip: 0.0.0.0/0
+        tags:
+          Name: "{{ security_group_name }}"
+          Environment: "Lab"
+        state: present
+      register: sg_result
+    
+    - name: Create EC2 key pair
+      amazon.aws.ec2_key:
+        name: "{{ key_name }}"
+        key_material: "{{ lookup('file', '~/.ssh/aws-lab-key.pub') }}"
+        region: "{{ region }}"
+        state: present
+    
+    - name: Launch EC2 instance
+      amazon.aws.ec2_instance:
+        name: "{{ instance_name }}"
+        image_id: "{{ ami_id }}"
+        instance_type: "{{ instance_type }}"
+        key_name: "{{ key_name }}"
+        security_groups:
+          - "{{ security_group_name }}"
+        region: "{{ region }}"
+        state: present
+        wait: true
+        wait_timeout: 300
+        tags:
+          Environment: "Lab"
+          Project: "Ansible-AWS-Lab"
+          Owner: "Student"
+      register: ec2_result
+    
+    - name: Create inventory file for the new instance
+      copy:
+        content: |
+          [aws_instances]
+          {{ ec2_result.instances[0].public_ip_address }} ansible_user=ec2-user ansible_ssh_private_key_file=~/.ssh/aws-lab-key
+        dest: ./aws-inventory.ini
+    
+    - name: Display complete infrastructure information
+      debug:
+        msg: 
+          - "=== Infrastructure Provisioning Complete ==="
+          - "Security Group ID: {{ sg_result.group_id }}"
+          - "Instance ID: {{ ec2_result.instances[0].instance_id }}"
+          - "Public IP: {{ ec2_result.instances[0].public_ip_address }}"
+          - "Private IP: {{ ec2_result.instances[0].private_ip_address }}"
+          - "SSH Command: ssh -i ~/.ssh/aws-lab-key ec2-user@{{ ec2_result.instances[0].public_ip_address }}"
+EOF
+
+# Run the complete infrastructure playbook
+ansible-playbook complete-infrastructure.yml
+Subtask 3.3: Verify Infrastructure
+Create a verification playbook to check the provisioned resources.
+
+cat > verify-infrastructure.yml << EOF
+---
+- name: Verify AWS Infrastructure
+  hosts: localhost
+  gather_facts: no
+  vars:
+    region: "us-east-1"
+    security_group_name: "ansible-lab-sg"
+    instance_name: "ansible-provisioned-instance"
+  
+  tasks:
+    - name: Get security group information
+      amazon.aws.ec2_security_group_info:
+        group_names:
+          - "{{ security_group_name }}"
+        region: "{{ region }}"
+      register: sg_info
+    
+    - name: Get EC2 instance information
+      amazon.aws.ec2_instance_info:
+        region: "{{ region }}"
+        filters:
+          "tag:Name": "{{ instance_name }}"
+          "instance-state-name": "running"
+      register: instance_info
+    
+    - name: Display security group details
+      debug:
+        msg:
+          - "Security Group Name: {{ sg_info.security_groups[0].group_name }}"
+          - "Security Group ID: {{ sg_info.security_groups[0].group_id }}"
+          - "Inbound Rules: {{ sg_info.security_groups[0].ip_permissions | length }}"
+    
+    - name: Display instance details
+      debug:
+        msg:
+          - "Instance Name: {{ instance_info.instances[0].tags.Name }}"
+          - "Instance ID: {{ instance_info.instances[0].instance_id }}"
+          - "Instance Type: {{ instance_info.instances[0].instance_type }}"
+          - "Public IP: {{ instance_info.instances[0].public_ip_address }}"
+          - "State: {{ instance_info.instances[0].state.name }}"
+      when: instance_info.instances | length > 0
+    
+    - name: Test SSH connectivity
+      wait_for:
+        host: "{{ instance_info.instances[0].public_ip_address }}"
+        port: 22
+        timeout: 60
+      when: instance_info.instances | length > 0
+    
+    - name: SSH connection test result
+      debug:
+        msg: "SSH port 22 is accessible on {{ instance_info.instances[0].public_ip_address }}"
+      when: instance_info.instances | length > 0
+EOF
+
+# Run the verification playbook
+ansible-playbook verify-infrastructure.yml
+Subtask 3.4: Test SSH Connection
+Test the SSH connection to your provisioned instance.
+
+# Wait for the instance to be fully ready
+sleep 30
+
+# Test SSH connection (replace with your instance's public IP)
+# Get the public IP from the instance-info.txt file
+PUBLIC_IP=$(grep "Public IP:" instance-info.txt | cut -d' ' -f3)
+
+# Test SSH connection
+ssh -i ~/.ssh/aws-lab-key -o StrictHostKeyChecking=no ec2-user@$PUBLIC_IP "echo 'SSH connection successful!'"
+Subtask 3.5: Create Cleanup Playbook
+Create a playbook to clean up resources when done.
+
+cat > cleanup-infrastructure.yml << EOF
+---
+- name: Cleanup AWS Infrastructure
+  hosts: localhost
+  gather_facts: no
+  vars:
+    region: "us-east-1"
+    security_group_name: "ansible-lab-sg"
+    instance_name: "ansible-provisioned-instance"
+    key_name: "ansible-lab-keypair"
+  
+  tasks:
+    - name: Get EC2 instance information
+      amazon.aws.ec2_instance_info:
+        region: "{{ region }}"
+        filters:
+          "tag:Name": "{{ instance_name }}"
+      register: instance_info
+    
+    - name: Terminate EC2 instances
+      amazon.aws.ec2_instance:
+        instance_ids: "{{ item.instance_id }}"
+        region: "{{ region }}"
+        state: absent
+        wait: true
+        wait_timeout: 300
+      loop: "{{ instance_info.instances }}"
+      when: instance_info.instances | length > 0
+    
+    - name: Delete security group
+      amazon.aws.ec2_security_group:
+        name: "{{ security_group_name }}"
+        region: "{{ region }}"
+        state: absent
+      ignore_errors: yes
+    
+    - name: Delete key pair
+      amazon.aws.ec2_key:
+        name: "{{ key_name }}"
+        region: "{{ region }}"
+        state: absent
+    
+    - name: Cleanup confirmation
+      debug:
+        msg: "Infrastructure cleanup completed successfully"
+EOF
+Troubleshooting Tips
+Common Issues and Solutions
+Issue 1: AWS Credentials Not Found
+
+# Verify credentials file exists and has correct permissions
+ls -la ~/.aws/
+cat ~/.aws/credentials
+Issue 2: Ansible AWS Collection Not Found
+
+# Reinstall the collection
+ansible-galaxy collection install amazon.aws --force
+Issue 3: SSH Connection Refused
+
+# Check security group rules
+ansible-playbook verify-infrastructure.yml
+
+# Verify SSH key permissions
+chmod 600 ~/.ssh/aws-lab-key
+Issue 4: Instance Launch Fails
+
+# Check AWS service limits and quotas
+# Verify AMI ID is correct for your region
+# Ensure instance type is available in your region
+Issue 5: Python Dependencies Missing
+
+# Install missing dependencies
+pip3 install boto3 botocore --upgrade
+Verification Commands
+Use these commands to verify your lab completion:
+
+# Check Ansible installation
+ansible --version
+
+# Verify AWS collections
+ansible-galaxy collection list | grep amazon.aws
+
+# Test AWS connectivity
+ansible-playbook test-aws-connection.yml
+
+# Verify infrastructure
+ansible-playbook verify-infrastructure.yml
+
+# List created files
+ls -la ~/ansible-aws-lab/
+Lab Summary and Conclusion
+In this lab, you have successfully accomplished the following:
+
+Key Achievements:
+
+Ansible Setup: Installed and configured Ansible with AWS integration capabilities on a Linux machine
+AWS Authentication: Configured secure AWS credentials and tested connectivity to AWS services
+Infrastructure as Code: Created reusable Ansible playbooks for provisioning cloud resources
+EC2 Provisioning: Successfully launched and configured EC2 instances using Ansible automation
+Security Configuration: Implemented proper security groups with appropriate access rules
+Resource Management: Learned to verify, monitor, and clean up cloud resources programmatically
+Technical Skills Developed:
+
+Automation Expertise: Understanding of Infrastructure as Code principles using Ansible
+Cloud Resource Management: Hands-on experience with AWS EC2, Security Groups, and Key Pairs
+Security Best Practices: Implementation of proper access controls and SSH key management
+Troubleshooting Skills: Ability to diagnose and resolve common cloud provisioning issues
+YAML Proficiency: Advanced YAML syntax for complex Ansible playbooks
+Real-World Applications:
+
+This lab simulates real-world scenarios where DevOps engineers and cloud architects use automation tools to provision and manage cloud infrastructure. The skills learned here are directly applicable to:
+
+Enterprise Cloud Deployments: Automating large-scale infrastructure provisioning
+DevOps Pipelines: Integrating infrastructure provisioning into CI/CD workflows
+Cost Management: Programmatic resource lifecycle management to optimize cloud costs
+Compliance and Security: Consistent application of security policies across cloud resources
+Next Steps:
+
+To further enhance your cloud automation skills, consider exploring:
+
+Advanced Ansible features like roles and collections
+Multi-cloud provisioning strategies
+Integration with configuration management tools
+Monitoring and logging for automated infrastructure
+Advanced AWS services like Load Balancers, Auto Scaling Groups, and RDS
+The foundation you've built in this lab provides a solid starting point for more complex cloud automation scenarios and enterprise-level infrastructure management.
