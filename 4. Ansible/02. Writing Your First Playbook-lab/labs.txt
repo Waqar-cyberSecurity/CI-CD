@@ -1,0 +1,390 @@
+Lab 2: Writing Your First Playbook
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Understand the basic structure and syntax of Ansible playbooks
+Create a simple playbook to install software packages
+Execute playbooks using the ansible-playbook command
+Verify playbook execution and results
+Troubleshoot common playbook issues
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of YAML syntax
+Familiarity with Linux command line operations
+Knowledge of package management concepts
+Completion of Lab 1 or equivalent Ansible basics knowledge
+Lab Environment
+Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated environment. The provided Linux machine is bare metal with no pre-installed tools, so you will install Ansible and other required tools during the lab exercises.
+
+Task 1: Environment Setup and Ansible Installation
+Subtask 1.1: Update System and Install Prerequisites
+First, update your system and install necessary packages:
+
+sudo apt update
+sudo apt install -y python3 python3-pip curl wget
+Subtask 1.2: Install Ansible
+Install Ansible using pip3:
+
+sudo pip3 install ansible
+Verify the installation:
+
+ansible --version
+You should see output showing the Ansible version and configuration details.
+
+Subtask 1.3: Create Working Directory
+Create a dedicated directory for your playbook work:
+
+mkdir ~/ansible-lab2
+cd ~/ansible-lab2
+Subtask 1.4: Configure Ansible for Local Execution
+Create a basic inventory file for localhost:
+
+cat > inventory << EOF
+[local]
+localhost ansible_connection=local
+EOF
+Create an ansible configuration file:
+
+cat > ansible.cfg << EOF
+[defaults]
+inventory = inventory
+host_key_checking = False
+deprecation_warnings = False
+EOF
+Task 2: Writing Your First Playbook
+Subtask 2.1: Understanding Playbook Structure
+Before writing the playbook, let's understand the basic structure. An Ansible playbook consists of:
+
+Hosts: Target machines where tasks will run
+Tasks: Actions to be performed
+Modules: Ansible components that perform specific operations
+Variables: Dynamic values used in playbooks
+Subtask 2.2: Create a Basic Package Installation Playbook
+Create your first playbook to install the htop package:
+
+cat > install-package.yml << 'EOF'
+---
+- name: Install htop package
+  hosts: local
+  become: yes
+  tasks:
+    - name: Update package cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      
+    - name: Install htop package
+      apt:
+        name: htop
+        state: present
+      
+    - name: Verify htop installation
+      command: which htop
+      register: htop_path
+      
+    - name: Display htop location
+      debug:
+        msg: "htop is installed at: {{ htop_path.stdout }}"
+EOF
+Subtask 2.3: Examine the Playbook Structure
+Let's break down what each section does:
+
+name: Descriptive name for the play
+hosts: Specifies target hosts (localhost in our case)
+become: Enables privilege escalation (sudo)
+tasks: List of actions to perform
+apt module: Manages packages on Debian/Ubuntu systems
+command module: Executes shell commands
+register: Stores command output in a variable
+debug module: Displays information during execution
+Task 3: Executing the Playbook
+Subtask 3.1: Run the Playbook
+Execute your first playbook using the ansible-playbook command:
+
+ansible-playbook install-package.yml
+You should see output similar to:
+
+PLAY [Install htop package] ****************************************************
+
+TASK [Gathering Facts] *********************************************************
+ok: [localhost]
+
+TASK [Update package cache] ****************************************************
+changed: [localhost]
+
+TASK [Install htop package] ****************************************************
+changed: [localhost]
+
+TASK [Verify htop installation] ***********************************************
+changed: [localhost]
+
+TASK [Display htop location] **************************************************
+ok: [localhost] => {
+    "msg": "htop is installed at: /usr/bin/htop"
+}
+
+PLAY RECAP *********************************************************************
+localhost                  : ok=5    changed=3    unreachable=0    failed=0
+Subtask 3.2: Verify Installation Manually
+Confirm that htop was installed successfully:
+
+htop --version
+You should see the htop version information.
+
+Subtask 3.3: Run the Playbook Again (Idempotency Test)
+Execute the same playbook again to demonstrate Ansible's idempotency:
+
+ansible-playbook install-package.yml
+Notice that this time, most tasks show ok instead of changed, indicating that no changes were needed since htop is already installed.
+
+Task 4: Creating a More Advanced Playbook
+Subtask 4.1: Create a Multi-Package Installation Playbook
+Create a more comprehensive playbook that installs multiple packages:
+
+cat > install-multiple-packages.yml << 'EOF'
+---
+- name: Install multiple useful packages
+  hosts: local
+  become: yes
+  vars:
+    packages_to_install:
+      - curl
+      - wget
+      - git
+      - vim
+      - tree
+      - unzip
+  
+  tasks:
+    - name: Update package cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+    
+    - name: Install multiple packages
+      apt:
+        name: "{{ packages_to_install }}"
+        state: present
+    
+    - name: Create a test directory
+      file:
+        path: /tmp/ansible-test
+        state: directory
+        mode: '0755'
+    
+    - name: Create a test file with content
+      copy:
+        content: |
+          This file was created by Ansible playbook
+          Date: {{ ansible_date_time.date }}
+          Time: {{ ansible_date_time.time }}
+        dest: /tmp/ansible-test/playbook-info.txt
+        mode: '0644'
+    
+    - name: Display installed packages
+      debug:
+        msg: "Successfully installed: {{ packages_to_install | join(', ') }}"
+EOF
+Subtask 4.2: Execute the Advanced Playbook
+Run the new playbook:
+
+ansible-playbook install-multiple-packages.yml
+Subtask 4.3: Verify the Results
+Check that all packages were installed and files were created:
+
+# Verify packages
+which curl wget git vim tree unzip
+
+# Check the created directory and file
+ls -la /tmp/ansible-test/
+cat /tmp/ansible-test/playbook-info.txt
+Task 5: Playbook with Error Handling
+Subtask 5.1: Create a Playbook with Error Handling
+Create a playbook that demonstrates error handling:
+
+cat > error-handling-playbook.yml << 'EOF'
+---
+- name: Playbook with error handling
+  hosts: local
+  become: yes
+  
+  tasks:
+    - name: Try to install a non-existent package
+      apt:
+        name: non-existent-package-12345
+        state: present
+      ignore_errors: yes
+      register: install_result
+    
+    - name: Display error message if installation failed
+      debug:
+        msg: "Package installation failed: {{ install_result.msg }}"
+      when: install_result.failed
+    
+    - name: Install a real package (nginx)
+      apt:
+        name: nginx
+        state: present
+      register: nginx_install
+    
+    - name: Start nginx service
+      systemd:
+        name: nginx
+        state: started
+        enabled: yes
+      when: nginx_install.changed
+    
+    - name: Check nginx status
+      command: systemctl is-active nginx
+      register: nginx_status
+      changed_when: false
+    
+    - name: Display nginx status
+      debug:
+        msg: "Nginx service status: {{ nginx_status.stdout }}"
+EOF
+Subtask 5.2: Execute the Error Handling Playbook
+Run the playbook:
+
+ansible-playbook error-handling-playbook.yml
+Subtask 5.3: Verify Nginx Installation
+Check that nginx is running:
+
+sudo systemctl status nginx
+curl -I localhost
+Task 6: Using Playbook Variables and Templates
+Subtask 6.1: Create a Playbook with Variables
+Create a playbook that uses variables effectively:
+
+cat > variables-playbook.yml << 'EOF'
+---
+- name: Playbook demonstrating variables
+  hosts: local
+  become: yes
+  vars:
+    app_name: "my-web-app"
+    app_port: 8080
+    app_user: "webuser"
+    
+  tasks:
+    - name: Create application user
+      user:
+        name: "{{ app_user }}"
+        shell: /bin/bash
+        create_home: yes
+    
+    - name: Create application directory
+      file:
+        path: "/opt/{{ app_name }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: '0755'
+    
+    - name: Create configuration file
+      copy:
+        content: |
+          # Configuration for {{ app_name }}
+          APP_NAME={{ app_name }}
+          APP_PORT={{ app_port }}
+          APP_USER={{ app_user }}
+          CREATED_BY=Ansible
+          CREATED_DATE={{ ansible_date_time.iso8601 }}
+        dest: "/opt/{{ app_name }}/config.txt"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: '0644'
+    
+    - name: Display configuration
+      debug:
+        msg: 
+          - "Application: {{ app_name }}"
+          - "Port: {{ app_port }}"
+          - "User: {{ app_user }}"
+          - "Directory: /opt/{{ app_name }}"
+EOF
+Subtask 6.2: Execute the Variables Playbook
+Run the playbook:
+
+ansible-playbook variables-playbook.yml
+Subtask 6.3: Verify the Results
+Check the created user, directory, and configuration:
+
+# Check user creation
+id webuser
+
+# Check directory and file
+ls -la /opt/my-web-app/
+cat /opt/my-web-app/config.txt
+Task 7: Playbook Validation and Best Practices
+Subtask 7.1: Validate Playbook Syntax
+Before running playbooks, always validate their syntax:
+
+# Check syntax of all playbooks
+ansible-playbook --syntax-check install-package.yml
+ansible-playbook --syntax-check install-multiple-packages.yml
+ansible-playbook --syntax-check error-handling-playbook.yml
+ansible-playbook --syntax-check variables-playbook.yml
+Subtask 7.2: Dry Run (Check Mode)
+Use check mode to see what changes would be made without actually making them:
+
+ansible-playbook --check install-package.yml
+Subtask 7.3: Verbose Output
+Run a playbook with verbose output for debugging:
+
+ansible-playbook -v variables-playbook.yml
+Use -vv or -vvv for even more detailed output.
+
+Troubleshooting Common Issues
+Issue 1: Permission Denied Errors
+If you encounter permission errors:
+
+# Ensure you're using become: yes in your playbook
+# Or run with --become flag
+ansible-playbook --become install-package.yml
+Issue 2: Package Not Found
+If a package is not found:
+
+Check the package name spelling
+Ensure the package exists in your distribution's repositories
+Update package cache first
+Issue 3: YAML Syntax Errors
+Common YAML issues:
+
+Incorrect indentation (use spaces, not tabs)
+Missing colons after keys
+Incorrect list formatting
+Issue 4: Connection Issues
+If localhost connection fails:
+
+# Test basic connectivity
+ansible local -m ping
+
+# Check inventory file
+cat inventory
+Lab Summary
+In this lab, you have successfully:
+
+Installed Ansible on a Linux system and configured it for local execution
+Created your first playbook to install a software package using the apt module
+Executed playbooks using the ansible-playbook command and understood the output
+Explored advanced playbook features including variables, multiple tasks, and error handling
+Implemented best practices such as syntax checking and dry runs
+Learned troubleshooting techniques for common playbook issues
+Key Concepts Learned
+Playbook Structure: Understanding YAML format and Ansible playbook components
+Modules: Using apt, file, copy, user, and debug modules
+Variables: Defining and using variables in playbooks
+Idempotency: How Ansible ensures consistent system state
+Error Handling: Using ignore_errors and conditional statements
+Best Practices: Syntax validation and check mode execution
+Why This Matters
+Ansible playbooks are the foundation of infrastructure automation. By mastering playbook creation and execution, you can:
+
+Automate repetitive tasks and reduce manual errors
+Ensure consistent configurations across multiple systems
+Document infrastructure changes in version-controlled code
+Scale operations efficiently as your infrastructure grows
+Implement Infrastructure as Code practices in your organization
+The skills you've learned in this lab form the basis for more advanced Ansible concepts like roles, templates, and complex orchestration scenarios. These foundational playbook skills will serve you well as you continue your automation journey.
