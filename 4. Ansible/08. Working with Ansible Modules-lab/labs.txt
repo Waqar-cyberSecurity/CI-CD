@@ -1,0 +1,992 @@
+Lab 8: Working with Ansible Modules
+Lab Objectives
+By the end of this lab, students will be able to:
+
+Understand the Ansible module ecosystem and its extensive capabilities
+Use common Ansible modules including apt, yum, and docker_container
+Write comprehensive playbooks to automate package installations across different Linux distributions
+Deploy and manage Docker containers using Ansible automation
+Implement conditional logic in playbooks to handle different operating systems
+Validate and troubleshoot Ansible module executions
+Apply best practices for module usage in real-world scenarios
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of Linux command line operations
+Familiarity with YAML syntax and structure
+Knowledge of package management concepts (apt, yum)
+Basic understanding of containerization concepts
+Completion of previous Ansible labs or equivalent experience
+Understanding of inventory files and playbook structure
+Lab Environment Setup
+Note: Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated Linux machine. The provided machine is bare metal with no pre-installed tools, so you will install all required software during the lab exercises.
+
+Task 1: Environment Preparation and Ansible Installation
+Subtask 1.1: Update System and Install Prerequisites
+First, update your system and install necessary packages:
+
+# Update package repositories
+sudo apt update
+
+# Install Python3 and pip if not already installed
+sudo apt install -y python3 python3-pip curl wget git
+
+# Install Ansible using pip
+pip3 install ansible
+
+# Verify Ansible installation
+ansible --version
+Subtask 1.2: Create Lab Directory Structure
+Set up a organized directory structure for the lab:
+
+# Create main lab directory
+mkdir -p ~/ansible-modules-lab
+cd ~/ansible-modules-lab
+
+# Create subdirectories for organization
+mkdir -p playbooks inventory group_vars host_vars roles
+
+# Create initial inventory file
+cat > inventory/hosts << 'EOF'
+[local]
+localhost ansible_connection=local
+
+[webservers]
+localhost ansible_connection=local
+
+[databases]
+localhost ansible_connection=local
+EOF
+Subtask 1.3: Configure Ansible Settings
+Create an Ansible configuration file:
+
+cat > ansible.cfg << 'EOF'
+[defaults]
+inventory = inventory/hosts
+host_key_checking = False
+stdout_callback = yaml
+gathering = smart
+fact_caching = memory
+retry_files_enabled = False
+
+[inventory]
+enable_plugins = host_list, script, auto, yaml, ini, toml
+EOF
+Task 2: Working with Package Management Modules (apt and yum)
+Subtask 2.1: Create a Multi-Distribution Package Management Playbook
+Create a comprehensive playbook that handles both Debian-based and Red Hat-based systems:
+
+cat > playbooks/package-management.yml << 'EOF'
+---
+- name: Multi-Distribution Package Management
+  hosts: local
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    common_packages:
+      - git
+      - curl
+      - wget
+      - htop
+      - tree
+      - vim
+    
+    debian_packages:
+      - nginx
+      - mysql-client
+      - python3-pip
+    
+    redhat_packages:
+      - httpd
+      - mysql
+      - python3-pip
+
+  tasks:
+    - name: Display system information
+      debug:
+        msg: "Operating System: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+
+    - name: Update apt cache (Debian/Ubuntu)
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+
+    - name: Install common packages on Debian/Ubuntu
+      apt:
+        name: "{{ common_packages }}"
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    - name: Install Debian-specific packages
+      apt:
+        name: "{{ debian_packages }}"
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Update yum cache (RedHat/CentOS)
+      yum:
+        update_cache: yes
+      when: ansible_os_family == "RedHat"
+
+    - name: Install common packages on RedHat/CentOS
+      yum:
+        name: "{{ common_packages }}"
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    - name: Install RedHat-specific packages
+      yum:
+        name: "{{ redhat_packages }}"
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    - name: Ensure specific package versions (example)
+      apt:
+        name: "git=1:2.*"
+        state: present
+      when: ansible_os_family == "Debian"
+      ignore_errors: yes
+
+    - name: Remove unwanted packages
+      package:
+        name: 
+          - nano
+        state: absent
+      ignore_errors: yes
+
+    - name: Verify installed packages
+      command: "{{ item }}"
+      register: package_versions
+      loop:
+        - "git --version"
+        - "curl --version"
+        - "htop --version"
+      ignore_errors: yes
+
+    - name: Display package versions
+      debug:
+        msg: "{{ item.stdout_lines[0] if item.stdout_lines else 'Package not found or error occurred' }}"
+      loop: "{{ package_versions.results }}"
+      loop_control:
+        label: "{{ item.cmd }}"
+EOF
+Subtask 2.2: Execute the Package Management Playbook
+Run the playbook and observe the results:
+
+# Execute the package management playbook
+ansible-playbook playbooks/package-management.yml -v
+
+# Verify installations
+dpkg -l | grep -E "(git|curl|wget|htop|tree|vim)"
+Subtask 2.3: Create Advanced Package Management Scenarios
+Create a more advanced playbook with error handling and package groups:
+
+cat > playbooks/advanced-package-management.yml << 'EOF'
+---
+- name: Advanced Package Management Scenarios
+  hosts: local
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    development_tools:
+      - build-essential
+      - gcc
+      - make
+      - cmake
+    
+    web_server_packages:
+      - nginx
+      - apache2-utils
+    
+    database_packages:
+      - mysql-client
+      - postgresql-client
+
+  tasks:
+    - name: Create package installation summary
+      set_fact:
+        installation_summary: []
+
+    - name: Install development tools
+      apt:
+        name: "{{ development_tools }}"
+        state: present
+        update_cache: yes
+      register: dev_tools_result
+      when: ansible_os_family == "Debian"
+
+    - name: Add development tools to summary
+      set_fact:
+        installation_summary: "{{ installation_summary + ['Development tools: ' + (dev_tools_result.changed | string)] }}"
+      when: dev_tools_result is defined
+
+    - name: Install web server packages
+      apt:
+        name: "{{ web_server_packages }}"
+        state: present
+      register: web_server_result
+      when: ansible_os_family == "Debian"
+
+    - name: Add web server packages to summary
+      set_fact:
+        installation_summary: "{{ installation_summary + ['Web server packages: ' + (web_server_result.changed | string)] }}"
+      when: web_server_result is defined
+
+    - name: Install database client packages
+      apt:
+        name: "{{ database_packages }}"
+        state: present
+      register: db_packages_result
+      when: ansible_os_family == "Debian"
+      ignore_errors: yes
+
+    - name: Add database packages to summary
+      set_fact:
+        installation_summary: "{{ installation_summary + ['Database packages: ' + (db_packages_result.changed | default(false) | string)] }}"
+      when: db_packages_result is defined
+
+    - name: Display installation summary
+      debug:
+        msg: "{{ installation_summary }}"
+
+    - name: Check disk space after installations
+      shell: df -h /
+      register: disk_space
+
+    - name: Display disk space information
+      debug:
+        msg: "Disk space usage: {{ disk_space.stdout_lines }}"
+EOF
+Execute the advanced playbook:
+
+ansible-playbook playbooks/advanced-package-management.yml -v
+Task 3: Working with Docker Container Module
+Subtask 3.1: Install Docker and Docker SDK
+Create a playbook to install Docker and required dependencies:
+
+cat > playbooks/docker-setup.yml << 'EOF'
+---
+- name: Install Docker and Dependencies
+  hosts: local
+  become: yes
+  gather_facts: yes
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    - name: Install Docker dependencies
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Add Docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Add Docker repository
+      apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Install Docker CE
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    - name: Start and enable Docker service
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Add current user to docker group
+      user:
+        name: "{{ ansible_user_id }}"
+        groups: docker
+        append: yes
+
+    - name: Install Docker SDK for Python
+      pip:
+        name: 
+          - docker
+          - docker-compose
+        state: present
+
+    - name: Verify Docker installation
+      command: docker --version
+      register: docker_version
+
+    - name: Display Docker version
+      debug:
+        msg: "{{ docker_version.stdout }}"
+EOF
+Execute the Docker setup playbook:
+
+ansible-playbook playbooks/docker-setup.yml -v
+
+# Restart shell session to apply group changes
+newgrp docker
+Subtask 3.2: Create Container Deployment Playbook
+Create a comprehensive playbook for container management:
+
+cat > playbooks/container-deployment.yml << 'EOF'
+---
+- name: Docker Container Deployment and Management
+  hosts: local
+  gather_facts: yes
+  
+  vars:
+    containers:
+      - name: web-server
+        image: nginx:latest
+        ports:
+          - "8080:80"
+        volumes:
+          - "/tmp/nginx-content:/usr/share/nginx/html:ro"
+        environment:
+          NGINX_HOST: localhost
+          NGINX_PORT: 80
+        
+      - name: redis-cache
+        image: redis:alpine
+        ports:
+          - "6379:6379"
+        command: redis-server --appendonly yes
+        volumes:
+          - "/tmp/redis-data:/data"
+        
+      - name: mysql-database
+        image: mysql:8.0
+        ports:
+          - "3306:3306"
+        environment:
+          MYSQL_ROOT_PASSWORD: rootpassword123
+          MYSQL_DATABASE: testdb
+          MYSQL_USER: testuser
+          MYSQL_PASSWORD: testpass123
+        volumes:
+          - "/tmp/mysql-data:/var/lib/mysql"
+
+  tasks:
+    - name: Create directories for container volumes
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - /tmp/nginx-content
+        - /tmp/redis-data
+        - /tmp/mysql-data
+
+    - name: Create sample HTML content for nginx
+      copy:
+        content: |
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>Ansible Docker Lab</title>
+          </head>
+          <body>
+              <h1>Welcome to Ansible Docker Container Lab</h1>
+              <p>This page is served from an Nginx container deployed by Ansible!</p>
+              <p>Container deployed at: {{ ansible_date_time.iso8601 }}</p>
+          </body>
+          </html>
+        dest: /tmp/nginx-content/index.html
+
+    - name: Pull Docker images
+      docker_image:
+        name: "{{ item.image }}"
+        source: pull
+      loop: "{{ containers }}"
+
+    - name: Deploy containers
+      docker_container:
+        name: "{{ item.name }}"
+        image: "{{ item.image }}"
+        state: started
+        restart_policy: unless-stopped
+        ports: "{{ item.ports | default([]) }}"
+        volumes: "{{ item.volumes | default([]) }}"
+        env: "{{ item.environment | default({}) }}"
+        command: "{{ item.command | default(omit) }}"
+      loop: "{{ containers }}"
+      register: container_results
+
+    - name: Display container deployment results
+      debug:
+        msg: "Container {{ item.item.name }}: {{ 'Started' if item.changed else 'Already running' }}"
+      loop: "{{ container_results.results }}"
+
+    - name: Wait for containers to be ready
+      wait_for:
+        port: "{{ item.ports[0].split(':')[0] }}"
+        host: localhost
+        timeout: 30
+      loop: "{{ containers }}"
+      when: item.ports is defined
+
+    - name: Get container information
+      docker_container_info:
+        name: "{{ item.name }}"
+      loop: "{{ containers }}"
+      register: container_info
+
+    - name: Display container status
+      debug:
+        msg: |
+          Container: {{ item.item.name }}
+          Status: {{ item.container.State.Status }}
+          IP Address: {{ item.container.NetworkSettings.IPAddress }}
+          Ports: {{ item.container.NetworkSettings.Ports }}
+      loop: "{{ container_info.results }}"
+      when: item.exists
+EOF
+Subtask 3.3: Execute Container Deployment
+Run the container deployment playbook:
+
+ansible-playbook playbooks/container-deployment.yml -v
+Subtask 3.4: Create Container Management and Monitoring Playbook
+Create a playbook for ongoing container management:
+
+cat > playbooks/container-management.yml << 'EOF'
+---
+- name: Container Management and Monitoring
+  hosts: local
+  gather_facts: no
+
+  tasks:
+    - name: List all running containers
+      docker_host_info:
+      register: docker_info
+
+    - name: Display Docker system information
+      debug:
+        msg: |
+          Docker Version: {{ docker_info.host_info.ServerVersion }}
+          Total Containers: {{ docker_info.containers | length }}
+          Running Containers: {{ docker_info.containers | selectattr('State', 'equalto', 'running') | list | length }}
+
+    - name: Get detailed container statistics
+      shell: docker stats --no-stream --format "table {{.Container}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}\t{{.BlockIO}}"
+      register: container_stats
+
+    - name: Display container statistics
+      debug:
+        msg: "{{ container_stats.stdout_lines }}"
+
+    - name: Check container logs (last 10 lines)
+      docker_container_info:
+        name: "{{ item }}"
+      loop:
+        - web-server
+        - redis-cache
+        - mysql-database
+      register: container_details
+
+    - name: Test web server connectivity
+      uri:
+        url: http://localhost:8080
+        method: GET
+        return_content: yes
+      register: web_response
+      ignore_errors: yes
+
+    - name: Display web server response
+      debug:
+        msg: |
+          Web Server Status: {{ web_response.status | default('Failed') }}
+          Response: {{ web_response.content | default('No response') }}
+
+    - name: Test Redis connectivity
+      shell: docker exec redis-cache redis-cli ping
+      register: redis_test
+      ignore_errors: yes
+
+    - name: Display Redis test result
+      debug:
+        msg: "Redis connectivity test: {{ redis_test.stdout | default('Failed') }}"
+
+    - name: Test MySQL connectivity
+      shell: docker exec mysql-database mysql -u root -prootpassword123 -e "SELECT 1"
+      register: mysql_test
+      ignore_errors: yes
+
+    - name: Display MySQL test result
+      debug:
+        msg: "MySQL connectivity test: {{ 'Success' if mysql_test.rc == 0 else 'Failed' }}"
+
+    - name: Create backup of container data
+      archive:
+        path:
+          - /tmp/nginx-content
+          - /tmp/redis-data
+          - /tmp/mysql-data
+        dest: /tmp/container-backup-{{ ansible_date_time.epoch }}.tar.gz
+        format: gz
+
+    - name: Display backup information
+      stat:
+        path: /tmp/container-backup-{{ ansible_date_time.epoch }}.tar.gz
+      register: backup_info
+
+    - name: Show backup details
+      debug:
+        msg: "Backup created: {{ backup_info.stat.path }} ({{ backup_info.stat.size }} bytes)"
+      when: backup_info.stat.exists
+EOF
+Execute the container management playbook:
+
+ansible-playbook playbooks/container-management.yml -v
+Task 4: Advanced Module Usage and Best Practices
+Subtask 4.1: Create a Comprehensive Infrastructure Playbook
+Combine multiple modules in a real-world scenario:
+
+cat > playbooks/infrastructure-deployment.yml << 'EOF'
+---
+- name: Complete Infrastructure Deployment
+  hosts: local
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    app_name: "ansible-lab-app"
+    app_version: "1.0"
+    backup_retention_days: 7
+
+  tasks:
+    - name: Create application user
+      user:
+        name: "{{ app_name }}"
+        system: yes
+        shell: /bin/bash
+        home: "/opt/{{ app_name }}"
+        create_home: yes
+
+    - name: Create application directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ app_name }}"
+        group: "{{ app_name }}"
+        mode: '0755'
+      loop:
+        - "/opt/{{ app_name }}/config"
+        - "/opt/{{ app_name }}/logs"
+        - "/opt/{{ app_name }}/data"
+        - "/opt/{{ app_name }}/backups"
+
+    - name: Install required system packages
+      apt:
+        name:
+          - nginx
+          - logrotate
+          - cron
+          - rsync
+        state: present
+        update_cache: yes
+
+    - name: Configure nginx for application
+      copy:
+        content: |
+          server {
+              listen 80;
+              server_name localhost;
+              
+              location / {
+                  proxy_pass http://localhost:8080;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+              }
+              
+              location /health {
+                  access_log off;
+                  return 200 "healthy\n";
+                  add_header Content-Type text/plain;
+              }
+          }
+        dest: "/etc/nginx/sites-available/{{ app_name }}"
+        backup: yes
+      notify: restart nginx
+
+    - name: Enable nginx site
+      file:
+        src: "/etc/nginx/sites-available/{{ app_name }}"
+        dest: "/etc/nginx/sites-enabled/{{ app_name }}"
+        state: link
+      notify: restart nginx
+
+    - name: Remove default nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: restart nginx
+
+    - name: Deploy application container
+      docker_container:
+        name: "{{ app_name }}-web"
+        image: nginx:alpine
+        state: started
+        restart_policy: unless-stopped
+        ports:
+          - "8080:80"
+        volumes:
+          - "/opt/{{ app_name }}/config:/etc/nginx/conf.d:ro"
+          - "/opt/{{ app_name }}/logs:/var/log/nginx"
+        labels:
+          app: "{{ app_name }}"
+          version: "{{ app_version }}"
+
+    - name: Create log rotation configuration
+      copy:
+        content: |
+          /opt/{{ app_name }}/logs/*.log {
+              daily
+              missingok
+              rotate {{ backup_retention_days }}
+              compress
+              delaycompress
+              notifempty
+              create 644 {{ app_name }} {{ app_name }}
+          }
+        dest: "/etc/logrotate.d/{{ app_name }}"
+
+    - name: Create backup script
+      copy:
+        content: |
+          #!/bin/bash
+          BACKUP_DIR="/opt/{{ app_name }}/backups"
+          DATE=$(date +%Y%m%d_%H%M%S)
+          
+          # Create backup
+          tar -czf "$BACKUP_DIR/backup_$DATE.tar.gz" \
+              /opt/{{ app_name }}/config \
+              /opt/{{ app_name }}/data
+          
+          # Remove old backups
+          find "$BACKUP_DIR" -name "backup_*.tar.gz" -mtime +{{ backup_retention_days }} -delete
+          
+          echo "Backup completed: backup_$DATE.tar.gz"
+        dest: "/opt/{{ app_name }}/backup.sh"
+        mode: '0755'
+        owner: "{{ app_name }}"
+
+    - name: Schedule backup cron job
+      cron:
+        name: "{{ app_name }} backup"
+        minute: "0"
+        hour: "2"
+        user: "{{ app_name }}"
+        job: "/opt/{{ app_name }}/backup.sh >> /opt/{{ app_name }}/logs/backup.log 2>&1"
+
+    - name: Create monitoring script
+      copy:
+        content: |
+          #!/bin/bash
+          
+          # Check if container is running
+          if docker ps | grep -q "{{ app_name }}-web"; then
+              echo "$(date): Container {{ app_name }}-web is running"
+          else
+              echo "$(date): ERROR - Container {{ app_name }}-web is not running"
+              exit 1
+          fi
+          
+          # Check if nginx is responding
+          if curl -s http://localhost/health > /dev/null; then
+              echo "$(date): Nginx health check passed"
+          else
+              echo "$(date): ERROR - Nginx health check failed"
+              exit 1
+          fi
+          
+          echo "$(date): All checks passed"
+        dest: "/opt/{{ app_name }}/monitor.sh"
+        mode: '0755'
+        owner: "{{ app_name }}"
+
+    - name: Schedule monitoring cron job
+      cron:
+        name: "{{ app_name }} monitoring"
+        minute: "*/5"
+        user: "{{ app_name }}"
+        job: "/opt/{{ app_name }}/monitor.sh >> /opt/{{ app_name }}/logs/monitor.log 2>&1"
+
+  handlers:
+    - name: restart nginx
+      systemd:
+        name: nginx
+        state: restarted
+        enabled: yes
+EOF
+Subtask 4.2: Execute Infrastructure Deployment
+Run the comprehensive infrastructure playbook:
+
+ansible-playbook playbooks/infrastructure-deployment.yml -v
+Subtask 4.3: Create Validation and Testing Playbook
+Create a playbook to validate the entire deployment:
+
+cat > playbooks/validation-tests.yml << 'EOF'
+---
+- name: Infrastructure Validation and Testing
+  hosts: local
+  gather_facts: yes
+
+  vars:
+    app_name: "ansible-lab-app"
+    test_results: []
+
+  tasks:
+    - name: Test 1 - Check if application user exists
+      getent:
+        database: passwd
+        key: "{{ app_name }}"
+      register: user_check
+      ignore_errors: yes
+
+    - name: Record user test result
+      set_fact:
+        test_results: "{{ test_results + [{'test': 'Application user exists', 'result': user_check is succeeded}] }}"
+
+    - name: Test 2 - Check application directories
+      stat:
+        path: "{{ item }}"
+      register: dir_checks
+      loop:
+        - "/opt/{{ app_name }}/config"
+        - "/opt/{{ app_name }}/logs"
+        - "/opt/{{ app_name }}/data"
+        - "/opt/{{ app_name }}/backups"
+
+    - name: Record directory test results
+      set_fact:
+        test_results: "{{ test_results + [{'test': 'Directory ' + item.item + ' exists', 'result': item.stat.exists}] }}"
+      loop: "{{ dir_checks.results }}"
+
+    - name: Test 3 - Check if nginx is running
+      systemd:
+        name: nginx
+      register: nginx_status
+
+    - name: Record nginx test result
+      set_fact:
+        test_results: "{{ test_results + [{'test': 'Nginx service is active', 'result': nginx_status.status.ActiveState == 'active'}] }}"
+
+    - name: Test 4 - Check if application container is running
+      docker_container_info:
+        name: "{{ app_name }}-web"
+      register: container_status
+
+    - name: Record container test result
+      set_fact:
+        test_results: "{{ test_results + [{'test': 'Application container is running', 'result': container_status.exists and container_status.container.State.Status == 'running'}] }}"
+
+    - name: Test 5 - Check web server response
+      uri:
+        url: http://localhost/health
+        method: GET
+      register: health_check
+      ignore_errors: yes
+
+    - name: Record health check test result
+      set_fact:
+        test_results: "{{ test_results + [{'test': 'Health endpoint responds', 'result': health_check.status == 200}] }}"
+
+    - name: Test 6 - Check cron jobs
+      shell: crontab -l -u {{ app_name }}
+      register: cron_check
+      ignore_errors: yes
+
+    - name: Record cron test result
+      set_fact:
+        test_results: "{{ test_results + [{'test': 'Cron jobs configured', 'result': cron_check.rc == 0 and 'backup' in cron_check.stdout and 'monitor' in cron_check.stdout}] }}"
+
+    - name: Test 7 - Check log rotation configuration
+      stat:
+        path: "/etc/logrotate.d/{{ app_name }}"
+      register: logrotate_check
+
+    - name: Record logrotate test result
+      set_fact:
+        test_results: "{{ test_results + [{'test': 'Log rotation configured', 'result': logrotate_check.stat.exists}] }}"
+
+    - name: Display test results summary
+      debug:
+        msg: |
+          =================================
+          VALIDATION TEST RESULTS SUMMARY
+          =================================
+          {% for test in test_results %}
+          {{ test.test }}: {{ 'PASS' if test.result else 'FAIL' }}
+          {% endfor %}
+          =================================
+          Total Tests: {{ test_results | length }}
+          Passed: {{ test_results | selectattr('result', 'equalto', true) | list | length }}
+          Failed: {{ test_results | selectattr('result', 'equalto', false) | list | length }}
+          =================================
+
+    - name: Generate detailed test report
+      copy:
+        content: |
+          Ansible Lab Infrastructure Validation Report
+          Generated: {{ ansible_date_time.iso8601 }}
+          Host: {{ ansible_hostname }}
+          
+          Test Results:
+          {% for test in test_results %}
+          - {{ test.test }}: {{ 'PASS' if test.result else 'FAIL' }}
+          {% endfor %}
+          
+          System Information:
+          - OS: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          - Kernel: {{ ansible_kernel }}
+          - Architecture: {{ ansible_architecture }}
+          - Memory: {{ ansible_memtotal_mb }}MB
+          - CPU Cores: {{ ansible_processor_vcpus }}
+          
+          Docker Information:
+          - Containers Running: {{ ansible_docker.containers | default([]) | length }}
+          
+          Summary:
+          - Total Tests: {{ test_results | length }}
+          - Passed: {{ test_results | selectattr('result', 'equalto', true) | list | length }}
+          - Failed: {{ test_results | selectattr('result', 'equalto', false) | list | length }}
+          - Success Rate: {{ ((test_results | selectattr('result', 'equalto', true) | list | length) / (test_results | length) * 100) | round(2) }}%
+        dest: "/tmp/validation-report-{{ ansible_date_time.epoch }}.txt"
+
+    - name: Display report location
+      debug:
+        msg: "Detailed validation report saved to: /tmp/validation-report-{{ ansible_date_time.epoch }}.txt"
+EOF
+Execute the validation tests:
+
+ansible-playbook playbooks/validation-tests.yml -v
+Task 5: Cleanup and Resource Management
+Subtask 5.1: Create Cleanup Playbook
+Create a playbook to clean up resources:
+
+cat > playbooks/cleanup.yml << 'EOF'
+---
+- name: Lab Cleanup and Resource Management
+  hosts: local
+  become: yes
+  gather_facts: yes
+
+  vars:
+    app_name: "ansible-lab-app"
+
+  tasks:
+    - name: Stop and remove application containers
+      docker_container:
+        name: "{{ item }}"
+        state: absent
+        force_kill: yes
+      loop:
+        - "{{ app_name }}-web"
+        - web-server
+        - redis-cache
+        - mysql-database
+      ignore_errors: yes
+
+    - name: Remove Docker images (optional)
+      docker_image:
+        name: "{{ item }}"
+        state: absent
+      loop:
+        - nginx:latest
+        - nginx:alpine
+        - redis:alpine
+        - mysql:8.0
+      ignore_errors: yes
+
+    - name: Remove cron jobs
+      cron:
+        name: "{{ item }}"
+        user: "{{ app_name }}"
+        state: absent
+      loop:
+        - "{{ app_name }} backup"
+        - "{{ app_name }} monitoring"
+      ignore_errors: yes
+
+    - name: Remove nginx configuration
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "/etc/nginx/sites-enabled/{{ app_name }}"
+        - "/etc/nginx/sites-available/{{ app_name }}"
+        - "/etc/logrotate.d/{{ app_name }}"
+
+    - name: Restore default nginx site
+      file:
+        src: /etc/nginx/sites-available/default
+        dest: /etc/nginx/sites-enabled/default
+        state: link
+      ignore_errors: yes
+
+    - name: Restart nginx
+      systemd:
+        name: nginx
+        state: restarted
+      ignore_errors: yes
+
+    - name: Remove application user and directories
+      user:
+        name: "{{ app_name }}"
+        state: absent
+        remove: yes
+      ignore_errors: yes
+
+    - name: Remove temporary directories
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "/tmp/nginx-content"
+        - "/tmp/redis-data"
+        - "/tmp/mysql-data"
+        - "/opt/{{ app_name }}"
+
+    - name: Clean up backup files
+      find:
+        paths: /tmp
+        patterns: 
+          - "container-backup-*.tar.gz"
+          - "validation-report-*.txt"
+      register: backup_files
+
+    - name: Remove backup files
+      file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ backup_files.files }}"
+
+    - name: Display cleanup summary
+      debug:
+        msg: |
+          Cleanup completed successfully!
+          - Containers stopped and removed
+          - Docker images removed
+          -
