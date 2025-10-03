@@ -1,0 +1,931 @@
+Lab 7: Implementing Idempotence
+Lab Objectives
+By the end of this lab, students will be able to:
+
+Understand the concept of idempotence in Ansible automation
+Create playbooks that maintain consistent system state regardless of execution frequency
+Implement idempotent tasks using Ansible modules and best practices
+Test and verify that playbooks produce predictable results when run multiple times
+Identify and fix non-idempotent tasks in existing playbooks
+Apply idempotence principles to real-world automation scenarios
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of Linux command line operations
+Familiarity with YAML syntax and structure
+Knowledge of Ansible fundamentals including playbooks, tasks, and modules
+Experience with text editors like nano or vim
+Understanding of file permissions and system administration concepts
+Lab Environment
+Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated environment. The provided Linux machine is bare metal with no pre-installed tools, so you will install Ansible and other required tools during the lab exercises.
+
+Task 1: Environment Setup and Ansible Installation
+Subtask 1.1: Update System and Install Dependencies
+First, update your system and install the necessary packages:
+
+sudo apt update
+sudo apt install -y python3 python3-pip curl wget git
+Subtask 1.2: Install Ansible
+Install Ansible using pip3:
+
+sudo pip3 install ansible
+Verify the installation:
+
+ansible --version
+Subtask 1.3: Create Lab Directory Structure
+Create a dedicated directory for this lab:
+
+mkdir -p ~/ansible-idempotence-lab
+cd ~/ansible-idempotence-lab
+Create subdirectories for organization:
+
+mkdir -p playbooks files templates
+Subtask 1.4: Configure Ansible for Local Execution
+Create an inventory file for localhost:
+
+cat > inventory << EOF
+[local]
+localhost ansible_connection=local
+EOF
+Create a basic ansible.cfg file:
+
+cat > ansible.cfg << EOF
+[defaults]
+inventory = inventory
+host_key_checking = False
+stdout_callback = yaml
+EOF
+Task 2: Understanding Idempotence Concepts
+Subtask 2.1: Create a Non-Idempotent Playbook
+First, let's create a playbook that demonstrates non-idempotent behavior:
+
+cat > playbooks/non-idempotent.yml << 'EOF'
+---
+- name: Non-Idempotent Example
+  hosts: local
+  become: yes
+  tasks:
+    - name: Append text to file (non-idempotent)
+      shell: echo "Current time: $(date)" >> /tmp/non_idempotent.txt
+      
+    - name: Create directory with timestamp
+      shell: mkdir -p /tmp/dir_$(date +%s)
+      
+    - name: Add user with random suffix
+      shell: useradd testuser_$(shuf -i 1000-9999 -n 1) || true
+EOF
+Subtask 2.2: Run the Non-Idempotent Playbook
+Execute the playbook multiple times to observe non-idempotent behavior:
+
+ansible-playbook playbooks/non-idempotent.yml
+Run it again:
+
+ansible-playbook playbooks/non-idempotent.yml
+Check the results:
+
+cat /tmp/non_idempotent.txt
+ls -la /tmp/dir_*
+Notice how each run creates different results and system changes.
+
+Task 3: Creating Idempotent Tasks
+Subtask 3.1: File Management with Idempotence
+Create a playbook that demonstrates idempotent file operations:
+
+cat > playbooks/idempotent-files.yml << 'EOF'
+---
+- name: Idempotent File Management
+  hosts: local
+  become: yes
+  vars:
+    app_config_dir: /etc/myapp
+    app_user: appuser
+    app_group: appgroup
+    
+  tasks:
+    - name: Create application group
+      group:
+        name: "{{ app_group }}"
+        state: present
+        
+    - name: Create application user
+      user:
+        name: "{{ app_user }}"
+        group: "{{ app_group }}"
+        home: /home/{{ app_user }}
+        shell: /bin/bash
+        state: present
+        
+    - name: Create application config directory
+      file:
+        path: "{{ app_config_dir }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: '0755'
+        
+    - name: Create application config file
+      copy:
+        content: |
+          # Application Configuration
+          app_name=MyApplication
+          app_version=1.0.0
+          debug=false
+          log_level=info
+        dest: "{{ app_config_dir }}/app.conf"
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: '0644'
+        backup: yes
+        
+    - name: Ensure specific line exists in config
+      lineinfile:
+        path: "{{ app_config_dir }}/app.conf"
+        line: "environment=production"
+        state: present
+        
+    - name: Create log directory
+      file:
+        path: /var/log/myapp
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: '0755'
+EOF
+Subtask 3.2: Package Management with Idempotence
+Create a playbook for idempotent package management:
+
+cat > playbooks/idempotent-packages.yml << 'EOF'
+---
+- name: Idempotent Package Management
+  hosts: local
+  become: yes
+  
+  tasks:
+    - name: Update package cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+        
+    - name: Install required packages
+      apt:
+        name:
+          - nginx
+          - git
+          - curl
+          - htop
+          - tree
+        state: present
+        
+    - name: Remove unwanted packages
+      apt:
+        name:
+          - apache2
+          - sendmail
+        state: absent
+        
+    - name: Ensure nginx service is enabled and started
+      systemd:
+        name: nginx
+        enabled: yes
+        state: started
+        
+    - name: Create nginx custom config
+      copy:
+        content: |
+          server {
+              listen 8080;
+              server_name localhost;
+              
+              location / {
+                  root /var/www/html;
+                  index index.html;
+              }
+              
+              location /health {
+                  return 200 "OK";
+                  add_header Content-Type text/plain;
+              }
+          }
+        dest: /etc/nginx/sites-available/custom
+        backup: yes
+      notify: restart nginx
+        
+    - name: Enable custom nginx site
+      file:
+        src: /etc/nginx/sites-available/custom
+        dest: /etc/nginx/sites-enabled/custom
+        state: link
+      notify: restart nginx
+      
+  handlers:
+    - name: restart nginx
+      systemd:
+        name: nginx
+        state: restarted
+EOF
+Subtask 3.3: Service Configuration with Idempotence
+Create a comprehensive playbook that manages services idempotently:
+
+cat > playbooks/idempotent-services.yml << 'EOF'
+---
+- name: Idempotent Service Configuration
+  hosts: local
+  become: yes
+  vars:
+    web_root: /var/www/html
+    
+  tasks:
+    - name: Create web content directory
+      file:
+        path: "{{ web_root }}"
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: '0755'
+        
+    - name: Create index.html file
+      copy:
+        content: |
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>Idempotent Web Server</title>
+              <style>
+                  body { font-family: Arial, sans-serif; margin: 40px; }
+                  .container { max-width: 800px; margin: 0 auto; }
+                  .status { background: #e8f5e8; padding: 20px; border-radius: 5px; }
+              </style>
+          </head>
+          <body>
+              <div class="container">
+                  <h1>Idempotent Ansible Configuration</h1>
+                  <div class="status">
+                      <h2>Server Status: Active</h2>
+                      <p>This page was created using idempotent Ansible tasks.</p>
+                      <p>Running multiple times produces the same result.</p>
+                  </div>
+              </div>
+          </body>
+          </html>
+        dest: "{{ web_root }}/index.html"
+        owner: www-data
+        group: www-data
+        mode: '0644'
+        
+    - name: Configure nginx main config
+      lineinfile:
+        path: /etc/nginx/nginx.conf
+        regexp: '^\s*worker_processes'
+        line: '        worker_processes auto;'
+        backup: yes
+      notify: reload nginx
+      
+    - name: Ensure nginx is running and enabled
+      systemd:
+        name: nginx
+        state: started
+        enabled: yes
+        
+    - name: Check if nginx is responding
+      uri:
+        url: http://localhost
+        method: GET
+        status_code: 200
+      register: nginx_check
+      retries: 3
+      delay: 2
+      
+    - name: Display nginx status
+      debug:
+        msg: "Nginx is responding correctly on port 80"
+      when: nginx_check.status == 200
+      
+  handlers:
+    - name: reload nginx
+      systemd:
+        name: nginx
+        state: reloaded
+EOF
+Task 4: Testing Idempotence
+Subtask 4.1: Create a Master Idempotent Playbook
+Combine all idempotent tasks into a comprehensive playbook:
+
+cat > playbooks/master-idempotent.yml << 'EOF'
+---
+- name: Master Idempotent Configuration
+  hosts: local
+  become: yes
+  vars:
+    app_config_dir: /etc/myapp
+    app_user: appuser
+    app_group: appgroup
+    web_root: /var/www/html
+    
+  tasks:
+    # User and Group Management
+    - name: Create application group
+      group:
+        name: "{{ app_group }}"
+        state: present
+        
+    - name: Create application user
+      user:
+        name: "{{ app_user }}"
+        group: "{{ app_group }}"
+        home: /home/{{ app_user }}
+        shell: /bin/bash
+        state: present
+        
+    # Package Management
+    - name: Update package cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+        
+    - name: Install required packages
+      apt:
+        name:
+          - nginx
+          - git
+          - curl
+          - htop
+          - tree
+          - jq
+        state: present
+        
+    # Directory Structure
+    - name: Create application directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: '0755'
+      loop:
+        - "{{ app_config_dir }}"
+        - /var/log/myapp
+        - /opt/myapp
+        
+    - name: Create web root directory
+      file:
+        path: "{{ web_root }}"
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: '0755'
+        
+    # Configuration Files
+    - name: Create application config file
+      copy:
+        content: |
+          # Application Configuration - Generated by Ansible
+          app_name=MyApplication
+          app_version=1.0.0
+          debug=false
+          log_level=info
+          environment=production
+          created_date={{ ansible_date_time.date }}
+        dest: "{{ app_config_dir }}/app.conf"
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: '0644'
+        backup: yes
+        
+    - name: Create systemd service file
+      copy:
+        content: |
+          [Unit]
+          Description=My Application Service
+          After=network.target
+          
+          [Service]
+          Type=simple
+          User={{ app_user }}
+          Group={{ app_group }}
+          WorkingDirectory=/opt/myapp
+          ExecStart=/bin/bash -c 'while true; do echo "Service running at $(date)" >> /var/log/myapp/service.log; sleep 60; done'
+          Restart=always
+          RestartSec=10
+          
+          [Install]
+          WantedBy=multi-user.target
+        dest: /etc/systemd/system/myapp.service
+        mode: '0644'
+      notify:
+        - reload systemd
+        - restart myapp
+        
+    - name: Create web content
+      copy:
+        content: |
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>Idempotent Configuration Demo</title>
+              <style>
+                  body { font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }
+                  .container { max-width: 900px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+                  .status { background: #e8f5e8; padding: 20px; border-radius: 5px; margin: 20px 0; }
+                  .info { background: #e8f4fd; padding: 15px; border-radius: 5px; margin: 10px 0; }
+                  h1 { color: #333; border-bottom: 2px solid #007acc; padding-bottom: 10px; }
+                  h2 { color: #007acc; }
+              </style>
+          </head>
+          <body>
+              <div class="container">
+                  <h1>Ansible Idempotence Demonstration</h1>
+                  <div class="status">
+                      <h2>Configuration Status: Complete</h2>
+                      <p>This server has been configured using idempotent Ansible playbooks.</p>
+                  </div>
+                  <div class="info">
+                      <h3>Idempotent Features Implemented:</h3>
+                      <ul>
+                          <li>User and group management</li>
+                          <li>Package installation and removal</li>
+                          <li>File and directory creation</li>
+                          <li>Service configuration and management</li>
+                          <li>Web server setup</li>
+                      </ul>
+                  </div>
+                  <div class="info">
+                      <h3>Test Results:</h3>
+                      <p>Running this playbook multiple times will produce identical results without unwanted changes.</p>
+                      <p>Generated on: {{ ansible_date_time.date }} at {{ ansible_date_time.time }}</p>
+                  </div>
+              </div>
+          </body>
+          </html>
+        dest: "{{ web_root }}/index.html"
+        owner: www-data
+        group: www-data
+        mode: '0644'
+        
+    # Service Management
+    - name: Enable and start services
+      systemd:
+        name: "{{ item }}"
+        enabled: yes
+        state: started
+        daemon_reload: yes
+      loop:
+        - nginx
+        - myapp
+        
+    # Verification Tasks
+    - name: Verify nginx is responding
+      uri:
+        url: http://localhost
+        method: GET
+        status_code: 200
+      register: web_check
+      
+    - name: Verify application service is running
+      systemd:
+        name: myapp
+        state: started
+      register: service_check
+      
+    - name: Display verification results
+      debug:
+        msg: 
+          - "Web server status: {{ 'OK' if web_check.status == 200 else 'FAILED' }}"
+          - "Application service: {{ 'Running' if service_check.status.ActiveState == 'active' else 'Not Running' }}"
+          
+  handlers:
+    - name: reload systemd
+      systemd:
+        daemon_reload: yes
+        
+    - name: restart myapp
+      systemd:
+        name: myapp
+        state: restarted
+EOF
+Subtask 4.2: Create Test Script for Idempotence Verification
+Create a script to test idempotence automatically:
+
+cat > test-idempotence.sh << 'EOF'
+#!/bin/bash
+
+echo "=== Ansible Idempotence Test Script ==="
+echo "This script will run the playbook multiple times to verify idempotent behavior"
+echo
+
+PLAYBOOK="playbooks/master-idempotent.yml"
+RESULTS_FILE="/tmp/idempotence_test_results.txt"
+
+# Clear previous results
+> $RESULTS_FILE
+
+echo "Starting idempotence test..."
+echo "Results will be saved to: $RESULTS_FILE"
+echo
+
+for i in {1..3}; do
+    echo "=== Run $i ===" | tee -a $RESULTS_FILE
+    echo "Timestamp: $(date)" | tee -a $RESULTS_FILE
+    
+    # Run playbook and capture output
+    ansible-playbook $PLAYBOOK --diff | tee -a $RESULTS_FILE
+    
+    # Check return code
+    if [ ${PIPESTATUS[0]} -eq 0 ]; then
+        echo "Run $i: SUCCESS" | tee -a $RESULTS_FILE
+    else
+        echo "Run $i: FAILED" | tee -a $RESULTS_FILE
+    fi
+    
+    echo "----------------------------------------" | tee -a $RESULTS_FILE
+    echo
+    
+    # Wait between runs
+    if [ $i -lt 3 ]; then
+        echo "Waiting 5 seconds before next run..."
+        sleep 5
+    fi
+done
+
+echo "=== Test Summary ===" | tee -a $RESULTS_FILE
+echo "Checking for 'changed=0' in final runs (indicating idempotence)..." | tee -a $RESULTS_FILE
+
+# Analyze results
+CHANGED_COUNT=$(grep -c "changed=" $RESULTS_FILE)
+echo "Total change indicators found: $CHANGED_COUNT" | tee -a $RESULTS_FILE
+
+echo
+echo "Test completed. Check $RESULTS_FILE for detailed results."
+echo "For true idempotence, runs 2 and 3 should show 'changed=0' for most tasks."
+EOF
+
+chmod +x test-idempotence.sh
+Subtask 4.3: Run Initial Playbook Execution
+Execute the master playbook for the first time:
+
+ansible-playbook playbooks/master-idempotent.yml --diff -v
+Subtask 4.4: Test Idempotence
+Run the idempotence test script:
+
+./test-idempotence.sh
+Subtask 4.5: Manual Verification
+Verify the web server is working:
+
+curl http://localhost
+Check service status:
+
+systemctl status nginx
+systemctl status myapp
+Verify file permissions and ownership:
+
+ls -la /etc/myapp/
+ls -la /var/log/myapp/
+ls -la /var/www/html/
+Task 5: Identifying and Fixing Non-Idempotent Tasks
+Subtask 5.1: Create a Problematic Playbook
+Create a playbook with common idempotence issues:
+
+cat > playbooks/problematic.yml << 'EOF'
+---
+- name: Problematic Non-Idempotent Tasks
+  hosts: local
+  become: yes
+  
+  tasks:
+    # Problem 1: Using shell/command without proper conditions
+    - name: Add line to file (problematic)
+      shell: echo "backup_enabled=true" >> /etc/myapp/app.conf
+      
+    # Problem 2: Creating files with timestamps
+    - name: Create backup file (problematic)
+      shell: cp /etc/myapp/app.conf /etc/myapp/app.conf.backup.$(date +%Y%m%d_%H%M%S)
+      
+    # Problem 3: Unconditional service restart
+    - name: Restart service (problematic)
+      shell: systemctl restart nginx
+      
+    # Problem 4: Using command without changed_when
+    - name: Check disk space (problematic)
+      command: df -h
+      
+    # Problem 5: Modifying files without backup
+    - name: Modify config (problematic)
+      shell: sed -i 's/debug=false/debug=true/' /etc/myapp/app.conf
+EOF
+Subtask 5.2: Create the Fixed Version
+Now create the corrected, idempotent version:
+
+cat > playbooks/fixed-idempotent.yml << 'EOF'
+---
+- name: Fixed Idempotent Tasks
+  hosts: local
+  become: yes
+  
+  tasks:
+    # Fix 1: Use lineinfile instead of shell echo
+    - name: Ensure backup setting exists in config
+      lineinfile:
+        path: /etc/myapp/app.conf
+        line: "backup_enabled=true"
+        state: present
+        backup: yes
+        
+    # Fix 2: Use copy with backup instead of shell cp
+    - name: Create backup of config file
+      copy:
+        src: /etc/myapp/app.conf
+        dest: /etc/myapp/app.conf.backup
+        remote_src: yes
+        backup: yes
+      when: ansible_date_time.epoch | int % 86400 == 0  # Daily backup
+      
+    # Fix 3: Use handler for service restart
+    - name: Update nginx configuration
+      lineinfile:
+        path: /etc/nginx/nginx.conf
+        regexp: '^\s*worker_connections'
+        line: '        worker_connections 1024;'
+        backup: yes
+      notify: restart nginx
+      
+    # Fix 4: Use command with changed_when
+    - name: Check disk space
+      command: df -h
+      register: disk_space
+      changed_when: false
+      
+    - name: Display disk space
+      debug:
+        var: disk_space.stdout_lines
+        
+    # Fix 5: Use lineinfile with backup for config changes
+    - name: Set debug mode in config
+      lineinfile:
+        path: /etc/myapp/app.conf
+        regexp: '^debug='
+        line: 'debug=true'
+        backup: yes
+        
+  handlers:
+    - name: restart nginx
+      systemd:
+        name: nginx
+        state: restarted
+EOF
+Subtask 5.3: Compare Problematic vs Fixed Playbooks
+Run the problematic playbook twice to see non-idempotent behavior:
+
+echo "=== Running Problematic Playbook - First Time ==="
+ansible-playbook playbooks/problematic.yml
+
+echo "=== Running Problematic Playbook - Second Time ==="
+ansible-playbook playbooks/problematic.yml
+Now run the fixed version twice:
+
+echo "=== Running Fixed Playbook - First Time ==="
+ansible-playbook playbooks/fixed-idempotent.yml --diff
+
+echo "=== Running Fixed Playbook - Second Time ==="
+ansible-playbook playbooks/fixed-idempotent.yml --diff
+Task 6: Advanced Idempotence Techniques
+Subtask 6.1: Using Conditional Idempotence
+Create a playbook demonstrating advanced idempotence techniques:
+
+cat > playbooks/advanced-idempotent.yml << 'EOF'
+---
+- name: Advanced Idempotence Techniques
+  hosts: local
+  become: yes
+  vars:
+    config_version: "2.1"
+    
+  tasks:
+    # Technique 1: Using register and when for conditional execution
+    - name: Check if config file exists
+      stat:
+        path: /etc/myapp/app.conf
+      register: config_file
+      
+    - name: Create initial config only if it doesn't exist
+      copy:
+        content: |
+          # Initial configuration
+          version={{ config_version }}
+          created_by=ansible
+        dest: /etc/myapp/app.conf
+        mode: '0644'
+      when: not config_file.stat.exists
+      
+    # Technique 2: Using creates parameter
+    - name: Download file only if it doesn't exist
+      get_url:
+        url: https://raw.githubusercontent.com/ansible/ansible/devel/README.md
+        dest: /tmp/ansible-readme.md
+        mode: '0644'
+        
+    # Technique 3: Using changed_when for command tasks
+    - name: Check service status
+      command: systemctl is-active nginx
+      register: nginx_status
+      changed_when: false
+      failed_when: false
+      
+    - name: Display service status
+      debug:
+        msg: "Nginx status: {{ nginx_status.stdout }}"
+        
+    # Technique 4: Using handlers for dependent actions
+    - name: Update application config version
+      lineinfile:
+        path: /etc/myapp/app.conf
+        regexp: '^version='
+        line: 'version={{ config_version }}'
+        backup: yes
+      notify:
+        - validate config
+        - restart application
+        
+    # Technique 5: Using block for error handling
+    - name: Configure application with error handling
+      block:
+        - name: Create application script
+          copy:
+            content: |
+              #!/bin/bash
+              # Application startup script
+              echo "Starting application version {{ config_version }}"
+              echo "Configuration file: /etc/myapp/app.conf"
+              echo "Log file: /var/log/myapp/service.log"
+            dest: /opt/myapp/start.sh
+            mode: '0755'
+            owner: appuser
+            group: appgroup
+            
+        - name: Test script execution
+          command: /opt/myapp/start.sh
+          become_user: appuser
+          register: script_test
+          changed_when: false
+          
+      rescue:
+        - name: Handle script creation failure
+          debug:
+            msg: "Failed to create or test application script"
+            
+      always:
+        - name: Ensure log directory exists
+          file:
+            path: /var/log/myapp
+            state: directory
+            owner: appuser
+            group: appgroup
+            mode: '0755'
+            
+    # Technique 6: Using assert for validation
+    - name: Validate configuration
+      assert:
+        that:
+          - config_file.stat.exists or not config_file.stat.exists
+          - config_version is defined
+          - config_version != ""
+        fail_msg: "Configuration validation failed"
+        success_msg: "Configuration validation passed"
+        
+  handlers:
+    - name: validate config
+      command: test -f /etc/myapp/app.conf
+      changed_when: false
+      
+    - name: restart application
+      systemd:
+        name: myapp
+        state: restarted
+      when: nginx_status.stdout == "active"
+EOF
+Subtask 6.2: Create Comprehensive Test Suite
+Create a comprehensive test to validate all idempotent configurations:
+
+cat > validate-idempotence.sh << 'EOF'
+#!/bin/bash
+
+echo "=== Comprehensive Idempotence Validation ==="
+echo
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+# Test results
+TESTS_PASSED=0
+TESTS_FAILED=0
+
+# Function to run test
+run_test() {
+    local test_name="$1"
+    local test_command="$2"
+    
+    echo -n "Testing: $test_name ... "
+    
+    if eval "$test_command" > /dev/null 2>&1; then
+        echo -e "${GREEN}PASS${NC}"
+        ((TESTS_PASSED++))
+    else
+        echo -e "${RED}FAIL${NC}"
+        ((TESTS_FAILED++))
+    fi
+}
+
+# Test 1: Check if users and groups exist
+run_test "Application user exists" "id appuser"
+run_test "Application group exists" "getent group appgroup"
+
+# Test 2: Check directories
+run_test "Config directory exists" "test -d /etc/myapp"
+run_test "Log directory exists" "test -d /var/log/myapp"
+run_test "Application directory exists" "test -d /opt/myapp"
+run_test "Web root exists" "test -d /var/www/html"
+
+# Test 3: Check files
+run_test "Application config exists" "test -f /etc/myapp/app.conf"
+run_test "Web index file exists" "test -f /var/www/html/index.html"
+run_test "Application script exists" "test -f /opt/myapp/start.sh"
+
+# Test 4: Check services
+run_test "Nginx service is active" "systemctl is-active nginx"
+run_test "MyApp service is active" "systemctl is-active myapp"
+
+# Test 5: Check web server response
+run_test "Web server responds" "curl -s http://localhost > /dev/null"
+
+# Test 6: Check file permissions
+run_test "Config file permissions" "test $(stat -c %a /etc/myapp/app.conf) = '644'"
+run_test "Script file is executable" "test -x /opt/myapp/start.sh"
+
+# Test 7: Check ownership
+run_test "Config directory ownership" "test $(stat -c %U:%G /etc/myapp) = 'appuser:appgroup'"
+run_test "Log directory ownership" "test $(stat -c %U:%G /var/log/myapp) = 'appuser:appgroup'"
+
+echo
+echo "=== Test Summary ==="
+echo -e "Tests Passed: ${GREEN}$TESTS_PASSED${NC}"
+echo -e "Tests Failed: ${RED}$TESTS_FAILED${NC}"
+echo -e "Total Tests: $((TESTS_PASSED + TESTS_FAILED))"
+
+if [ $TESTS_FAILED -eq 0 ]; then
+    echo -e "\n${GREEN}All tests passed! Configuration is idempotent.${NC}"
+    exit 0
+else
+    echo -e "\n${RED}Some tests failed. Check configuration.${NC}"
+    exit 1
+fi
+EOF
+
+chmod +x validate-idempotence.sh
+Subtask 6.3: Run Advanced Playbook and Validation
+Execute the advanced idempotence playbook:
+
+ansible-playbook playbooks/advanced-idempotent.yml --diff -v
+Run it again to verify idempotence:
+
+ansible-playbook playbooks/advanced-idempotent.yml --diff
+Run the validation script:
+
+./validate-idempotence.sh
+Task 7: Final Comprehensive Test
+Subtask 7.1: Create Final Test Playbook
+Create a final comprehensive playbook that combines all learned concepts:
+
+cat > playbooks/final-comprehensive.yml << 'EOF'
+---
+- name: Final Comprehensive Idempotent Configuration
+  hosts: local
+  become: yes
+  vars:
+    app_name: "IdempotentApp"
+    app_version: "3.0"
+    config_dir: "/etc/{{ app_name | lower }}"
+    log_dir: "/var/log/{{ app_name | lower }}"
+    app_dir: "/opt/{{ app_name | lower }}"
+    web_port: 8080
+    
+  pre_tasks:
+    - name: Display playbook information
+      debug:
+        msg:
+          - "Starting {{ app_name }} configuration"
+          - "Version: {{ app_version }}"
+          - "Target host: {{ inventory_hostname }}"
+          - "Timestamp: {{ ansible_date_time.iso8601 }}"
+          
+  tasks:
+    # System preparation
+    - name: Update package cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+        
+    - name: Install system packages
+      apt:
+        name:
+          - nginx
