@@ -1,0 +1,977 @@
+Lab 5: Managing Variables and Facts
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Define and use variables in Ansible playbooks effectively
+Gather system facts using Ansible's setup module
+Implement conditional statements based on collected system facts
+Create dynamic playbooks that adapt to different system configurations
+Understand variable precedence and scope in Ansible
+Use facts to make informed decisions in automation tasks
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Linux command line operations
+Familiarity with YAML syntax and structure
+Knowledge of basic Ansible concepts (playbooks, tasks, modules)
+Experience with text editors like nano or vim
+Understanding of basic system administration concepts
+Lab Environment
+Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated environment. The provided Linux machine is bare metal with no pre-installed tools, so you will install Ansible and other required tools during the lab exercises.
+
+Task 1: Setting Up the Environment and Installing Ansible
+Subtask 1.1: Update System and Install Dependencies
+First, let's prepare our system by updating packages and installing necessary dependencies.
+
+# Update the package manager
+sudo apt update && sudo apt upgrade -y
+
+# Install Python3 and pip if not already installed
+sudo apt install python3 python3-pip python3-venv curl wget -y
+
+# Verify Python installation
+python3 --version
+pip3 --version
+Subtask 1.2: Install Ansible
+Install Ansible using pip3 to get the latest version:
+
+# Install Ansible
+pip3 install ansible
+
+# Add pip3 local bin to PATH if needed
+echo 'export PATH=$PATH:~/.local/bin' >> ~/.bashrc
+source ~/.bashrc
+
+# Verify Ansible installation
+ansible --version
+ansible-playbook --version
+Subtask 1.3: Create Lab Directory Structure
+Set up a organized directory structure for our lab exercises:
+
+# Create main lab directory
+mkdir -p ~/ansible-lab5
+cd ~/ansible-lab5
+
+# Create subdirectories for organization
+mkdir -p playbooks inventory group_vars host_vars
+
+# Create basic inventory file
+cat > inventory/hosts << 'EOF'
+[local]
+localhost ansible_connection=local
+
+[webservers]
+localhost ansible_connection=local
+
+[databases]
+localhost ansible_connection=local
+EOF
+Task 2: Define and Use Variables in Playbooks
+Subtask 2.1: Understanding Variable Types and Definitions
+Create a playbook that demonstrates different ways to define variables:
+
+# Create a basic variables playbook
+cat > playbooks/variables-demo.yml << 'EOF'
+---
+- name: Variables Demonstration Playbook
+  hosts: localhost
+  connection: local
+  
+  # Play-level variables
+  vars:
+    app_name: "MyWebApp"
+    app_version: "2.1.0"
+    app_port: 8080
+    app_environment: "development"
+    
+    # List variables
+    required_packages:
+      - nginx
+      - python3
+      - git
+      - curl
+    
+    # Dictionary variables
+    database_config:
+      host: "localhost"
+      port: 5432
+      name: "myapp_db"
+      user: "dbuser"
+    
+    # Boolean variables
+    enable_ssl: true
+    debug_mode: false
+  
+  tasks:
+    - name: Display application information
+      debug:
+        msg: |
+          Application: {{ app_name }}
+          Version: {{ app_version }}
+          Port: {{ app_port }}
+          Environment: {{ app_environment }}
+    
+    - name: Show required packages
+      debug:
+        msg: "Required package: {{ item }}"
+      loop: "{{ required_packages }}"
+    
+    - name: Display database configuration
+      debug:
+        msg: |
+          Database Host: {{ database_config.host }}
+          Database Port: {{ database_config.port }}
+          Database Name: {{ database_config.name }}
+          Database User: {{ database_config.user }}
+    
+    - name: Show boolean variables
+      debug:
+        msg: |
+          SSL Enabled: {{ enable_ssl }}
+          Debug Mode: {{ debug_mode }}
+EOF
+Run the playbook to see variables in action:
+
+# Execute the variables demonstration playbook
+ansible-playbook -i inventory/hosts playbooks/variables-demo.yml
+Subtask 2.2: Using Group Variables and Host Variables
+Create group and host variable files to demonstrate variable precedence:
+
+# Create group variables for webservers
+cat > group_vars/webservers.yml << 'EOF'
+---
+# Group variables for webservers
+web_server_port: 80
+web_server_name: "Apache"
+max_connections: 100
+document_root: "/var/www/html"
+
+# Environment specific settings
+environment_type: "production"
+log_level: "info"
+
+# Security settings
+enable_firewall: true
+allowed_ips:
+  - "192.168.1.0/24"
+  - "10.0.0.0/8"
+EOF
+
+# Create group variables for databases
+cat > group_vars/databases.yml << 'EOF'
+---
+# Group variables for databases
+db_engine: "postgresql"
+db_port: 5432
+max_connections: 200
+backup_enabled: true
+
+# Performance settings
+shared_buffers: "256MB"
+effective_cache_size: "1GB"
+
+# Security settings
+ssl_enabled: true
+authentication_method: "md5"
+EOF
+
+# Create host-specific variables
+cat > host_vars/localhost.yml << 'EOF'
+---
+# Host-specific variables for localhost
+hostname: "lab-server"
+ip_address: "127.0.0.1"
+cpu_cores: 4
+memory_gb: 8
+
+# Override some group variables
+max_connections: 150
+log_level: "debug"
+
+# Host-specific applications
+installed_services:
+  - "ssh"
+  - "cron"
+  - "rsyslog"
+EOF
+Create a playbook to demonstrate variable precedence:
+
+cat > playbooks/variable-precedence.yml << 'EOF'
+---
+- name: Variable Precedence Demonstration
+  hosts: webservers
+  connection: local
+  
+  # Play-level variables (lower precedence)
+  vars:
+    log_level: "warning"
+    custom_setting: "play-level-value"
+  
+  tasks:
+    - name: Display variable sources and precedence
+      debug:
+        msg: |
+          === Variable Precedence Demo ===
+          Web Server Port: {{ web_server_port | default('not defined') }}
+          Web Server Name: {{ web_server_name | default('not defined') }}
+          Max Connections: {{ max_connections | default('not defined') }}
+          Log Level: {{ log_level | default('not defined') }}
+          Custom Setting: {{ custom_setting | default('not defined') }}
+          
+          === Host-specific Information ===
+          Hostname: {{ hostname | default('not defined') }}
+          IP Address: {{ ip_address | default('not defined') }}
+          CPU Cores: {{ cpu_cores | default('not defined') }}
+          Memory: {{ memory_gb | default('not defined') }}GB
+    
+    - name: Show installed services
+      debug:
+        msg: "Service: {{ item }}"
+      loop: "{{ installed_services | default([]) }}"
+      when: installed_services is defined
+    
+    - name: Display security settings
+      debug:
+        msg: |
+          Firewall Enabled: {{ enable_firewall | default('not defined') }}
+          SSL Enabled: {{ ssl_enabled | default('not defined') }}
+EOF
+Run the variable precedence demonstration:
+
+# Execute the variable precedence playbook
+ansible-playbook -i inventory/hosts playbooks/variable-precedence.yml
+Subtask 2.3: Using Variables from Command Line and External Files
+Create a playbook that accepts external variables:
+
+cat > playbooks/external-variables.yml << 'EOF'
+---
+- name: External Variables Demonstration
+  hosts: localhost
+  connection: local
+  
+  # Default values for variables
+  vars:
+    deployment_environment: "development"
+    application_version: "1.0.0"
+    enable_monitoring: false
+  
+  tasks:
+    - name: Display deployment information
+      debug:
+        msg: |
+          === Deployment Configuration ===
+          Environment: {{ deployment_environment }}
+          Application Version: {{ application_version }}
+          Monitoring Enabled: {{ enable_monitoring }}
+          
+          === Additional Variables ===
+          Custom Message: {{ custom_message | default('No custom message provided') }}
+          Target Directory: {{ target_directory | default('/opt/app') }}
+    
+    - name: Create target directory if specified
+      file:
+        path: "{{ target_directory | default('/tmp/default-app') }}"
+        state: directory
+        mode: '0755'
+      become: yes
+    
+    - name: Show conditional behavior based on environment
+      debug:
+        msg: "Running in {{ deployment_environment }} mode with enhanced logging"
+      when: deployment_environment == "development"
+    
+    - name: Production environment message
+      debug:
+        msg: "Production deployment detected - using optimized settings"
+      when: deployment_environment == "production"
+EOF
+
+# Create an external variables file
+cat > playbooks/production-vars.yml << 'EOF'
+---
+deployment_environment: "production"
+application_version: "2.5.1"
+enable_monitoring: true
+target_directory: "/opt/production-app"
+custom_message: "Production deployment initiated"
+
+# Production-specific settings
+database_pool_size: 50
+cache_enabled: true
+log_retention_days: 30
+EOF
+Test the playbook with different variable sources:
+
+# Run with default variables
+echo "=== Running with default variables ==="
+ansible-playbook -i inventory/hosts playbooks/external-variables.yml
+
+# Run with command-line variables
+echo -e "\n=== Running with command-line variables ==="
+ansible-playbook -i inventory/hosts playbooks/external-variables.yml \
+  -e "deployment_environment=staging" \
+  -e "application_version=2.0.0" \
+  -e "custom_message='Staging deployment'"
+
+# Run with external variable file
+echo -e "\n=== Running with external variable file ==="
+ansible-playbook -i inventory/hosts playbooks/external-variables.yml \
+  -e "@playbooks/production-vars.yml"
+Task 3: Gather System Facts Using the Setup Module
+Subtask 3.1: Understanding Ansible Facts
+Create a playbook to explore system facts:
+
+cat > playbooks/facts-exploration.yml << 'EOF'
+---
+- name: System Facts Exploration
+  hosts: localhost
+  connection: local
+  gather_facts: yes
+  
+  tasks:
+    - name: Display basic system information
+      debug:
+        msg: |
+          === Basic System Information ===
+          Hostname: {{ ansible_hostname }}
+          FQDN: {{ ansible_fqdn }}
+          Operating System: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          Kernel Version: {{ ansible_kernel }}
+          Architecture: {{ ansible_architecture }}
+          
+          === Hardware Information ===
+          CPU Cores: {{ ansible_processor_cores }}
+          CPU Count: {{ ansible_processor_count }}
+          Total Memory: {{ ansible_memtotal_mb }}MB
+          Available Memory: {{ ansible_memfree_mb }}MB
+    
+    - name: Display network information
+      debug:
+        msg: |
+          === Network Information ===
+          Default IPv4 Address: {{ ansible_default_ipv4.address | default('Not available') }}
+          Default Gateway: {{ ansible_default_ipv4.gateway | default('Not available') }}
+          DNS Servers: {{ ansible_dns.nameservers | join(', ') if ansible_dns.nameservers is defined else 'Not available' }}
+    
+    - name: Show all network interfaces
+      debug:
+        msg: "Interface {{ item }}: {{ hostvars[inventory_hostname]['ansible_' + item].get('ipv4', {}).get('address', 'No IP') }}"
+      loop: "{{ ansible_interfaces }}"
+      when: 
+        - ansible_interfaces is defined
+        - hostvars[inventory_hostname]['ansible_' + item] is defined
+        - hostvars[inventory_hostname]['ansible_' + item].get('ipv4') is defined
+    
+    - name: Display storage information
+      debug:
+        msg: |
+          === Storage Information ===
+          Device: {{ item.device }}
+          Mount Point: {{ item.mount }}
+          Filesystem: {{ item.fstype }}
+          Size: {{ item.size_total | human_readable }}
+          Available: {{ item.size_available | human_readable }}
+          Used: {{ ((item.size_total - item.size_available) / item.size_total * 100) | round(1) }}%
+      loop: "{{ ansible_mounts }}"
+      when: ansible_mounts is defined
+EOF
+
+# Run the facts exploration playbook
+ansible-playbook -i inventory/hosts playbooks/facts-exploration.yml
+Subtask 3.2: Custom Facts and Fact Caching
+Create custom facts and demonstrate fact gathering:
+
+# Create a directory for custom facts
+sudo mkdir -p /etc/ansible/facts.d
+
+# Create a custom fact script
+sudo tee /etc/ansible/facts.d/application.fact << 'EOF'
+#!/bin/bash
+# Custom fact script for application information
+
+echo "{"
+echo "  \"version\": \"2.1.0\","
+echo "  \"environment\": \"development\","
+echo "  \"last_deployment\": \"$(date -Iseconds)\","
+echo "  \"services\": ["
+echo "    \"web\","
+echo "    \"api\","
+echo "    \"worker\""
+echo "  ],"
+echo "  \"configuration\": {"
+echo "    \"debug_enabled\": true,"
+echo "    \"log_level\": \"info\","
+echo "    \"max_workers\": 4"
+echo "  }"
+echo "}"
+EOF
+
+# Make the custom fact executable
+sudo chmod +x /etc/ansible/facts.d/application.fact
+
+# Create another custom fact (INI format)
+sudo tee /etc/ansible/facts.d/system_info.fact << 'EOF'
+[general]
+environment=production
+datacenter=us-east-1
+team=devops
+
+[monitoring]
+enabled=true
+agent_version=3.2.1
+metrics_endpoint=https://metrics.example.com
+
+[backup]
+enabled=true
+schedule=daily
+retention_days=30
+EOF
+
+# Create a playbook to demonstrate custom facts
+cat > playbooks/custom-facts.yml << 'EOF'
+---
+- name: Custom Facts Demonstration
+  hosts: localhost
+  connection: local
+  gather_facts: yes
+  
+  tasks:
+    - name: Display standard facts summary
+      debug:
+        msg: |
+          === Standard System Facts ===
+          OS: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          Kernel: {{ ansible_kernel }}
+          Python Version: {{ ansible_python_version }}
+          Uptime: {{ ansible_uptime_seconds | int // 3600 }} hours
+    
+    - name: Display custom application facts
+      debug:
+        msg: |
+          === Custom Application Facts ===
+          App Version: {{ ansible_local.application.version }}
+          Environment: {{ ansible_local.application.environment }}
+          Last Deployment: {{ ansible_local.application.last_deployment }}
+          Debug Enabled: {{ ansible_local.application.configuration.debug_enabled }}
+          Log Level: {{ ansible_local.application.configuration.log_level }}
+          Max Workers: {{ ansible_local.application.configuration.max_workers }}
+      when: ansible_local.application is defined
+    
+    - name: Display custom application services
+      debug:
+        msg: "Service: {{ item }}"
+      loop: "{{ ansible_local.application.services }}"
+      when: ansible_local.application.services is defined
+    
+    - name: Display custom system info facts
+      debug:
+        msg: |
+          === Custom System Info Facts ===
+          Environment: {{ ansible_local.system_info.general.environment }}
+          Datacenter: {{ ansible_local.system_info.general.datacenter }}
+          Team: {{ ansible_local.system_info.general.team }}
+          
+          === Monitoring Configuration ===
+          Monitoring Enabled: {{ ansible_local.system_info.monitoring.enabled }}
+          Agent Version: {{ ansible_local.system_info.monitoring.agent_version }}
+          Metrics Endpoint: {{ ansible_local.system_info.monitoring.metrics_endpoint }}
+          
+          === Backup Configuration ===
+          Backup Enabled: {{ ansible_local.system_info.backup.enabled }}
+          Schedule: {{ ansible_local.system_info.backup.schedule }}
+          Retention: {{ ansible_local.system_info.backup.retention_days }} days
+      when: ansible_local.system_info is defined
+EOF
+
+# Run the custom facts playbook
+ansible-playbook -i inventory/hosts playbooks/custom-facts.yml
+Subtask 3.3: Selective Fact Gathering and Performance
+Create a playbook demonstrating selective fact gathering:
+
+cat > playbooks/selective-facts.yml << 'EOF'
+---
+- name: Selective Fact Gathering Demonstration
+  hosts: localhost
+  connection: local
+  
+  # Disable automatic fact gathering
+  gather_facts: no
+  
+  tasks:
+    - name: Gather only network facts
+      setup:
+        filter: "ansible_default_ipv4,ansible_interfaces,ansible_all_ipv4_addresses"
+      register: network_facts
+    
+    - name: Display network facts only
+      debug:
+        msg: |
+          === Network Facts Only ===
+          Default IP: {{ ansible_default_ipv4.address | default('Not available') }}
+          All Interfaces: {{ ansible_interfaces | join(', ') }}
+          All IPv4 Addresses: {{ ansible_all_ipv4_addresses | join(', ') }}
+    
+    - name: Gather only hardware facts
+      setup:
+        filter: "ansible_processor*,ansible_memtotal_mb,ansible_memfree_mb"
+    
+    - name: Display hardware facts only
+      debug:
+        msg: |
+          === Hardware Facts Only ===
+          Processor Count: {{ ansible_processor_count }}
+          Processor Cores: {{ ansible_processor_cores }}
+          Total Memory: {{ ansible_memtotal_mb }}MB
+          Free Memory: {{ ansible_memfree_mb }}MB
+    
+    - name: Gather OS facts
+      setup:
+        filter: "ansible_distribution*,ansible_kernel,ansible_architecture"
+    
+    - name: Display OS facts only
+      debug:
+        msg: |
+          === Operating System Facts Only ===
+          Distribution: {{ ansible_distribution }}
+          Version: {{ ansible_distribution_version }}
+          Kernel: {{ ansible_kernel }}
+          Architecture: {{ ansible_architecture }}
+    
+    - name: Gather all facts for comparison
+      setup:
+      register: all_facts
+    
+    - name: Show fact gathering performance comparison
+      debug:
+        msg: |
+          === Fact Gathering Performance ===
+          This playbook demonstrated selective fact gathering.
+          In production environments, gathering only required facts
+          can significantly improve playbook performance.
+          
+          Total facts available: {{ ansible_facts | length }}
+EOF
+
+# Run the selective facts playbook
+ansible-playbook -i inventory/hosts playbooks/selective-facts.yml
+Task 4: Use Conditional Statements Based on Facts
+Subtask 4.1: Basic Conditional Statements
+Create a playbook demonstrating various conditional statements:
+
+cat > playbooks/basic-conditionals.yml << 'EOF'
+---
+- name: Basic Conditional Statements
+  hosts: localhost
+  connection: local
+  gather_facts: yes
+  
+  vars:
+    min_memory_mb: 2048
+    required_disk_space_gb: 10
+    supported_distributions:
+      - "Ubuntu"
+      - "Debian"
+      - "CentOS"
+      - "RedHat"
+  
+  tasks:
+    - name: Check if system meets memory requirements
+      debug:
+        msg: "System has sufficient memory: {{ ansible_memtotal_mb }}MB (required: {{ min_memory_mb }}MB)"
+      when: ansible_memtotal_mb >= min_memory_mb
+    
+    - name: Warning for insufficient memory
+      debug:
+        msg: "WARNING: System has insufficient memory: {{ ansible_memtotal_mb }}MB (required: {{ min_memory_mb }}MB)"
+      when: ansible_memtotal_mb < min_memory_mb
+    
+    - name: Check operating system support
+      debug:
+        msg: "Operating system {{ ansible_distribution }} is supported"
+      when: ansible_distribution in supported_distributions
+    
+    - name: Warning for unsupported OS
+      debug:
+        msg: "WARNING: Operating system {{ ansible_distribution }} is not officially supported"
+      when: ansible_distribution not in supported_distributions
+    
+    - name: Ubuntu-specific tasks
+      debug:
+        msg: "Executing Ubuntu-specific configuration"
+      when: ansible_distribution == "Ubuntu"
+    
+    - name: Debian family tasks
+      debug:
+        msg: "Executing Debian family configuration"
+      when: ansible_os_family == "Debian"
+    
+    - name: RedHat family tasks
+      debug:
+        msg: "Executing RedHat family configuration"
+      when: ansible_os_family == "RedHat"
+    
+    - name: Check for specific Ubuntu version
+      debug:
+        msg: "Running on Ubuntu 20.04 LTS"
+      when: 
+        - ansible_distribution == "Ubuntu"
+        - ansible_distribution_version == "20.04"
+    
+    - name: Check architecture and OS combination
+      debug:
+        msg: "Running on 64-bit Ubuntu system"
+      when:
+        - ansible_distribution == "Ubuntu"
+        - ansible_architecture == "x86_64"
+    
+    - name: Multiple condition check with OR
+      debug:
+        msg: "System is either Ubuntu or has more than 4GB RAM"
+      when: >
+        ansible_distribution == "Ubuntu" or
+        ansible_memtotal_mb > 4096
+    
+    - name: Complex conditional with variables
+      debug:
+        msg: "System meets all deployment requirements"
+      when:
+        - ansible_memtotal_mb >= min_memory_mb
+        - ansible_distribution in supported_distributions
+        - ansible_architecture == "x86_64"
+EOF
+
+# Run the basic conditionals playbook
+ansible-playbook -i inventory/hosts playbooks/basic-conditionals.yml
+Subtask 4.2: Advanced Conditionals with Loops and Filters
+Create a playbook with advanced conditional logic:
+
+cat > playbooks/advanced-conditionals.yml << 'EOF'
+---
+- name: Advanced Conditional Statements
+  hosts: localhost
+  connection: local
+  gather_facts: yes
+  
+  vars:
+    required_packages:
+      - name: "python3"
+        min_version: "3.6"
+        critical: true
+      - name: "git"
+        min_version: "2.0"
+        critical: true
+      - name: "docker"
+        min_version: "20.0"
+        critical: false
+    
+    service_ports:
+      - port: 22
+        service: "ssh"
+        required: true
+      - port: 80
+        service: "http"
+        required: true
+      - port: 443
+        service: "https"
+        required: false
+      - port: 3306
+        service: "mysql"
+        required: false
+  
+  tasks:
+    - name: Check if running as root
+      debug:
+        msg: "WARNING: Running as root user"
+      when: ansible_user_id == "root"
+    
+    - name: Check if running as regular user
+      debug:
+        msg: "Running as regular user: {{ ansible_user_id }}"
+      when: ansible_user_id != "root"
+    
+    - name: Check disk space on root filesystem
+      debug:
+        msg: |
+          Root filesystem status:
+          Total: {{ item.size_total | human_readable }}
+          Available: {{ item.size_available | human_readable }}
+          Used: {{ ((item.size_total - item.size_available) / item.size_total * 100) | round(1) }}%
+      loop: "{{ ansible_mounts }}"
+      when: 
+        - item.mount == "/"
+        - item.size_total is defined
+    
+    - name: Warning for low disk space
+      debug:
+        msg: "WARNING: Low disk space on {{ item.mount }}"
+      loop: "{{ ansible_mounts }}"
+      when:
+        - item.size_available is defined
+        - item.size_total is defined
+        - (item.size_available / item.size_total * 100) < 20
+    
+    - name: Check for required packages (simulation)
+      debug:
+        msg: "Checking critical package: {{ item.name }} (min version: {{ item.min_version }})"
+      loop: "{{ required_packages }}"
+      when: item.critical == true
+    
+    - name: Check for optional packages (simulation)
+      debug:
+        msg: "Checking optional package: {{ item.name }}"
+      loop: "{{ required_packages }}"
+      when: item.critical == false
+    
+    - name: Network interface validation
+      debug:
+        msg: "Active network interface found: {{ item }}"
+      loop: "{{ ansible_interfaces }}"
+      when:
+        - item != "lo"
+        - hostvars[inventory_hostname]['ansible_' + item] is defined
+        - hostvars[inventory_hostname]['ansible_' + item].get('active', false) == true
+    
+    - name: Check Python version compatibility
+      debug:
+        msg: |
+          Python version check:
+          Current: {{ ansible_python_version }}
+          Status: {{ 'Compatible' if ansible_python_version is version('3.6', '>=') else 'Incompatible' }}
+      when: ansible_python_version is defined
+    
+    - name: Conditional task based on system load
+      debug:
+        msg: "System load is acceptable"
+      when: 
+        - ansible_loadavg is defined
+        - ansible_loadavg['1m'] < ansible_processor_count * 2
+    
+    - name: Check for systemd
+      debug:
+        msg: "Systemd is available on this system"
+      when: ansible_service_mgr == "systemd"
+    
+    - name: Memory usage analysis
+      debug:
+        msg: |
+          Memory Analysis:
+          Total: {{ ansible_memtotal_mb }}MB
+          Free: {{ ansible_memfree_mb }}MB
+          Usage: {{ ((ansible_memtotal_mb - ansible_memfree_mb) / ansible_memtotal_mb * 100) | round(1) }}%
+          Status: {{ 'High Usage' if ((ansible_memtotal_mb - ansible_memfree_mb) / ansible_memtotal_mb * 100) > 80 else 'Normal' }}
+      when:
+        - ansible_memtotal_mb is defined
+        - ansible_memfree_mb is defined
+EOF
+
+# Run the advanced conditionals playbook
+ansible-playbook -i inventory/hosts playbooks/advanced-conditionals.yml
+Subtask 4.3: Conditional Blocks and Error Handling
+Create a playbook demonstrating conditional blocks and error handling:
+
+cat > playbooks/conditional-blocks.yml << 'EOF'
+---
+- name: Conditional Blocks and Error Handling
+  hosts: localhost
+  connection: local
+  gather_facts: yes
+  
+  vars:
+    deployment_mode: "production"
+    enable_monitoring: true
+    backup_required: true
+  
+  tasks:
+    - name: Production deployment block
+      block:
+        - name: Production pre-checks
+          debug:
+            msg: "Performing production environment pre-checks"
+        
+        - name: Validate system requirements for production
+          debug:
+            msg: "System meets production requirements"
+          when:
+            - ansible_memtotal_mb >= 4096
+            - ansible_processor_cores >= 2
+        
+        - name: Configure production settings
+          debug:
+            msg: "Applying production configuration"
+        
+        - name: Enable production monitoring
+          debug:
+            msg: "Enabling production monitoring"
+          when: enable_monitoring == true
+      
+      rescue:
+        - name: Production deployment failed
+          debug:
+            msg: "Production deployment encountered an error, falling back to safe mode"
+        
+        - name: Apply safe configuration
+          debug:
+            msg: "Applying safe fallback configuration"
+      
+      always:
+        - name: Log deployment attempt
+          debug:
+            msg: "Production deployment attempt completed at {{ ansible_date_time.iso8601 }}"
+      
+      when: deployment_mode == "production"
+    
+    - name: Development deployment block
+      block:
+        - name: Development environment setup
+          debug:
+            msg: "Setting up development environment"
+        
+        - name: Enable debug mode
+          debug:
+            msg: "Debug mode enabled for development"
+        
+        - name: Skip resource validation
+          debug:
+            msg: "Skipping resource validation in development mode"
+      
+      when: deployment_mode == "development"
+    
+    - name: Backup configuration block
+      block:
+        - name: Check backup requirements
+          debug:
+            msg: "Backup is required for this deployment"
+        
+        - name: Validate backup storage
+          debug:
+            msg: "Checking backup storage availability"
+        
+        - name: Create backup
+          debug:
+            msg: "Creating system backup"
+        
+        - name: Verify backup integrity
+          debug:
+            msg: "Backup created successfully"
+      
+      rescue:
+        - name: Backup failed
+          debug:
+            msg: "WARNING: Backup creation failed, proceeding without backup"
+      
+      when: backup_required == true
+    
+    - name: System-specific configuration block
+      block:
+        - name: Ubuntu-specific tasks
+          debug:
+            msg: "Applying Ubuntu-specific configuration"
+          when: ansible_distribution == "Ubuntu"
+        
+        - name: Configure APT repositories
+          debug:
+            msg: "Configuring APT repositories"
+          when: ansible_pkg_mgr == "apt"
+        
+        - name: Install Ubuntu packages
+          debug:
+            msg: "Installing Ubuntu-specific packages"
+          when: ansible_distribution == "Ubuntu"
+      
+      when: ansible_os_family == "Debian"
+    
+    - name: Conditional service management
+      block:
+        - name: Check if systemd is available
+          debug:
+            msg: "Using systemd for service management"
+        
+        - name: Configure systemd services
+          debug:
+            msg: "Configuring services with systemd"
+        
+        - name: Enable auto-start services
+          debug:
+            msg: "Enabling auto-start for critical services"
+      
+      when: ansible_service_mgr == "systemd"
+    
+    - name: Final validation block
+      block:
+        - name: Validate deployment
+          debug:
+            msg: "Running final deployment validation"
+        
+        - name: Check service status
+          debug:
+            msg: "All services are running correctly"
+        
+        - name: Deployment successful
+          debug:
+            msg: |
+              === Deployment Summary ===
+              Mode: {{ deployment_mode }}
+              Target: {{ ansible_hostname }}
+              OS: {{ ansible_distribution }} {{ ansible_distribution_version }}
+              Completed: {{ ansible_date_time.iso8601 }}
+      
+      always:
+        - name: Cleanup temporary files
+          debug:
+            msg: "Cleaning up temporary deployment files"
+        
+        - name: Send deployment notification
+          debug:
+            msg: "Deployment notification sent to monitoring system"
+EOF
+
+# Run the conditional blocks playbook
+ansible-playbook -i inventory/hosts playbooks/conditional-blocks.yml
+Subtask 4.4: Real-World Conditional Scenarios
+Create a comprehensive playbook that combines all concepts:
+
+cat > playbooks/real-world-conditionals.yml << 'EOF'
+---
+- name: Real-World Conditional Scenarios
+  hosts: localhost
+  connection: local
+  gather_facts: yes
+  
+  vars:
+    application_name: "WebApp"
+    target_environment: "{{ env | default('development') }}"
+    
+    # Environment-specific configurations
+    environment_configs:
+      development:
+        min_memory_mb: 1024
+        min_disk_gb: 5
+        debug_enabled: true
+        ssl_required: false
+      
+      staging:
+        min_memory_mb: 2048
+        min_disk_gb: 10
+        debug_enabled: false
+        ssl_required: true
+      
+      production:
+        min_memory_mb: 4096
+        min_disk_gb: 20
+        debug_enabled: false
+        ssl_required: true
+    
+    # Service dependencies
+    required_services:
+      - name: "nginx"
+        port: 80
+        critical: true
+      - name: "postgresql"
+        port: 5432
+        critical: true
+      - name: "redis"
+        port: 6379
+        critical: false
+  
+  tasks:
+    - name: Display deployment information
