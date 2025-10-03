@@ -1,0 +1,259 @@
+Lab 1: Introduction to Ansible
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Understand Ansible's agentless architecture and how it differs from other configuration management tools
+Install Ansible on a Linux system using package managers
+Configure SSH access for Ansible to manage local and remote systems
+Execute basic Ansible ad-hoc commands to gather system information
+Understand the core components of Ansible including inventory, modules, and playbooks
+Verify Ansible installation and connectivity using built-in commands
+Prerequisites
+Before starting this lab, you should have:
+
+Basic knowledge of Linux command line operations
+Understanding of SSH (Secure Shell) concepts
+Familiarity with text editors like nano or vim
+Basic understanding of YAML syntax (helpful but not required)
+Knowledge of package management in Linux distributions
+Lab Environment
+Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated Linux environment. The provided Linux machine is bare metal with no pre-installed tools, so you will install Ansible and configure all required components during this lab exercise.
+
+Task 1: Install Ansible
+Subtask 1.1: Update System Packages
+First, ensure your system packages are up to date:
+
+sudo apt update && sudo apt upgrade -y
+Subtask 1.2: Install Required Dependencies
+Install Python and pip, which are required for Ansible:
+
+sudo apt install python3 python3-pip software-properties-common -y
+Subtask 1.3: Install Ansible Using pip
+Install Ansible using Python's package manager:
+
+pip3 install ansible
+Add the local bin directory to your PATH:
+
+echo 'export PATH=$PATH:~/.local/bin' >> ~/.bashrc
+source ~/.bashrc
+Subtask 1.4: Verify Ansible Installation
+Check if Ansible is installed correctly:
+
+ansible --version
+You should see output similar to:
+
+ansible [core 2.15.x]
+  config file = None
+  configured module search path = ['/home/user/.ansible/plugins/modules', '/usr/share/ansible/plugins/modules']
+  ansible python module location = /home/user/.local/lib/python3.x/site-packages/ansible
+  ansible collection location = /home/user/.ansible/collections:/usr/share/ansible/collections
+  executable location = /home/user/.local/bin/ansible
+  python version = 3.x.x
+Task 2: Set up SSH Access to Target Nodes
+Subtask 2.1: Generate SSH Key Pair
+Create an SSH key pair for passwordless authentication:
+
+ssh-keygen -t rsa -b 4096 -f ~/.ssh/ansible_key -N ""
+This creates:
+
+Private key: ~/.ssh/ansible_key
+Public key: ~/.ssh/ansible_key.pub
+Subtask 2.2: Configure SSH for Local Access
+Since we're working on a single machine, we'll configure SSH to manage the localhost:
+
+# Start SSH service
+sudo systemctl start ssh
+sudo systemctl enable ssh
+
+# Add your public key to authorized_keys
+cat ~/.ssh/ansible_key.pub >> ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+Subtask 2.3: Test SSH Connection
+Test the SSH connection to localhost:
+
+ssh -i ~/.ssh/ansible_key -o StrictHostKeyChecking=no localhost whoami
+You should see your username printed without being prompted for a password.
+
+Subtask 2.4: Create Ansible Inventory File
+Create a directory for Ansible configuration:
+
+mkdir ~/ansible-lab
+cd ~/ansible-lab
+Create an inventory file that defines the hosts Ansible will manage:
+
+cat > inventory.ini << EOF
+[local]
+localhost ansible_connection=local
+
+[remote]
+127.0.0.1 ansible_ssh_private_key_file=~/.ssh/ansible_key ansible_user=$(whoami)
+
+[all:vars]
+ansible_python_interpreter=/usr/bin/python3
+EOF
+Subtask 2.5: Create Ansible Configuration File
+Create an Ansible configuration file to set default behaviors:
+
+cat > ansible.cfg << EOF
+[defaults]
+inventory = inventory.ini
+host_key_checking = False
+timeout = 30
+gathering = smart
+fact_caching = memory
+
+[ssh_connection]
+ssh_args = -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+EOF
+Task 3: Test Basic Ansible Commands
+Subtask 3.1: Test Connectivity with Ping Module
+Test if Ansible can reach all hosts in your inventory:
+
+ansible all -m ping
+Expected output:
+
+localhost | SUCCESS => {
+    "changed": false,
+    "ping": "pong"
+}
+127.0.0.1 | SUCCESS => {
+    "changed": false,
+    "ping": "pong"
+}
+Subtask 3.2: Gather System Facts
+Use the setup module to gather detailed information about your systems:
+
+ansible all -m setup
+This command collects comprehensive system information including:
+
+Operating system details
+Hardware information
+Network configuration
+Installed packages
+Subtask 3.3: Execute Shell Commands
+Run shell commands on target hosts using the shell module:
+
+# Check system uptime
+ansible all -m shell -a "uptime"
+
+# Check disk usage
+ansible all -m shell -a "df -h"
+
+# Check memory usage
+ansible all -m shell -a "free -h"
+Subtask 3.4: File Operations
+Create and manage files using Ansible modules:
+
+# Create a test file
+ansible all -m file -a "path=/tmp/ansible-test state=touch mode=0644"
+
+# Verify the file was created
+ansible all -m shell -a "ls -la /tmp/ansible-test"
+
+# Remove the test file
+ansible all -m file -a "path=/tmp/ansible-test state=absent"
+Subtask 3.5: Package Management
+Use Ansible to check installed packages:
+
+# Check if a specific package is installed
+ansible all -m package_facts
+
+# Install a package (example with tree utility)
+ansible all -m apt -a "name=tree state=present" --become
+
+# Verify installation
+ansible all -m shell -a "which tree"
+Subtask 3.6: Service Management
+Manage system services using Ansible:
+
+# Check SSH service status
+ansible all -m service -a "name=ssh" --become
+
+# Ensure SSH service is running
+ansible all -m service -a "name=ssh state=started enabled=yes" --become
+Subtask 3.7: Working with Different Host Groups
+Test commands on specific groups from your inventory:
+
+# Target only local group
+ansible local -m shell -a "hostname"
+
+# Target only remote group
+ansible remote -m shell -a "hostname"
+
+# Target specific host
+ansible localhost -m shell -a "date"
+Understanding Ansible Architecture
+Key Components Explained
+Agentless Architecture: Unlike other configuration management tools, Ansible doesn't require agents on target machines. It uses SSH for communication, making it lightweight and secure.
+
+Control Node: The machine where Ansible is installed and from which you run commands (your current Linux machine).
+
+Managed Nodes: The target machines that Ansible manages (in this lab, localhost and 127.0.0.1).
+
+Inventory: A file that defines which hosts Ansible will manage and how to connect to them.
+
+Modules: Reusable units of code that Ansible executes on target hosts (ping, shell, file, etc.).
+
+Ad-hoc Commands: One-time commands executed directly from the command line.
+
+Troubleshooting Common Issues
+SSH Connection Problems
+If you encounter SSH connection issues:
+
+# Check SSH service status
+sudo systemctl status ssh
+
+# Restart SSH service if needed
+sudo systemctl restart ssh
+
+# Verify SSH key permissions
+ls -la ~/.ssh/
+chmod 700 ~/.ssh
+chmod 600 ~/.ssh/ansible_key
+chmod 644 ~/.ssh/ansible_key.pub
+Permission Denied Errors
+For permission-related issues:
+
+# Use --become flag for commands requiring sudo
+ansible all -m apt -a "name=htop state=present" --become
+
+# Check sudo permissions
+sudo -l
+Module Not Found Errors
+If you encounter module errors:
+
+# Update Ansible to latest version
+pip3 install --upgrade ansible
+
+# Check available modules
+ansible-doc -l | grep -i module_name
+Lab Verification
+Verification Checklist
+Ensure you can successfully execute these commands:
+
+Ansible Version Check:
+
+ansible --version
+Inventory List:
+
+ansible-inventory --list
+Host Connectivity:
+
+ansible all -m ping
+System Information:
+
+ansible all -m setup -a "filter=ansible_distribution*"
+Command Execution:
+
+ansible all -m shell -a "echo 'Ansible is working!'"
+Conclusion
+In this lab, you have successfully:
+
+Installed Ansible on a Linux system using pip and configured the necessary dependencies
+Set up SSH access by generating key pairs and configuring passwordless authentication
+Created an inventory file to define managed hosts and connection parameters
+Executed basic Ansible commands including ping, setup, shell, file, and service modules
+Understood Ansible's agentless architecture and how it differs from other configuration management tools
+This foundation prepares you for more advanced Ansible concepts including playbooks, roles, and complex automation scenarios. Ansible's agentless approach makes it an excellent choice for infrastructure automation, configuration management, and application deployment in both small and large-scale environments.
+
+The skills you've learned in this lab form the basis for automating repetitive tasks, ensuring consistent system configurations, and managing infrastructure as code. As you progress, you'll discover how Ansible can significantly reduce manual effort while improving reliability and consistency across your IT infrastructure.
