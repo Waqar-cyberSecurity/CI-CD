@@ -1,0 +1,932 @@
+Lab 3: Managing Inventory
+Lab Objectives
+By the end of this lab, students will be able to:
+
+Understand the concept of Ansible inventory and its importance in automation
+Create and configure static inventories using both INI and YAML formats
+Implement dynamic inventory solutions using cloud APIs
+Organize hosts into groups and apply group variables
+Validate inventory configurations and troubleshoot common issues
+Apply best practices for inventory management in real-world scenarios
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of Linux command line operations
+Familiarity with text editors (nano, vim, or similar)
+Basic knowledge of YAML and INI file formats
+Understanding of networking concepts (IP addresses, hostnames)
+Completion of previous Ansible labs or equivalent knowledge
+Basic understanding of cloud computing concepts
+Lab Environment
+Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated environment. The provided Linux machine is bare metal with no pre-installed tools, so you will install all required software during the lab exercises.
+
+Task 1: Setting Up the Lab Environment
+Subtask 1.1: Install Required Tools
+First, update your system and install the necessary packages:
+
+# Update package repositories
+sudo apt update
+
+# Install Python3 and pip
+sudo apt install -y python3 python3-pip
+
+# Install Ansible
+pip3 install ansible
+
+# Install additional tools for cloud API integration
+pip3 install boto3 requests
+
+# Verify Ansible installation
+ansible --version
+Subtask 1.2: Create Lab Directory Structure
+Organize your workspace for the inventory management exercises:
+
+# Create main lab directory
+mkdir -p ~/ansible-inventory-lab
+cd ~/ansible-inventory-lab
+
+# Create subdirectories for different inventory types
+mkdir -p static-inventory/{ini,yaml}
+mkdir -p dynamic-inventory
+mkdir -p group-vars
+mkdir -p host-vars
+
+# Create a directory for test playbooks
+mkdir -p playbooks
+
+# Display the directory structure
+tree . || ls -la
+Task 2: Creating Static Inventories
+Subtask 2.1: Create INI Format Static Inventory
+Create a comprehensive static inventory using the traditional INI format:
+
+# Create the main INI inventory file
+cat > static-inventory/ini/hosts.ini << 'EOF'
+# Web Servers Group
+[webservers]
+web1 ansible_host=192.168.1.10 ansible_user=ubuntu
+web2 ansible_host=192.168.1.11 ansible_user=ubuntu
+web3 ansible_host=192.168.1.12 ansible_user=ubuntu
+
+# Database Servers Group
+[databases]
+db1 ansible_host=192.168.1.20 ansible_user=ubuntu mysql_port=3306
+db2 ansible_host=192.168.1.21 ansible_user=ubuntu mysql_port=3306
+
+# Load Balancers Group
+[loadbalancers]
+lb1 ansible_host=192.168.1.30 ansible_user=ubuntu nginx_port=80
+lb2 ansible_host=192.168.1.31 ansible_user=ubuntu nginx_port=80
+
+# Production Environment (Parent Group)
+[production:children]
+webservers
+databases
+loadbalancers
+
+# Development Servers
+[development]
+dev1 ansible_host=192.168.1.40 ansible_user=ubuntu
+dev2 ansible_host=192.168.1.41 ansible_user=ubuntu
+
+# All servers with common variables
+[all:vars]
+ansible_ssh_private_key_file=~/.ssh/id_rsa
+ansible_ssh_common_args='-o StrictHostKeyChecking=no'
+EOF
+Subtask 2.2: Create YAML Format Static Inventory
+Create the same inventory structure using YAML format:
+
+# Create YAML inventory file
+cat > static-inventory/yaml/hosts.yml << 'EOF'
+all:
+  vars:
+    ansible_ssh_private_key_file: ~/.ssh/id_rsa
+    ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
+  children:
+    production:
+      children:
+        webservers:
+          hosts:
+            web1:
+              ansible_host: 192.168.1.10
+              ansible_user: ubuntu
+            web2:
+              ansible_host: 192.168.1.11
+              ansible_user: ubuntu
+            web3:
+              ansible_host: 192.168.1.12
+              ansible_user: ubuntu
+        databases:
+          hosts:
+            db1:
+              ansible_host: 192.168.1.20
+              ansible_user: ubuntu
+              mysql_port: 3306
+            db2:
+              ansible_host: 192.168.1.21
+              ansible_user: ubuntu
+              mysql_port: 3306
+        loadbalancers:
+          hosts:
+            lb1:
+              ansible_host: 192.168.1.30
+              ansible_user: ubuntu
+              nginx_port: 80
+            lb2:
+              ansible_host: 192.168.1.31
+              ansible_user: ubuntu
+              nginx_port: 80
+    development:
+      hosts:
+        dev1:
+          ansible_host: 192.168.1.40
+          ansible_user: ubuntu
+        dev2:
+          ansible_host: 192.168.1.41
+          ansible_user: ubuntu
+EOF
+Subtask 2.3: Create Group and Host Variables
+Set up group variables for better organization:
+
+# Create group variables for webservers
+cat > group-vars/webservers.yml << 'EOF'
+---
+# Web server specific variables
+http_port: 80
+https_port: 443
+document_root: /var/www/html
+web_service: apache2
+max_connections: 100
+
+# Common packages for web servers
+web_packages:
+  - apache2
+  - php
+  - libapache2-mod-php
+EOF
+
+# Create group variables for databases
+cat > group-vars/databases.yml << 'EOF'
+---
+# Database specific variables
+mysql_root_password: "SecurePassword123!"
+mysql_port: 3306
+mysql_datadir: /var/lib/mysql
+backup_schedule: "0 2 * * *"
+
+# Database packages
+db_packages:
+  - mysql-server
+  - mysql-client
+  - python3-pymysql
+EOF
+
+# Create group variables for production environment
+cat > group-vars/production.yml << 'EOF'
+---
+# Production environment variables
+environment: production
+log_level: warn
+backup_enabled: true
+monitoring_enabled: true
+security_updates: true
+
+# Common production packages
+common_packages:
+  - htop
+  - vim
+  - curl
+  - wget
+  - unzip
+EOF
+
+# Create host-specific variables
+mkdir -p host-vars
+cat > host-vars/web1.yml << 'EOF'
+---
+# Host-specific variables for web1
+server_role: primary_web
+backup_priority: high
+custom_config: true
+EOF
+Subtask 2.4: Test Static Inventories
+Verify that your static inventories are working correctly:
+
+# Test INI inventory
+echo "Testing INI inventory format:"
+ansible-inventory -i static-inventory/ini/hosts.ini --list
+
+# Test YAML inventory
+echo -e "\nTesting YAML inventory format:"
+ansible-inventory -i static-inventory/yaml/hosts.yml --list
+
+# List specific groups
+echo -e "\nListing webservers group:"
+ansible-inventory -i static-inventory/ini/hosts.ini --list webservers
+
+# Show host details
+echo -e "\nShowing details for web1:"
+ansible-inventory -i static-inventory/yaml/hosts.yml --host web1
+Task 3: Setting Up Dynamic Inventory
+Subtask 3.1: Create Mock Cloud API Server
+Since we're working on a single machine, create a mock cloud API server to simulate dynamic inventory:
+
+# Create a simple Python script to simulate cloud API
+cat > dynamic-inventory/mock_cloud_api.py << 'EOF'
+#!/usr/bin/env python3
+"""
+Mock Cloud API Server for Dynamic Inventory Testing
+This simulates a cloud provider API that returns instance information
+"""
+
+import json
+import http.server
+import socketserver
+import threading
+import time
+from urllib.parse import urlparse, parse_qs
+
+class MockCloudAPIHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        parsed_path = urlparse(self.path)
+        
+        if parsed_path.path == '/instances':
+            # Return mock instance data
+            instances = {
+                "instances": [
+                    {
+                        "id": "i-1234567890abcdef0",
+                        "name": "web-server-1",
+                        "public_ip": "203.0.113.10",
+                        "private_ip": "10.0.1.10",
+                        "state": "running",
+                        "tags": {
+                            "Environment": "production",
+                            "Role": "webserver",
+                            "Team": "frontend"
+                        }
+                    },
+                    {
+                        "id": "i-0987654321fedcba0",
+                        "name": "web-server-2",
+                        "public_ip": "203.0.113.11",
+                        "private_ip": "10.0.1.11",
+                        "state": "running",
+                        "tags": {
+                            "Environment": "production",
+                            "Role": "webserver",
+                            "Team": "frontend"
+                        }
+                    },
+                    {
+                        "id": "i-abcdef1234567890",
+                        "name": "db-server-1",
+                        "public_ip": "203.0.113.20",
+                        "private_ip": "10.0.1.20",
+                        "state": "running",
+                        "tags": {
+                            "Environment": "production",
+                            "Role": "database",
+                            "Team": "backend"
+                        }
+                    },
+                    {
+                        "id": "i-fedcba0987654321",
+                        "name": "dev-server-1",
+                        "public_ip": "203.0.113.30",
+                        "private_ip": "10.0.1.30",
+                        "state": "running",
+                        "tags": {
+                            "Environment": "development",
+                            "Role": "webserver",
+                            "Team": "development"
+                        }
+                    }
+                ]
+            }
+            
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(instances).encode())
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+def start_mock_server():
+    PORT = 8080
+    with socketserver.TCPServer(("", PORT), MockCloudAPIHandler) as httpd:
+        print(f"Mock Cloud API server running on port {PORT}")
+        httpd.serve_forever()
+
+if __name__ == "__main__":
+    start_mock_server()
+EOF
+
+# Make the script executable
+chmod +x dynamic-inventory/mock_cloud_api.py
+Subtask 3.2: Create Dynamic Inventory Script
+Create a dynamic inventory script that fetches data from the mock API:
+
+# Create dynamic inventory script
+cat > dynamic-inventory/dynamic_inventory.py << 'EOF'
+#!/usr/bin/env python3
+"""
+Dynamic Inventory Script for Ansible
+Fetches inventory data from mock cloud API
+"""
+
+import json
+import sys
+import requests
+import argparse
+from collections import defaultdict
+
+class DynamicInventory:
+    def __init__(self):
+        self.inventory = defaultdict(dict)
+        self.api_url = "http://localhost:8080/instances"
+        
+    def fetch_instances(self):
+        """Fetch instances from mock cloud API"""
+        try:
+            response = requests.get(self.api_url, timeout=10)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            print(f"Error fetching instances: {e}", file=sys.stderr)
+            return {"instances": []}
+    
+    def build_inventory(self):
+        """Build Ansible inventory from API data"""
+        data = self.fetch_instances()
+        
+        # Initialize inventory structure
+        inventory = {
+            '_meta': {
+                'hostvars': {}
+            }
+        }
+        
+        # Process each instance
+        for instance in data.get('instances', []):
+            hostname = instance['name']
+            
+            # Add host variables
+            inventory['_meta']['hostvars'][hostname] = {
+                'ansible_host': instance['public_ip'],
+                'ansible_user': 'ubuntu',
+                'instance_id': instance['id'],
+                'private_ip': instance['private_ip'],
+                'instance_state': instance['state']
+            }
+            
+            # Create groups based on tags
+            tags = instance.get('tags', {})
+            
+            # Group by environment
+            env = tags.get('Environment', 'unknown')
+            if env not in inventory:
+                inventory[env] = {'hosts': []}
+            inventory[env]['hosts'].append(hostname)
+            
+            # Group by role
+            role = tags.get('Role', 'unknown')
+            role_group = f"{role}s"  # webserver -> webservers
+            if role_group not in inventory:
+                inventory[role_group] = {'hosts': []}
+            inventory[role_group]['hosts'].append(hostname)
+            
+            # Group by team
+            team = tags.get('Team', 'unknown')
+            team_group = f"team_{team}"
+            if team_group not in inventory:
+                inventory[team_group] = {'hosts': []}
+            inventory[team_group]['hosts'].append(hostname)
+        
+        # Add group variables
+        if 'webservers' in inventory:
+            inventory['webservers']['vars'] = {
+                'http_port': 80,
+                'https_port': 443
+            }
+        
+        if 'databases' in inventory:
+            inventory['databases']['vars'] = {
+                'mysql_port': 3306,
+                'backup_enabled': True
+            }
+        
+        return inventory
+    
+    def get_host_vars(self, hostname):
+        """Get variables for a specific host"""
+        inventory = self.build_inventory()
+        return inventory['_meta']['hostvars'].get(hostname, {})
+
+def main():
+    parser = argparse.ArgumentParser(description='Dynamic Inventory Script')
+    parser.add_argument('--list', action='store_true', 
+                       help='List all hosts and groups')
+    parser.add_argument('--host', help='Get variables for specific host')
+    
+    args = parser.parse_args()
+    
+    di = DynamicInventory()
+    
+    if args.list:
+        inventory = di.build_inventory()
+        print(json.dumps(inventory, indent=2))
+    elif args.host:
+        host_vars = di.get_host_vars(args.host)
+        print(json.dumps(host_vars, indent=2))
+    else:
+        parser.print_help()
+
+if __name__ == '__main__':
+    main()
+EOF
+
+# Make the script executable
+chmod +x dynamic-inventory/dynamic_inventory.py
+Subtask 3.3: Start Mock API and Test Dynamic Inventory
+Start the mock API server and test the dynamic inventory:
+
+# Start the mock API server in the background
+cd ~/ansible-inventory-lab
+python3 dynamic-inventory/mock_cloud_api.py &
+API_PID=$!
+
+# Wait for server to start
+sleep 3
+
+# Test the API directly
+echo "Testing mock API:"
+curl -s http://localhost:8080/instances | python3 -m json.tool
+
+# Test dynamic inventory script
+echo -e "\nTesting dynamic inventory script:"
+python3 dynamic-inventory/dynamic_inventory.py --list
+
+# Test host-specific variables
+echo -e "\nTesting host variables for web-server-1:"
+python3 dynamic-inventory/dynamic_inventory.py --host web-server-1
+
+# Test with Ansible
+echo -e "\nTesting with Ansible:"
+ansible-inventory -i dynamic-inventory/dynamic_inventory.py --list
+Subtask 3.4: Create Advanced Dynamic Inventory with Caching
+Enhance the dynamic inventory with caching capabilities:
+
+# Create advanced dynamic inventory with caching
+cat > dynamic-inventory/cached_dynamic_inventory.py << 'EOF'
+#!/usr/bin/env python3
+"""
+Advanced Dynamic Inventory Script with Caching
+Includes caching mechanism to improve performance
+"""
+
+import json
+import sys
+import requests
+import argparse
+import os
+import time
+from collections import defaultdict
+
+class CachedDynamicInventory:
+    def __init__(self):
+        self.cache_dir = os.path.expanduser('~/.ansible_inventory_cache')
+        self.cache_file = os.path.join(self.cache_dir, 'inventory_cache.json')
+        self.cache_ttl = 300  # 5 minutes
+        self.api_url = "http://localhost:8080/instances"
+        
+        # Create cache directory if it doesn't exist
+        os.makedirs(self.cache_dir, exist_ok=True)
+    
+    def is_cache_valid(self):
+        """Check if cache file exists and is still valid"""
+        if not os.path.exists(self.cache_file):
+            return False
+        
+        cache_age = time.time() - os.path.getmtime(self.cache_file)
+        return cache_age < self.cache_ttl
+    
+    def load_cache(self):
+        """Load inventory from cache file"""
+        try:
+            with open(self.cache_file, 'r') as f:
+                return json.load(f)
+        except (IOError, json.JSONDecodeError):
+            return None
+    
+    def save_cache(self, inventory):
+        """Save inventory to cache file"""
+        try:
+            with open(self.cache_file, 'w') as f:
+                json.dump(inventory, f, indent=2)
+        except IOError as e:
+            print(f"Warning: Could not save cache: {e}", file=sys.stderr)
+    
+    def fetch_instances(self):
+        """Fetch instances from mock cloud API"""
+        try:
+            response = requests.get(self.api_url, timeout=10)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            print(f"Error fetching instances: {e}", file=sys.stderr)
+            return {"instances": []}
+    
+    def build_inventory(self, use_cache=True):
+        """Build Ansible inventory from API data or cache"""
+        
+        # Try to use cache first
+        if use_cache and self.is_cache_valid():
+            cached_inventory = self.load_cache()
+            if cached_inventory:
+                return cached_inventory
+        
+        # Fetch fresh data from API
+        data = self.fetch_instances()
+        
+        # Initialize inventory structure
+        inventory = {
+            '_meta': {
+                'hostvars': {}
+            },
+            'all': {
+                'vars': {
+                    'ansible_ssh_common_args': '-o StrictHostKeyChecking=no'
+                }
+            }
+        }
+        
+        # Process each instance
+        for instance in data.get('instances', []):
+            hostname = instance['name']
+            
+            # Add host variables
+            inventory['_meta']['hostvars'][hostname] = {
+                'ansible_host': instance['public_ip'],
+                'ansible_user': 'ubuntu',
+                'instance_id': instance['id'],
+                'private_ip': instance['private_ip'],
+                'instance_state': instance['state'],
+                'last_updated': time.strftime('%Y-%m-%d %H:%M:%S')
+            }
+            
+            # Create groups based on tags
+            tags = instance.get('tags', {})
+            
+            # Group by environment
+            env = tags.get('Environment', 'unknown')
+            if env not in inventory:
+                inventory[env] = {'hosts': [], 'vars': {}}
+            inventory[env]['hosts'].append(hostname)
+            
+            # Group by role
+            role = tags.get('Role', 'unknown')
+            role_group = f"{role}s"
+            if role_group not in inventory:
+                inventory[role_group] = {'hosts': [], 'vars': {}}
+            inventory[role_group]['hosts'].append(hostname)
+            
+            # Group by team
+            team = tags.get('Team', 'unknown')
+            team_group = f"team_{team}"
+            if team_group not in inventory:
+                inventory[team_group] = {'hosts': [], 'vars': {}}
+            inventory[team_group]['hosts'].append(hostname)
+        
+        # Add group-specific variables
+        if 'webservers' in inventory:
+            inventory['webservers']['vars'].update({
+                'http_port': 80,
+                'https_port': 443,
+                'web_service': 'nginx'
+            })
+        
+        if 'databases' in inventory:
+            inventory['databases']['vars'].update({
+                'mysql_port': 3306,
+                'backup_enabled': True,
+                'backup_schedule': '0 2 * * *'
+            })
+        
+        # Save to cache
+        self.save_cache(inventory)
+        
+        return inventory
+    
+    def get_host_vars(self, hostname):
+        """Get variables for a specific host"""
+        inventory = self.build_inventory()
+        return inventory['_meta']['hostvars'].get(hostname, {})
+    
+    def refresh_cache(self):
+        """Force refresh of cache"""
+        return self.build_inventory(use_cache=False)
+
+def main():
+    parser = argparse.ArgumentParser(description='Cached Dynamic Inventory Script')
+    parser.add_argument('--list', action='store_true', 
+                       help='List all hosts and groups')
+    parser.add_argument('--host', help='Get variables for specific host')
+    parser.add_argument('--refresh', action='store_true',
+                       help='Force refresh cache')
+    
+    args = parser.parse_args()
+    
+    di = CachedDynamicInventory()
+    
+    if args.refresh:
+        print("Refreshing cache...", file=sys.stderr)
+        inventory = di.refresh_cache()
+        print("Cache refreshed successfully", file=sys.stderr)
+    elif args.list:
+        inventory = di.build_inventory()
+        print(json.dumps(inventory, indent=2))
+    elif args.host:
+        host_vars = di.get_host_vars(args.host)
+        print(json.dumps(host_vars, indent=2))
+    else:
+        parser.print_help()
+
+if __name__ == '__main__':
+    main()
+EOF
+
+# Make the script executable
+chmod +x dynamic-inventory/cached_dynamic_inventory.py
+
+# Test the cached version
+echo "Testing cached dynamic inventory:"
+python3 dynamic-inventory/cached_dynamic_inventory.py --list
+
+# Test cache refresh
+echo -e "\nTesting cache refresh:"
+python3 dynamic-inventory/cached_dynamic_inventory.py --refresh
+Task 4: Creating Test Playbooks
+Subtask 4.1: Create Playbooks to Test Inventories
+Create test playbooks to verify inventory functionality:
+
+# Create a simple test playbook
+cat > playbooks/test_inventory.yml << 'EOF'
+---
+- name: Test Inventory Configuration
+  hosts: all
+  gather_facts: no
+  tasks:
+    - name: Display host information
+      debug:
+        msg: |
+          Host: {{ inventory_hostname }}
+          Groups: {{ group_names }}
+          Ansible Host: {{ ansible_host | default('localhost') }}
+          Environment: {{ environment | default('not set') }}
+
+    - name: Show all host variables
+      debug:
+        var: hostvars[inventory_hostname]
+      when: inventory_hostname == ansible_play_hosts[0]
+EOF
+
+# Create environment-specific playbook
+cat > playbooks/production_tasks.yml << 'EOF'
+---
+- name: Production Environment Tasks
+  hosts: production
+  gather_facts: no
+  tasks:
+    - name: Display production hosts
+      debug:
+        msg: "Production host: {{ inventory_hostname }} ({{ ansible_host | default('localhost') }})"
+
+    - name: Show production-specific variables
+      debug:
+        msg: |
+          Environment: {{ environment }}
+          Monitoring: {{ monitoring_enabled }}
+          Backups: {{ backup_enabled }}
+      when: environment is defined
+EOF
+
+# Create role-specific playbook
+cat > playbooks/webserver_tasks.yml << 'EOF'
+---
+- name: Web Server Specific Tasks
+  hosts: webservers
+  gather_facts: no
+  tasks:
+    - name: Display web server configuration
+      debug:
+        msg: |
+          Web Server: {{ inventory_hostname }}
+          HTTP Port: {{ http_port | default(80) }}
+          HTTPS Port: {{ https_port | default(443) }}
+          Service: {{ web_service | default('apache2') }}
+
+    - name: List web packages to install
+      debug:
+        msg: "Packages: {{ web_packages | default(['none specified']) }}"
+EOF
+Subtask 4.2: Test Playbooks with Different Inventories
+Run the test playbooks with different inventory sources:
+
+# Test with INI static inventory
+echo "Testing with INI static inventory:"
+ansible-playbook -i static-inventory/ini/hosts.ini playbooks/test_inventory.yml
+
+# Test with YAML static inventory
+echo -e "\nTesting with YAML static inventory:"
+ansible-playbook -i static-inventory/yaml/hosts.yml playbooks/production_tasks.yml
+
+# Test with dynamic inventory
+echo -e "\nTesting with dynamic inventory:"
+ansible-playbook -i dynamic-inventory/dynamic_inventory.py playbooks/webserver_tasks.yml
+
+# Test with cached dynamic inventory
+echo -e "\nTesting with cached dynamic inventory:"
+ansible-playbook -i dynamic-inventory/cached_dynamic_inventory.py playbooks/test_inventory.yml
+Task 5: Advanced Inventory Management
+Subtask 5.1: Create Inventory Plugins Configuration
+Create custom inventory plugin configurations:
+
+# Create ansible.cfg for inventory plugins
+cat > ansible.cfg << 'EOF'
+[defaults]
+inventory = ./inventory
+host_key_checking = False
+timeout = 30
+
+[inventory]
+enable_plugins = host_list, script, auto, yaml, ini, advanced_host_list
+cache = True
+cache_plugin = memory
+cache_timeout = 3600
+EOF
+
+# Create inventory directory with multiple sources
+mkdir -p inventory
+
+# Create a combined inventory configuration
+cat > inventory/combined.yml << 'EOF'
+plugin: advanced_host_list
+compose:
+  ansible_host: network.v4[0]
+  ec2_state: ec2_state_name
+  ec2_arch: ec2_architecture
+keyed_groups:
+  - prefix: arch
+    key: ec2_arch
+  - prefix: instance_type
+    key: ec2_instance_type
+  - key: ec2_placement_region
+    prefix: aws_region
+groups:
+  # Create a group for all running instances
+  ec2_running: ec2_state_name == "running"
+  # Create a group for instances in us-east-1
+  us_east_1: ec2_placement_region == "us-east-1"
+EOF
+Subtask 5.2: Create Inventory Validation Script
+Create a script to validate inventory configurations:
+
+# Create inventory validation script
+cat > validate_inventory.py << 'EOF'
+#!/usr/bin/env python3
+"""
+Inventory Validation Script
+Validates Ansible inventory configurations and reports issues
+"""
+
+import json
+import sys
+import subprocess
+import argparse
+from pathlib import Path
+
+class InventoryValidator:
+    def __init__(self):
+        self.errors = []
+        self.warnings = []
+        self.info = []
+    
+    def validate_inventory_file(self, inventory_path):
+        """Validate a single inventory file"""
+        print(f"Validating inventory: {inventory_path}")
+        
+        try:
+            # Test if inventory can be parsed
+            result = subprocess.run([
+                'ansible-inventory', '-i', inventory_path, '--list'
+            ], capture_output=True, text=True, timeout=30)
+            
+            if result.returncode != 0:
+                self.errors.append(f"Failed to parse {inventory_path}: {result.stderr}")
+                return False
+            
+            # Parse the inventory data
+            try:
+                inventory_data = json.loads(result.stdout)
+            except json.JSONDecodeError as e:
+                self.errors.append(f"Invalid JSON output from {inventory_path}: {e}")
+                return False
+            
+            # Validate inventory structure
+            self.validate_inventory_structure(inventory_data, inventory_path)
+            
+            return True
+            
+        except subprocess.TimeoutExpired:
+            self.errors.append(f"Timeout while parsing {inventory_path}")
+            return False
+        except Exception as e:
+            self.errors.append(f"Unexpected error with {inventory_path}: {e}")
+            return False
+    
+    def validate_inventory_structure(self, inventory_data, inventory_path):
+        """Validate the structure of inventory data"""
+        
+        # Check for _meta section
+        if '_meta' not in inventory_data:
+            self.warnings.append(f"{inventory_path}: Missing '_meta' section")
+        else:
+            if 'hostvars' not in inventory_data['_meta']:
+                self.warnings.append(f"{inventory_path}: Missing 'hostvars' in _meta")
+        
+        # Count hosts and groups
+        host_count = 0
+        group_count = 0
+        
+        for key, value in inventory_data.items():
+            if key == '_meta':
+                continue
+            
+            group_count += 1
+            
+            if isinstance(value, dict) and 'hosts' in value:
+                if isinstance(value['hosts'], list):
+                    host_count += len(value['hosts'])
+                else:
+                    self.warnings.append(f"{inventory_path}: Group '{key}' has invalid hosts format")
+        
+        self.info.append(f"{inventory_path}: Found {group_count} groups and {host_count} hosts")
+        
+        # Check for common required variables
+        if '_meta' in inventory_data and 'hostvars' in inventory_data['_meta']:
+            hostvars = inventory_data['_meta']['hostvars']
+            for hostname, vars_dict in hostvars.items():
+                if 'ansible_host' not in vars_dict and hostname not in ['localhost', '127.0.0.1']:
+                    self.warnings.append(f"{inventory_path}: Host '{hostname}' missing ansible_host")
+    
+    def validate_host_connectivity(self, inventory_path):
+        """Test basic connectivity to hosts"""
+        print(f"Testing connectivity for {inventory_path}")
+        
+        try:
+            result = subprocess.run([
+                'ansible', 'all', '-i', inventory_path, '-m', 'ping', '--timeout=10'
+            ], capture_output=True, text=True, timeout=60)
+            
+            if result.returncode == 0:
+                self.info.append(f"{inventory_path}: All hosts reachable")
+            else:
+                self.warnings.append(f"{inventory_path}: Some hosts unreachable (expected in lab environment)")
+                
+        except subprocess.TimeoutExpired:
+            self.warnings.append(f"{inventory_path}: Connectivity test timed out")
+        except Exception as e:
+            self.warnings.append(f"{inventory_path}: Connectivity test failed: {e}")
+    
+    def print_report(self):
+        """Print validation report"""
+        print("\n" + "="*60)
+        print("INVENTORY VALIDATION REPORT")
+        print("="*60)
+        
+        if self.info:
+            print("\nINFORMATION:")
+            for msg in self.info:
+                print(f"  ℹ  {msg}")
+        
+        if self.warnings:
+            print("\nWARNINGS:")
+            for msg in self.warnings:
+                print(f"  ⚠  {msg}")
+        
+        if self.errors:
+            print("\nERRORS:")
+            for msg in self.errors:
+                print(f"  ✗  {msg}")
+        else:
+            print("\n✓ No critical errors found")
+        
+        print(f"\nSummary: {len(self.errors)} errors, {len(self.warnings)} warnings")
+
+def main():
+    parser = argparse.ArgumentParser(description='Validate Ansible Inventories')
+    parser.add_argument('inventories', nargs='+', help='Inventory files to validate')
+    parser.add_argument
