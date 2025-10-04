@@ -1,0 +1,1012 @@
+Lab 12: Configuring Multi-Tier Applications
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Understand the architecture and components of multi-tier applications
+Install and configure Ansible on a Linux system
+Create Ansible playbooks to automate multi-tier application deployment
+Deploy a complete web application stack with frontend and backend components
+Implement Ansible roles for modular and reusable automation
+Test and verify multi-tier application functionality
+Troubleshoot common deployment issues in automated environments
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Linux command line operations
+Familiarity with web applications and databases
+Knowledge of YAML syntax fundamentals
+Understanding of networking concepts (ports, services)
+Basic experience with text editors (nano, vim, or similar)
+Lab Environment
+Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated Linux machine. The provided machine is bare metal with no pre-installed tools, so you will install all required software during the lab exercises.
+
+Task 1: Setting Up the Environment and Installing Ansible
+Subtask 1.1: Update System and Install Dependencies
+First, update your system and install the necessary packages:
+
+# Update package repositories
+sudo apt update && sudo apt upgrade -y
+
+# Install Python and pip
+sudo apt install python3 python3-pip python3-venv git curl wget -y
+
+# Install additional dependencies
+sudo apt install software-properties-common apt-transport-https ca-certificates -y
+Subtask 1.2: Install Ansible
+Install Ansible using pip to get the latest version:
+
+# Create a virtual environment for Ansible
+python3 -m venv ansible-env
+source ansible-env/bin/activate
+
+# Install Ansible
+pip install ansible
+
+# Verify Ansible installation
+ansible --version
+Subtask 1.3: Configure Ansible for Local Execution
+Create the Ansible configuration and inventory files:
+
+# Create Ansible working directory
+mkdir -p ~/ansible-lab
+cd ~/ansible-lab
+
+# Create inventory file for localhost
+cat > inventory.ini << 'EOF'
+[webservers]
+localhost ansible_connection=local
+
+[databases]
+localhost ansible_connection=local
+
+[all:vars]
+ansible_python_interpreter=/usr/bin/python3
+EOF
+
+# Create basic ansible.cfg
+cat > ansible.cfg << 'EOF'
+[defaults]
+inventory = inventory.ini
+host_key_checking = False
+stdout_callback = yaml
+interpreter_python = auto_silent
+EOF
+Subtask 1.4: Test Ansible Connectivity
+Verify that Ansible can communicate with the local machine:
+
+# Test connection to localhost
+ansible all -m ping
+
+# Check system information
+ansible all -m setup | head -20
+Task 2: Creating the Multi-Tier Application Structure
+Subtask 2.1: Design the Application Architecture
+Create the directory structure for a three-tier application:
+
+# Create project structure
+mkdir -p ~/ansible-lab/multi-tier-app/{roles,group_vars,host_vars,files,templates}
+cd ~/ansible-lab/multi-tier-app
+
+# Create roles directories
+mkdir -p roles/{database,webserver,application}/{tasks,handlers,templates,files,vars,defaults}
+
+# Create group variables
+mkdir -p group_vars/{webservers,databases,all}
+Subtask 2.2: Define Application Variables
+Create global variables for the application:
+
+# Create global variables
+cat > group_vars/all/main.yml << 'EOF'
+---
+# Application Configuration
+app_name: "todo-app"
+app_version: "1.0"
+app_port: 8080
+app_user: "appuser"
+app_group: "appgroup"
+
+# Database Configuration
+db_name: "todoapp"
+db_user: "todouser"
+db_password: "SecurePass123!"
+db_host: "localhost"
+db_port: 3306
+
+# Web Server Configuration
+web_port: 80
+web_user: "www-data"
+web_group: "www-data"
+
+# System Configuration
+python_version: "3.8"
+node_version: "16"
+EOF
+Subtask 2.3: Create Database Role Variables
+Define database-specific variables:
+
+# Database role variables
+cat > roles/database/defaults/main.yml << 'EOF'
+---
+mysql_root_password: "RootPass123!"
+mysql_databases:
+  - name: "{{ db_name }}"
+    encoding: utf8
+    collation: utf8_general_ci
+
+mysql_users:
+  - name: "{{ db_user }}"
+    password: "{{ db_password }}"
+    priv: "{{ db_name }}.*:ALL"
+    host: "localhost"
+
+mysql_packages:
+  - mysql-server
+  - mysql-client
+  - python3-pymysql
+EOF
+Task 3: Implementing Database Tier with Ansible Roles
+Subtask 3.1: Create Database Installation Tasks
+Create the database role tasks:
+
+# Database role main tasks
+cat > roles/database/tasks/main.yml << 'EOF'
+---
+- name: Install MySQL packages
+  apt:
+    name: "{{ mysql_packages }}"
+    state: present
+    update_cache: yes
+  become: yes
+
+- name: Start and enable MySQL service
+  systemd:
+    name: mysql
+    state: started
+    enabled: yes
+  become: yes
+
+- name: Set MySQL root password
+  mysql_user:
+    name: root
+    password: "{{ mysql_root_password }}"
+    login_unix_socket: /var/run/mysqld/mysqld.sock
+    state: present
+  become: yes
+  ignore_errors: yes
+
+- name: Create MySQL configuration file
+  template:
+    src: my.cnf.j2
+    dest: /root/.my.cnf
+    owner: root
+    group: root
+    mode: '0600'
+  become: yes
+
+- name: Create application databases
+  mysql_db:
+    name: "{{ item.name }}"
+    encoding: "{{ item.encoding | default('utf8') }}"
+    collation: "{{ item.collation | default('utf8_general_ci') }}"
+    state: present
+    login_user: root
+    login_password: "{{ mysql_root_password }}"
+  loop: "{{ mysql_databases }}"
+  become: yes
+
+- name: Create application database users
+  mysql_user:
+    name: "{{ item.name }}"
+    password: "{{ item.password }}"
+    priv: "{{ item.priv }}"
+    host: "{{ item.host }}"
+    state: present
+    login_user: root
+    login_password: "{{ mysql_root_password }}"
+  loop: "{{ mysql_users }}"
+  become: yes
+
+- name: Create database schema
+  mysql_db:
+    name: "{{ db_name }}"
+    state: import
+    target: /tmp/schema.sql
+    login_user: root
+    login_password: "{{ mysql_root_password }}"
+  become: yes
+  when: schema_file is defined
+EOF
+Subtask 3.2: Create Database Configuration Templates
+Create MySQL configuration template:
+
+# MySQL configuration template
+cat > roles/database/templates/my.cnf.j2 << 'EOF'
+[client]
+user = root
+password = {{ mysql_root_password }}
+
+[mysql]
+user = root
+password = {{ mysql_root_password }}
+EOF
+Subtask 3.3: Create Database Schema
+Create a sample database schema:
+
+# Create database schema file
+cat > roles/database/files/schema.sql << 'EOF'
+USE todoapp;
+
+CREATE TABLE IF NOT EXISTS tasks (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    title VARCHAR(255) NOT NULL,
+    description TEXT,
+    status ENUM('pending', 'completed') DEFAULT 'pending',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+INSERT INTO tasks (title, description, status) VALUES
+('Setup Database', 'Configure MySQL database for the application', 'completed'),
+('Deploy Application', 'Deploy the web application using Ansible', 'pending'),
+('Test Application', 'Verify all components are working correctly', 'pending');
+EOF
+Subtask 3.4: Add Database Handlers
+Create handlers for database services:
+
+# Database handlers
+cat > roles/database/handlers/main.yml << 'EOF'
+---
+- name: restart mysql
+  systemd:
+    name: mysql
+    state: restarted
+  become: yes
+
+- name: reload mysql
+  systemd:
+    name: mysql
+    state: reloaded
+  become: yes
+EOF
+Task 4: Implementing Web Server Tier
+Subtask 4.1: Create Web Server Role Tasks
+Create the web server role:
+
+# Web server role main tasks
+cat > roles/webserver/tasks/main.yml << 'EOF'
+---
+- name: Install Nginx and dependencies
+  apt:
+    name:
+      - nginx
+      - python3-certbot-nginx
+    state: present
+    update_cache: yes
+  become: yes
+
+- name: Start and enable Nginx
+  systemd:
+    name: nginx
+    state: started
+    enabled: yes
+  become: yes
+
+- name: Remove default Nginx site
+  file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  become: yes
+  notify: restart nginx
+
+- name: Create application Nginx configuration
+  template:
+    src: app.conf.j2
+    dest: "/etc/nginx/sites-available/{{ app_name }}"
+    owner: root
+    group: root
+    mode: '0644'
+  become: yes
+  notify: restart nginx
+
+- name: Enable application site
+  file:
+    src: "/etc/nginx/sites-available/{{ app_name }}"
+    dest: "/etc/nginx/sites-enabled/{{ app_name }}"
+    state: link
+  become: yes
+  notify: restart nginx
+
+- name: Create web root directory
+  file:
+    path: "/var/www/{{ app_name }}"
+    state: directory
+    owner: "{{ web_user }}"
+    group: "{{ web_group }}"
+    mode: '0755'
+  become: yes
+
+- name: Test Nginx configuration
+  command: nginx -t
+  become: yes
+  changed_when: false
+EOF
+Subtask 4.2: Create Nginx Configuration Template
+Create the Nginx configuration template:
+
+# Nginx configuration template
+cat > roles/webserver/templates/app.conf.j2 << 'EOF'
+server {
+    listen {{ web_port }};
+    server_name localhost;
+    
+    root /var/www/{{ app_name }};
+    index index.html index.php;
+    
+    # Static files
+    location /static/ {
+        alias /var/www/{{ app_name }}/static/;
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+    }
+    
+    # API proxy to application server
+    location /api/ {
+        proxy_pass http://127.0.0.1:{{ app_port }}/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    
+    # Main application
+    location / {
+        try_files $uri $uri/ @app;
+    }
+    
+    location @app {
+        proxy_pass http://127.0.0.1:{{ app_port }};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    
+    # Security headers
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    
+    # Logging
+    access_log /var/log/nginx/{{ app_name }}_access.log;
+    error_log /var/log/nginx/{{ app_name }}_error.log;
+}
+EOF
+Subtask 4.3: Create Web Server Handlers
+Add handlers for the web server:
+
+# Web server handlers
+cat > roles/webserver/handlers/main.yml << 'EOF'
+---
+- name: restart nginx
+  systemd:
+    name: nginx
+    state: restarted
+  become: yes
+
+- name: reload nginx
+  systemd:
+    name: nginx
+    state: reloaded
+  become: yes
+
+- name: test nginx config
+  command: nginx -t
+  become: yes
+  changed_when: false
+EOF
+Task 5: Implementing Application Tier
+Subtask 5.1: Create Application Role Tasks
+Create the application deployment role:
+
+# Application role main tasks
+cat > roles/application/tasks/main.yml << 'EOF'
+---
+- name: Install Python and Node.js dependencies
+  apt:
+    name:
+      - python3
+      - python3-pip
+      - python3-venv
+      - nodejs
+      - npm
+      - git
+    state: present
+    update_cache: yes
+  become: yes
+
+- name: Create application user
+  user:
+    name: "{{ app_user }}"
+    group: "{{ app_group }}"
+    system: yes
+    shell: /bin/bash
+    home: "/opt/{{ app_name }}"
+    create_home: yes
+  become: yes
+
+- name: Create application directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  loop:
+    - "/opt/{{ app_name }}"
+    - "/opt/{{ app_name }}/backend"
+    - "/opt/{{ app_name }}/frontend"
+    - "/var/log/{{ app_name }}"
+  become: yes
+
+- name: Create Python virtual environment
+  command: python3 -m venv "/opt/{{ app_name }}/venv"
+  become: yes
+  become_user: "{{ app_user }}"
+  args:
+    creates: "/opt/{{ app_name }}/venv"
+
+- name: Copy backend application files
+  template:
+    src: "{{ item.src }}"
+    dest: "/opt/{{ app_name }}/backend/{{ item.dest }}"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0644'
+  loop:
+    - { src: 'app.py.j2', dest: 'app.py' }
+    - { src: 'requirements.txt.j2', dest: 'requirements.txt' }
+    - { src: 'config.py.j2', dest: 'config.py' }
+  become: yes
+  notify: restart application
+
+- name: Install Python dependencies
+  pip:
+    requirements: "/opt/{{ app_name }}/backend/requirements.txt"
+    virtualenv: "/opt/{{ app_name }}/venv"
+  become: yes
+  become_user: "{{ app_user }}"
+
+- name: Copy frontend files
+  template:
+    src: "{{ item.src }}"
+    dest: "/var/www/{{ app_name }}/{{ item.dest }}"
+    owner: "{{ web_user }}"
+    group: "{{ web_group }}"
+    mode: '0644'
+  loop:
+    - { src: 'index.html.j2', dest: 'index.html' }
+    - { src: 'style.css.j2', dest: 'style.css' }
+    - { src: 'app.js.j2', dest: 'app.js' }
+  become: yes
+
+- name: Create systemd service file
+  template:
+    src: app.service.j2
+    dest: "/etc/systemd/system/{{ app_name }}.service"
+    owner: root
+    group: root
+    mode: '0644'
+  become: yes
+  notify:
+    - reload systemd
+    - restart application
+
+- name: Start and enable application service
+  systemd:
+    name: "{{ app_name }}"
+    state: started
+    enabled: yes
+    daemon_reload: yes
+  become: yes
+EOF
+Subtask 5.2: Create Backend Application Templates
+Create the Flask backend application:
+
+# Flask application template
+cat > roles/application/templates/app.py.j2 << 'EOF'
+#!/usr/bin/env python3
+from flask import Flask, request, jsonify, render_template_string
+from flask_cors import CORS
+import mysql.connector
+from mysql.connector import Error
+import os
+import logging
+
+app = Flask(__name__)
+CORS(app)
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Database configuration
+DB_CONFIG = {
+    'host': '{{ db_host }}',
+    'database': '{{ db_name }}',
+    'user': '{{ db_user }}',
+    'password': '{{ db_password }}',
+    'port': {{ db_port }}
+}
+
+def get_db_connection():
+    try:
+        connection = mysql.connector.connect(**DB_CONFIG)
+        return connection
+    except Error as e:
+        logger.error(f"Error connecting to MySQL: {e}")
+        return None
+
+@app.route('/health')
+def health_check():
+    return jsonify({'status': 'healthy', 'service': '{{ app_name }}'})
+
+@app.route('/api/tasks', methods=['GET'])
+def get_tasks():
+    connection = get_db_connection()
+    if not connection:
+        return jsonify({'error': 'Database connection failed'}), 500
+    
+    try:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM tasks ORDER BY created_at DESC")
+        tasks = cursor.fetchall()
+        return jsonify(tasks)
+    except Error as e:
+        logger.error(f"Error fetching tasks: {e}")
+        return jsonify({'error': 'Failed to fetch tasks'}), 500
+    finally:
+        if connection.is_connected():
+            cursor.close()
+            connection.close()
+
+@app.route('/api/tasks', methods=['POST'])
+def create_task():
+    data = request.get_json()
+    if not data or 'title' not in data:
+        return jsonify({'error': 'Title is required'}), 400
+    
+    connection = get_db_connection()
+    if not connection:
+        return jsonify({'error': 'Database connection failed'}), 500
+    
+    try:
+        cursor = connection.cursor()
+        query = "INSERT INTO tasks (title, description, status) VALUES (%s, %s, %s)"
+        values = (data['title'], data.get('description', ''), data.get('status', 'pending'))
+        cursor.execute(query, values)
+        connection.commit()
+        
+        task_id = cursor.lastrowid
+        return jsonify({'id': task_id, 'message': 'Task created successfully'}), 201
+    except Error as e:
+        logger.error(f"Error creating task: {e}")
+        return jsonify({'error': 'Failed to create task'}), 500
+    finally:
+        if connection.is_connected():
+            cursor.close()
+            connection.close()
+
+@app.route('/api/tasks/<int:task_id>', methods=['PUT'])
+def update_task(task_id):
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+    
+    connection = get_db_connection()
+    if not connection:
+        return jsonify({'error': 'Database connection failed'}), 500
+    
+    try:
+        cursor = connection.cursor()
+        
+        # Build dynamic update query
+        update_fields = []
+        values = []
+        
+        if 'title' in data:
+            update_fields.append("title = %s")
+            values.append(data['title'])
+        if 'description' in data:
+            update_fields.append("description = %s")
+            values.append(data['description'])
+        if 'status' in data:
+            update_fields.append("status = %s")
+            values.append(data['status'])
+        
+        if not update_fields:
+            return jsonify({'error': 'No valid fields to update'}), 400
+        
+        values.append(task_id)
+        query = f"UPDATE tasks SET {', '.join(update_fields)} WHERE id = %s"
+        
+        cursor.execute(query, values)
+        connection.commit()
+        
+        if cursor.rowcount == 0:
+            return jsonify({'error': 'Task not found'}), 404
+        
+        return jsonify({'message': 'Task updated successfully'})
+    except Error as e:
+        logger.error(f"Error updating task: {e}")
+        return jsonify({'error': 'Failed to update task'}), 500
+    finally:
+        if connection.is_connected():
+            cursor.close()
+            connection.close()
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port={{ app_port }}, debug=False)
+EOF
+Subtask 5.3: Create Application Dependencies and Configuration
+Create the requirements file:
+
+# Python requirements template
+cat > roles/application/templates/requirements.txt.j2 << 'EOF'
+Flask==2.3.3
+Flask-CORS==4.0.0
+mysql-connector-python==8.1.0
+gunicorn==21.2.0
+EOF
+Create the configuration file:
+
+# Application configuration template
+cat > roles/application/templates/config.py.j2 << 'EOF'
+import os
+
+class Config:
+    # Database configuration
+    DB_HOST = '{{ db_host }}'
+    DB_NAME = '{{ db_name }}'
+    DB_USER = '{{ db_user }}'
+    DB_PASSWORD = '{{ db_password }}'
+    DB_PORT = {{ db_port }}
+    
+    # Application configuration
+    APP_NAME = '{{ app_name }}'
+    APP_PORT = {{ app_port }}
+    DEBUG = False
+    
+    # Security
+    SECRET_KEY = os.environ.get('SECRET_KEY') or 'dev-secret-key-change-in-production'
+EOF
+Subtask 5.4: Create Frontend Templates
+Create the HTML frontend:
+
+# HTML template
+cat > roles/application/templates/index.html.j2 << 'EOF'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ app_name | title }} - Task Manager</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>{{ app_name | title }} Task Manager</h1>
+            <p>Multi-tier application deployed with Ansible</p>
+        </header>
+        
+        <main>
+            <section class="add-task">
+                <h2>Add New Task</h2>
+                <form id="taskForm">
+                    <input type="text" id="taskTitle" placeholder="Task title" required>
+                    <textarea id="taskDescription" placeholder="Task description"></textarea>
+                    <select id="taskStatus">
+                        <option value="pending">Pending</option>
+                        <option value="completed">Completed</option>
+                    </select>
+                    <button type="submit">Add Task</button>
+                </form>
+            </section>
+            
+            <section class="tasks">
+                <h2>Tasks</h2>
+                <div id="taskList">
+                    <p>Loading tasks...</p>
+                </div>
+            </section>
+        </main>
+        
+        <footer>
+            <p>Deployed using Ansible automation</p>
+        </footer>
+    </div>
+    
+    <script src="app.js"></script>
+</body>
+</html>
+EOF
+Create the CSS stylesheet:
+
+# CSS template
+cat > roles/application/templates/style.css.j2 << 'EOF'
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    line-height: 1.6;
+    color: #333;
+    background-color: #f4f4f4;
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+header {
+    text-align: center;
+    margin-bottom: 30px;
+    padding: 20px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border-radius: 10px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+header h1 {
+    font-size: 2.5em;
+    margin-bottom: 10px;
+}
+
+header p {
+    font-size: 1.1em;
+    opacity: 0.9;
+}
+
+main {
+    display: grid;
+    grid-template-columns: 1fr 2fr;
+    gap: 30px;
+    margin-bottom: 30px;
+}
+
+.add-task, .tasks {
+    background: white;
+    padding: 25px;
+    border-radius: 10px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+}
+
+.add-task h2, .tasks h2 {
+    margin-bottom: 20px;
+    color: #333;
+    border-bottom: 2px solid #667eea;
+    padding-bottom: 10px;
+}
+
+#taskForm {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+#taskForm input, #taskForm textarea, #taskForm select {
+    padding: 12px;
+    border: 2px solid #ddd;
+    border-radius: 5px;
+    font-size: 16px;
+    transition: border-color 0.3s;
+}
+
+#taskForm input:focus, #taskForm textarea:focus, #taskForm select:focus {
+    outline: none;
+    border-color: #667eea;
+}
+
+#taskForm textarea {
+    resize: vertical;
+    min-height: 80px;
+}
+
+#taskForm button {
+    padding: 12px 20px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border: none;
+    border-radius: 5px;
+    font-size: 16px;
+    cursor: pointer;
+    transition: transform 0.2s;
+}
+
+#taskForm button:hover {
+    transform: translateY(-2px);
+}
+
+.task-item {
+    background: #f8f9fa;
+    border: 1px solid #e9ecef;
+    border-radius: 8px;
+    padding: 15px;
+    margin-bottom: 15px;
+    transition: transform 0.2s;
+}
+
+.task-item:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+.task-title {
+    font-size: 1.2em;
+    font-weight: bold;
+    margin-bottom: 8px;
+    color: #333;
+}
+
+.task-description {
+    color: #666;
+    margin-bottom: 10px;
+}
+
+.task-status {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 0.9em;
+    font-weight: bold;
+    text-transform: uppercase;
+}
+
+.status-pending {
+    background-color: #fff3cd;
+    color: #856404;
+}
+
+.status-completed {
+    background-color: #d4edda;
+    color: #155724;
+}
+
+.task-meta {
+    font-size: 0.9em;
+    color: #888;
+    margin-top: 10px;
+}
+
+footer {
+    text-align: center;
+    padding: 20px;
+    background: #333;
+    color: white;
+    border-radius: 10px;
+}
+
+@media (max-width: 768px) {
+    main {
+        grid-template-columns: 1fr;
+    }
+    
+    header h1 {
+        font-size: 2em;
+    }
+}
+
+.loading {
+    text-align: center;
+    color: #666;
+    font-style: italic;
+}
+
+.error {
+    background-color: #f8d7da;
+    color: #721c24;
+    padding: 10px;
+    border-radius: 5px;
+    margin-bottom: 15px;
+}
+
+.success {
+    background-color: #d4edda;
+    color: #155724;
+    padding: 10px;
+    border-radius: 5px;
+    margin-bottom: 15px;
+}
+EOF
+Create the JavaScript frontend:
+
+# JavaScript template
+cat > roles/application/templates/app.js.j2 << 'EOF'
+class TaskManager {
+    constructor() {
+        this.apiBase = '/api';
+        this.taskForm = document.getElementById('taskForm');
+        this.taskList = document.getElementById('taskList');
+        
+        this.init();
+    }
+    
+    init() {
+        this.taskForm.addEventListener('submit', this.handleSubmit.bind(this));
+        this.loadTasks();
+    }
+    
+    async handleSubmit(e) {
+        e.preventDefault();
+        
+        const title = document.getElementById('taskTitle').value.trim();
+        const description = document.getElementById('taskDescription').value.trim();
+        const status = document.getElementById('taskStatus').value;
+        
+        if (!title) {
+            this.showMessage('Please enter a task title', 'error');
+            return;
+        }
+        
+        try {
+            const response = await fetch(`${this.apiBase}/tasks`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    title: title,
+                    description: description,
+                    status: status
+                })
+            });
+            
+            if (response.ok) {
+                this.showMessage('Task created successfully!', 'success');
+                this.taskForm.reset();
+                this.loadTasks();
+            } else {
+                const error = await response.json();
+                this.showMessage(error.error || 'Failed to create task', 'error');
+            }
+        } catch (error) {
+            console.error('Error creating task:', error);
+            this.showMessage('Network error. Please try again.', 'error');
+        }
+    }
+    
+    async loadTasks() {
+        try {
+            this.taskList.innerHTML = '<p class="loading">Loading tasks...</p>';
+            
+            const response = await fetch(`${this.apiBase}/tasks`);
+            
+            if (response.ok) {
+                const tasks = await response.json();
+                this.renderTasks(tasks);
+            } else {
+                throw new Error('Failed to load tasks');
+            }
+        } catch (error) {
+            console.error('Error loading tasks:', error);
+            this.taskList.innerHTML = '<p class="error">Failed to load tasks. Please refresh the page.</p>';
+        }
+    }
+    
+    renderTasks(tasks) {
+        if (tasks.length === 0) {
+            this.taskList.innerHTML = '<p>No tasks found. Create your first task!</p>';
+            return;
+        }
+        
+        const tasksHTML = tasks.map(task => `
+            <div class="task-item">
+                <div class="task-title">${this.escapeHtml(task.title)}</div>
+                <div class="task-description">${this.escapeHtml(task.description || 'No description')}</div>
+                <span class="task-status status-${task.status}">${
