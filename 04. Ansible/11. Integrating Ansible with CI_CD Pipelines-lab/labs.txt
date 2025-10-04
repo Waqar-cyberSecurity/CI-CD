@@ -1,0 +1,851 @@
+Lab 11: Integrating Ansible with CI/CD Pipelines
+Lab Objectives
+By the end of this lab, students will be able to:
+
+Install and configure Jenkins on a Linux system
+Install and configure Ansible on the same system
+Create a Jenkins job that executes Ansible playbooks
+Set up automated application deployment using Jenkins and Ansible
+Understand the integration between CI/CD tools and configuration management
+Implement a complete deployment pipeline on a single machine
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of Linux command line operations
+Familiarity with YAML syntax
+Basic knowledge of Ansible playbooks and modules
+Understanding of CI/CD concepts
+Experience with text editors like vim or nano
+Lab Environment
+Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated Linux machine. The provided machine is bare metal with no pre-installed tools, so you will install all required software during the lab exercises.
+
+Task 1: Environment Setup and Tool Installation
+Subtask 1.1: Update System and Install Prerequisites
+First, update your system and install essential packages:
+
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y curl wget gnupg2 software-properties-common apt-transport-https ca-certificates
+Subtask 1.2: Install Java (Required for Jenkins)
+Install OpenJDK 11, which is required for Jenkins:
+
+sudo apt install -y openjdk-11-jdk
+java -version
+Verify the installation shows Java version 11.
+
+Subtask 1.3: Install Jenkins
+Add the Jenkins repository and install Jenkins:
+
+# Add Jenkins repository key
+curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key | sudo tee /usr/share/keyrings/jenkins-keyring.asc > /dev/null
+
+# Add Jenkins repository
+echo deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/ | sudo tee /etc/apt/sources.list.d/jenkins.list > /dev/null
+
+# Update package list and install Jenkins
+sudo apt update
+sudo apt install -y jenkins
+
+# Start and enable Jenkins service
+sudo systemctl start jenkins
+sudo systemctl enable jenkins
+sudo systemctl status jenkins
+Subtask 1.4: Install Ansible
+Install Ansible using the official repository:
+
+# Add Ansible repository
+sudo add-apt-repository --yes --update ppa:ansible/ansible
+
+# Install Ansible
+sudo apt install -y ansible
+
+# Verify installation
+ansible --version
+Subtask 1.5: Configure Jenkins Initial Setup
+Get the initial admin password and access Jenkins:
+
+# Get initial admin password
+sudo cat /var/lib/jenkins/secrets/initialAdminPassword
+Since we're working on a single machine, we'll configure Jenkins to work locally. Create a simple web server to simulate our deployment target:
+
+# Install nginx for our deployment target
+sudo apt install -y nginx
+sudo systemctl start nginx
+sudo systemctl enable nginx
+Task 2: Configure Jenkins and Create First Job
+Subtask 2.1: Access Jenkins Web Interface
+Since we're on a single machine, we'll use curl to interact with Jenkins API and configure it programmatically:
+
+# Check if Jenkins is running on port 8080
+curl -I http://localhost:8080
+Subtask 2.2: Install Jenkins CLI
+Download and set up Jenkins CLI for command-line management:
+
+# Create Jenkins workspace directory
+mkdir -p ~/jenkins-workspace
+cd ~/jenkins-workspace
+
+# Download Jenkins CLI
+wget http://localhost:8080/jnlpJars/jenkins-cli.jar
+
+# Get the initial admin password
+JENKINS_PASSWORD=$(sudo cat /var/lib/jenkins/secrets/initialAdminPassword)
+echo "Jenkins Password: $JENKINS_PASSWORD"
+Subtask 2.3: Create Jenkins User and Configure Security
+Create a script to configure Jenkins programmatically:
+
+# Create Jenkins configuration script
+cat > ~/jenkins-workspace/setup-jenkins.groovy << 'EOF'
+import jenkins.model.*
+import hudson.security.*
+import hudson.security.csrf.DefaultCrumbIssuer
+import hudson.model.*
+import jenkins.install.InstallState
+
+def instance = Jenkins.getInstance()
+
+// Skip setup wizard
+if (!instance.getInstallState().isSetupComplete()) {
+    println "Setting up Jenkins..."
+    instance.setInstallState(InstallState.INITIAL_SETUP_COMPLETED)
+}
+
+// Create admin user
+def hudsonRealm = new HudsonPrivateSecurityRealm(false)
+hudsonRealm.createAccount("admin", "admin123")
+instance.setSecurityRealm(hudsonRealm)
+
+// Set authorization strategy
+def strategy = new FullControlOnceLoggedInAuthorizationStrategy()
+strategy.setAllowAnonymousRead(false)
+instance.setAuthorizationStrategy(strategy)
+
+// Enable CSRF protection
+instance.setCrumbIssuer(new DefaultCrumbIssuer(true))
+
+instance.save()
+println "Jenkins setup completed"
+EOF
+
+# Apply configuration
+java -jar jenkins-cli.jar -s http://localhost:8080 -auth admin:$JENKINS_PASSWORD groovy = < setup-jenkins.groovy
+Subtask 2.4: Install Required Jenkins Plugins
+Install necessary plugins for Ansible integration:
+
+# Install Ansible plugin and dependencies
+java -jar jenkins-cli.jar -s http://localhost:8080 -auth admin:admin123 install-plugin ansible
+java -jar jenkins-cli.jar -s http://localhost:8080 -auth admin:admin123 install-plugin workflow-aggregator
+java -jar jenkins-cli.jar -s http://localhost:8080 -auth admin:admin123 install-plugin git
+
+# Restart Jenkins to activate plugins
+sudo systemctl restart jenkins
+
+# Wait for Jenkins to restart
+sleep 30
+Task 3: Create Ansible Playbook for Application Deployment
+Subtask 3.1: Create Project Directory Structure
+Set up the project structure for our deployment:
+
+# Create project directory
+mkdir -p ~/deployment-project/{playbooks,inventory,templates,files}
+cd ~/deployment-project
+Subtask 3.2: Create Ansible Inventory
+Create an inventory file for local deployment:
+
+cat > inventory/hosts << 'EOF'
+[webservers]
+localhost ansible_connection=local
+
+[webservers:vars]
+ansible_user=jenkins
+ansible_become=yes
+EOF
+Subtask 3.3: Create Application Files
+Create a simple web application to deploy:
+
+# Create application files
+mkdir -p files/webapp
+
+cat > files/webapp/index.html << 'EOF'
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CI/CD Deployment Success</title>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; margin-top: 50px; }
+        .success { color: green; font-size: 24px; }
+        .info { color: blue; margin-top: 20px; }
+    </style>
+</head>
+<body>
+    <h1 class="success">Application Deployed Successfully!</h1>
+    <p class="info">Deployed via Jenkins + Ansible CI/CD Pipeline</p>
+    <p>Build Number: {{ build_number | default('Unknown') }}</p>
+    <p>Deployment Time: {{ ansible_date_time.iso8601 }}</p>
+</body>
+</html>
+EOF
+
+cat > files/webapp/app.conf << 'EOF'
+server {
+    listen 80;
+    server_name localhost;
+    root /var/www/webapp;
+    index index.html;
+    
+    location / {
+        try_files $uri $uri/ =404;
+    }
+}
+EOF
+Subtask 3.4: Create Ansible Playbook
+Create the main deployment playbook:
+
+cat > playbooks/deploy-webapp.yml << 'EOF'
+---
+- name: Deploy Web Application
+  hosts: webservers
+  become: yes
+  vars:
+    app_name: webapp
+    app_path: /var/www/webapp
+    build_number: "{{ lookup('env', 'BUILD_NUMBER') | default('dev') }}"
+    
+  tasks:
+    - name: Ensure nginx is installed
+      apt:
+        name: nginx
+        state: present
+        update_cache: yes
+        
+    - name: Create application directory
+      file:
+        path: "{{ app_path }}"
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: '0755'
+        
+    - name: Deploy application files
+      template:
+        src: "../files/webapp/index.html"
+        dest: "{{ app_path }}/index.html"
+        owner: www-data
+        group: www-data
+        mode: '0644'
+      notify: restart nginx
+      
+    - name: Configure nginx virtual host
+      copy:
+        src: "../files/webapp/app.conf"
+        dest: /etc/nginx/sites-available/webapp
+        owner: root
+        group: root
+        mode: '0644'
+      notify: restart nginx
+      
+    - name: Enable nginx site
+      file:
+        src: /etc/nginx/sites-available/webapp
+        dest: /etc/nginx/sites-enabled/webapp
+        state: link
+      notify: restart nginx
+      
+    - name: Remove default nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: restart nginx
+      
+    - name: Ensure nginx is running
+      systemd:
+        name: nginx
+        state: started
+        enabled: yes
+        
+  handlers:
+    - name: restart nginx
+      systemd:
+        name: nginx
+        state: restarted
+EOF
+Subtask 3.5: Create Ansible Configuration
+Create ansible.cfg for the project:
+
+cat > ansible.cfg << 'EOF'
+[defaults]
+inventory = inventory/hosts
+host_key_checking = False
+retry_files_enabled = False
+stdout_callback = yaml
+gathering = smart
+fact_caching = memory
+
+[privilege_escalation]
+become = True
+become_method = sudo
+become_user = root
+become_ask_pass = False
+EOF
+Task 4: Create Jenkins Job for Ansible Deployment
+Subtask 4.1: Configure Jenkins User Permissions
+Set up proper permissions for Jenkins user:
+
+# Add jenkins user to sudo group
+sudo usermod -aG sudo jenkins
+
+# Configure sudo without password for jenkins user
+echo "jenkins ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/jenkins
+
+# Change ownership of deployment project
+sudo chown -R jenkins:jenkins ~/deployment-project
+sudo cp -r ~/deployment-project /var/lib/jenkins/
+Subtask 4.2: Create Jenkins Job Configuration
+Create a Jenkins job configuration file:
+
+cat > ~/jenkins-workspace/deploy-job-config.xml << 'EOF'
+<?xml version='1.1' encoding='UTF-8'?>
+<project>
+  <actions/>
+  <description>Deploy web application using Ansible</description>
+  <keepDependencies>false</keepDependencies>
+  <properties/>
+  <scm class="hudson.scm.NullSCM"/>
+  <canRoam>true</canRoam>
+  <disabled>false</disabled>
+  <blockBuildWhenDownstreamBuilding>false</blockBuildWhenDownstreamBuilding>
+  <blockBuildWhenUpstreamBuilding>false</blockBuildWhenUpstreamBuilding>
+  <triggers/>
+  <concurrentBuild>false</concurrentBuild>
+  <builders>
+    <hudson.tasks.Shell>
+      <command>#!/bin/bash
+cd /var/lib/jenkins/deployment-project
+
+# Set environment variables
+export BUILD_NUMBER=${BUILD_NUMBER}
+export ANSIBLE_HOST_KEY_CHECKING=False
+
+# Run Ansible playbook
+ansible-playbook -i inventory/hosts playbooks/deploy-webapp.yml -v
+
+# Verify deployment
+sleep 5
+curl -s http://localhost | grep -q "Application Deployed Successfully" && echo "Deployment verification: SUCCESS" || echo "Deployment verification: FAILED"
+      </command>
+    </hudson.tasks.Shell>
+  </builders>
+  <publishers/>
+  <buildWrappers/>
+</project>
+EOF
+Subtask 4.3: Create Jenkins Job
+Create the Jenkins job using CLI:
+
+# Create the job
+java -jar ~/jenkins-workspace/jenkins-cli.jar -s http://localhost:8080 -auth admin:admin123 create-job "Deploy-WebApp-Ansible" < ~/jenkins-workspace/deploy-job-config.xml
+
+# Verify job creation
+java -jar ~/jenkins-workspace/jenkins-cli.jar -s http://localhost:8080 -auth admin:admin123 list-jobs
+Task 5: Automate Application Deployment Pipeline
+Subtask 5.1: Create Pipeline Script
+Create a more advanced pipeline using Jenkins Pipeline:
+
+cat > ~/jenkins-workspace/pipeline-config.xml << 'EOF'
+<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job">
+  <actions/>
+  <description>CI/CD Pipeline with Ansible Deployment</description>
+  <keepDependencies>false</keepDependencies>
+  <properties/>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps">
+    <script>
+pipeline {
+    agent any
+    
+    environment {
+        ANSIBLE_HOST_KEY_CHECKING = 'False'
+        PROJECT_DIR = '/var/lib/jenkins/deployment-project'
+    }
+    
+    stages {
+        stage('Preparation') {
+            steps {
+                echo 'Preparing deployment environment...'
+                sh '''
+                    cd ${PROJECT_DIR}
+                    echo "Current directory: $(pwd)"
+                    echo "Available files:"
+                    ls -la
+                '''
+            }
+        }
+        
+        stage('Syntax Check') {
+            steps {
+                echo 'Checking Ansible playbook syntax...'
+                sh '''
+                    cd ${PROJECT_DIR}
+                    ansible-playbook --syntax-check playbooks/deploy-webapp.yml
+                '''
+            }
+        }
+        
+        stage('Deploy Application') {
+            steps {
+                echo 'Deploying application with Ansible...'
+                sh '''
+                    cd ${PROJECT_DIR}
+                    ansible-playbook -i inventory/hosts playbooks/deploy-webapp.yml -v
+                '''
+            }
+        }
+        
+        stage('Verify Deployment') {
+            steps {
+                echo 'Verifying deployment...'
+                sh '''
+                    sleep 10
+                    if curl -s http://localhost | grep -q "Application Deployed Successfully"; then
+                        echo "✓ Deployment verification: SUCCESS"
+                        echo "✓ Application is accessible at http://localhost"
+                    else
+                        echo "✗ Deployment verification: FAILED"
+                        exit 1
+                    fi
+                '''
+            }
+        }
+        
+        stage('Health Check') {
+            steps {
+                echo 'Performing health check...'
+                sh '''
+                    # Check nginx status
+                    sudo systemctl is-active nginx
+                    
+                    # Check if port 80 is listening
+                    sudo netstat -tlnp | grep :80 || echo "Port 80 not listening"
+                    
+                    # Test HTTP response
+                    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost)
+                    if [ "$HTTP_CODE" = "200" ]; then
+                        echo "✓ HTTP Health Check: PASSED (Status: $HTTP_CODE)"
+                    else
+                        echo "✗ HTTP Health Check: FAILED (Status: $HTTP_CODE)"
+                        exit 1
+                    fi
+                '''
+            }
+        }
+    }
+    
+    post {
+        success {
+            echo 'Pipeline completed successfully!'
+            sh 'echo "Deployment completed at $(date)"'
+        }
+        failure {
+            echo 'Pipeline failed!'
+            sh '''
+                echo "Pipeline failed at $(date)"
+                echo "Checking system status..."
+                sudo systemctl status nginx --no-pager
+            '''
+        }
+        always {
+            echo 'Cleaning up...'
+            sh 'echo "Build #${BUILD_NUMBER} finished"'
+        }
+    }
+}
+    </script>
+    <sandbox>true</sandbox>
+  </definition>
+  <triggers/>
+  <disabled>false</disabled>
+</flow-definition>
+EOF
+Subtask 5.2: Create Pipeline Job
+Create the pipeline job:
+
+# Create pipeline job
+java -jar ~/jenkins-workspace/jenkins-cli.jar -s http://localhost:8080 -auth admin:admin123 create-job "WebApp-CI-CD-Pipeline" < ~/jenkins-workspace/pipeline-config.xml
+
+# List all jobs
+java -jar ~/jenkins-workspace/jenkins-cli.jar -s http://localhost:8080 -auth admin:admin123 list-jobs
+Subtask 5.3: Execute Pipeline Job
+Run the pipeline job and monitor its execution:
+
+# Build the pipeline job
+java -jar ~/jenkins-workspace/jenkins-cli.jar -s http://localhost:8080 -auth admin:admin123 build "WebApp-CI-CD-Pipeline"
+
+# Wait for build to complete
+sleep 30
+
+# Check build status
+java -jar ~/jenkins-workspace/jenkins-cli.jar -s http://localhost:8080 -auth admin:admin123 console "WebApp-CI-CD-Pipeline" -f
+Task 6: Testing and Verification
+Subtask 6.1: Manual Testing
+Test the deployment manually to ensure everything works:
+
+# Test the deployed application
+curl -v http://localhost
+
+# Check nginx configuration
+sudo nginx -t
+
+# Verify nginx is serving our application
+sudo systemctl status nginx
+Subtask 6.2: Create Test Script
+Create a comprehensive test script:
+
+cat > ~/jenkins-workspace/test-deployment.sh << 'EOF'
+#!/bin/bash
+
+echo "=== Deployment Testing Script ==="
+echo "Testing deployment at $(date)"
+echo
+
+# Test 1: Check if nginx is running
+echo "Test 1: Checking nginx service status..."
+if sudo systemctl is-active --quiet nginx; then
+    echo "✓ PASS: Nginx is running"
+else
+    echo "✗ FAIL: Nginx is not running"
+    exit 1
+fi
+
+# Test 2: Check if port 80 is listening
+echo "Test 2: Checking if port 80 is listening..."
+if sudo netstat -tlnp | grep -q ":80 "; then
+    echo "✓ PASS: Port 80 is listening"
+else
+    echo "✗ FAIL: Port 80 is not listening"
+    exit 1
+fi
+
+# Test 3: HTTP response test
+echo "Test 3: Testing HTTP response..."
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost)
+if [ "$HTTP_CODE" = "200" ]; then
+    echo "✓ PASS: HTTP response code is 200"
+else
+    echo "✗ FAIL: HTTP response code is $HTTP_CODE"
+    exit 1
+fi
+
+# Test 4: Content verification
+echo "Test 4: Verifying application content..."
+if curl -s http://localhost | grep -q "Application Deployed Successfully"; then
+    echo "✓ PASS: Application content is correct"
+else
+    echo "✗ FAIL: Application content is incorrect"
+    exit 1
+fi
+
+# Test 5: Build number verification
+echo "Test 5: Checking build number in content..."
+CONTENT=$(curl -s http://localhost)
+if echo "$CONTENT" | grep -q "Build Number:"; then
+    echo "✓ PASS: Build number is present in content"
+    BUILD_NUM=$(echo "$CONTENT" | grep "Build Number:" | sed 's/.*Build Number: \([^<]*\).*/\1/')
+    echo "  Build Number: $BUILD_NUM"
+else
+    echo "✗ FAIL: Build number not found in content"
+fi
+
+echo
+echo "=== All tests completed successfully! ==="
+echo "Application is accessible at: http://localhost"
+EOF
+
+chmod +x ~/jenkins-workspace/test-deployment.sh
+Subtask 6.3: Run Tests
+Execute the test script:
+
+# Run the test script
+~/jenkins-workspace/test-deployment.sh
+
+# Display the deployed application content
+echo "=== Deployed Application Content ==="
+curl -s http://localhost
+echo
+Task 7: Advanced Pipeline Features
+Subtask 7.1: Create Parameterized Job
+Create a parameterized job for different deployment environments:
+
+cat > ~/jenkins-workspace/parameterized-pipeline.xml << 'EOF'
+<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job">
+  <actions/>
+  <description>Parameterized CI/CD Pipeline with Ansible</description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <hudson.model.ParametersDefinitionProperty>
+      <parameterDefinitions>
+        <hudson.model.StringParameterDefinition>
+          <name>ENVIRONMENT</name>
+          <description>Target environment for deployment</description>
+          <defaultValue>development</defaultValue>
+          <trim>false</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>APP_VERSION</name>
+          <description>Application version to deploy</description>
+          <defaultValue>1.0.0</defaultValue>
+          <trim>false</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.BooleanParameterDefinition>
+          <name>SKIP_TESTS</name>
+          <description>Skip deployment tests</description>
+          <defaultValue>false</defaultValue>
+        </hudson.model.BooleanParameterDefinition>
+      </parameterDefinitions>
+    </hudson.model.ParametersDefinitionProperty>
+  </properties>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps">
+    <script>
+pipeline {
+    agent any
+    
+    parameters {
+        string(name: 'ENVIRONMENT', defaultValue: 'development', description: 'Target environment')
+        string(name: 'APP_VERSION', defaultValue: '1.0.0', description: 'Application version')
+        booleanParam(name: 'SKIP_TESTS', defaultValue: false, description: 'Skip tests')
+    }
+    
+    environment {
+        ANSIBLE_HOST_KEY_CHECKING = 'False'
+        PROJECT_DIR = '/var/lib/jenkins/deployment-project'
+    }
+    
+    stages {
+        stage('Environment Info') {
+            steps {
+                echo "Deploying to environment: ${params.ENVIRONMENT}"
+                echo "Application version: ${params.APP_VERSION}"
+                echo "Skip tests: ${params.SKIP_TESTS}"
+                echo "Build number: ${BUILD_NUMBER}"
+            }
+        }
+        
+        stage('Pre-deployment') {
+            steps {
+                sh '''
+                    cd ${PROJECT_DIR}
+                    echo "Environment: ${ENVIRONMENT}" > deployment-info.txt
+                    echo "Version: ${APP_VERSION}" >> deployment-info.txt
+                    echo "Build: ${BUILD_NUMBER}" >> deployment-info.txt
+                    echo "Timestamp: $(date)" >> deployment-info.txt
+                '''
+            }
+        }
+        
+        stage('Deploy') {
+            steps {
+                sh '''
+                    cd ${PROJECT_DIR}
+                    export BUILD_NUMBER=${BUILD_NUMBER}
+                    export ENVIRONMENT=${ENVIRONMENT}
+                    export APP_VERSION=${APP_VERSION}
+                    ansible-playbook -i inventory/hosts playbooks/deploy-webapp.yml -v \
+                        -e "environment=${ENVIRONMENT}" \
+                        -e "app_version=${APP_VERSION}" \
+                        -e "build_number=${BUILD_NUMBER}"
+                '''
+            }
+        }
+        
+        stage('Test Deployment') {
+            when {
+                not { params.SKIP_TESTS }
+            }
+            steps {
+                sh '''
+                    echo "Running deployment tests..."
+                    sleep 5
+                    
+                    # Test HTTP response
+                    if curl -s http://localhost | grep -q "Application Deployed Successfully"; then
+                        echo "✓ Deployment test: PASSED"
+                    else
+                        echo "✗ Deployment test: FAILED"
+                        exit 1
+                    fi
+                '''
+            }
+        }
+    }
+    
+    post {
+        success {
+            echo "Deployment to ${params.ENVIRONMENT} completed successfully!"
+        }
+        failure {
+            echo "Deployment to ${params.ENVIRONMENT} failed!"
+        }
+    }
+}
+    </script>
+    <sandbox>true</sandbox>
+  </definition>
+  <triggers/>
+  <disabled>false</disabled>
+</flow-definition>
+EOF
+Subtask 7.2: Create Parameterized Job
+# Create the parameterized pipeline job
+java -jar ~/jenkins-workspace/jenkins-cli.jar -s http://localhost:8080 -auth admin:admin123 create-job "Parameterized-WebApp-Pipeline" < ~/jenkins-workspace/parameterized-pipeline.xml
+
+# Build with parameters
+java -jar ~/jenkins-workspace/jenkins-cli.jar -s http://localhost:8080 -auth admin:admin123 build "Parameterized-WebApp-Pipeline" -p ENVIRONMENT=production -p APP_VERSION=2.0.0 -p SKIP_TESTS=false
+Task 8: Monitoring and Troubleshooting
+Subtask 8.1: Create Monitoring Script
+Create a script to monitor the CI/CD pipeline:
+
+cat > ~/jenkins-workspace/monitor-pipeline.sh << 'EOF'
+#!/bin/bash
+
+echo "=== Jenkins + Ansible CI/CD Pipeline Monitor ==="
+echo "Monitoring started at $(date)"
+echo
+
+# Check Jenkins service
+echo "1. Jenkins Service Status:"
+if sudo systemctl is-active --quiet jenkins; then
+    echo "   ✓ Jenkins is running"
+    echo "   Port 8080: $(sudo netstat -tlnp | grep :8080 | wc -l) connections"
+else
+    echo "   ✗ Jenkins is not running"
+fi
+
+# Check Ansible installation
+echo "2. Ansible Status:"
+if command -v ansible >/dev/null 2>&1; then
+    echo "   ✓ Ansible is installed: $(ansible --version | head -n1)"
+else
+    echo "   ✗ Ansible is not installed"
+fi
+
+# Check application deployment
+echo "3. Application Status:"
+if curl -s http://localhost >/dev/null 2>&1; then
+    echo "   ✓ Application is accessible"
+    echo "   HTTP Status: $(curl -s -o /dev/null -w "%{http_code}" http://localhost)"
+else
+    echo "   ✗ Application is not accessible"
+fi
+
+# Check nginx status
+echo "4. Nginx Status:"
+if sudo systemctl is-active --quiet nginx; then
+    echo "   ✓ Nginx is running"
+    echo "   Configuration test: $(sudo nginx -t 2>&1 | grep -o 'successful' || echo 'failed')"
+else
+    echo "   ✗ Nginx is not running"
+fi
+
+# Check recent Jenkins builds
+echo "5. Recent Jenkins Activity:"
+if [ -d "/var/lib/jenkins/jobs" ]; then
+    echo "   Available jobs:"
+    ls /var/lib/jenkins/jobs/ | sed 's/^/   - /'
+else
+    echo "   No Jenkins jobs found"
+fi
+
+echo
+echo "=== Monitoring completed at $(date) ==="
+EOF
+
+chmod +x ~/jenkins-workspace/monitor-pipeline.sh
+Subtask 8.2: Run Monitoring
+Execute the monitoring script:
+
+# Run monitoring script
+~/jenkins-workspace/monitor-pipeline.sh
+
+# Check Jenkins logs for any issues
+echo "=== Recent Jenkins Logs ==="
+sudo tail -n 20 /var/log/jenkins/jenkins.log
+Subtask 8.3: Troubleshooting Common Issues
+Create a troubleshooting guide:
+
+cat > ~/jenkins-workspace/troubleshooting-guide.md << 'EOF'
+# Jenkins + Ansible CI/CD Troubleshooting Guide
+
+## Common Issues and Solutions
+
+### 1. Jenkins Service Issues
+**Problem**: Jenkins won't start
+**Solution**:
+```bash
+# Check Java installation
+java -version
+
+# Check Jenkins logs
+sudo journalctl -u jenkins -f
+
+# Restart Jenkins
+sudo systemctl restart jenkins
+2. Ansible Permission Issues
+Problem: Ansible playbook fails with permission errors Solution:
+
+# Ensure jenkins user has sudo access
+sudo usermod -aG sudo jenkins
+echo "jenkins ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/jenkins
+
+# Fix file permissions
+sudo chown -R jenkins:jenkins /var/lib/jenkins/deployment-project
+3. Application Not Accessible
+Problem: Cannot access application at http://localhost Solution:
+
+# Check nginx status
+sudo systemctl status nginx
+
+# Check nginx configuration
+sudo nginx -t
+
+# Check if port 80 is in use
+sudo netstat -tlnp | grep :80
+
+# Restart nginx
+sudo systemctl restart nginx
+4. Build Failures
+Problem: Jenkins builds fail consistently Solution:
+
+# Check build console output
+java -jar jenkins-cli.jar -s http://localhost:8080 -auth admin:admin123 console JOB_NAME
+
+# Verify Ansible syntax
+cd /var/lib/jenkins/deployment-project
+ansible-playbook --syntax-check playbooks/deploy-webapp.yml
+
+# Test Ansible connectivity
+ansible -i inventory/hosts webservers -m ping
+EOF
+
+echo "Troubleshooting guide created at ~/jenkins-workspace/troubleshooting-guide.md"
+
+
+## Conclusion
+
+In this comprehensive lab, you have successfully:
+
+1. **Installed and configured Jenkins** on a Linux system, setting up a complete CI/CD server environment
+2. **Integrated Ansible** with Jenkins to create automated deployment pipelines
+3. **Created Jenkins jobs** that execute Ansible playbooks for application deployment
+4. **Built a complete CI/CD pipeline** that includes preparation, syntax checking, deployment, verification, and health checks
+5. **Implemented parameterized deployments** allowing for flexible environment and version management
+6. **Established monitoring and troubleshooting procedures** for maintaining the pipeline
+
+This lab demonstrates the power of combining Jenkins and Ansible for automated infrastructure management and application deployment. The integration allows for:
+
+- **Consistent deployments** across different environments
+- **Automated testing and verification** of deployments
+- **Rollback capabilities** through version control
+- **Scalable infrastructure management** through code
+
+The skills learned in this lab are directly applicable to real-world DevOps scenarios where organizations need reliable, automated deployment processes. By mastering Jenkins and Ansible integration, you can significantly improve deployment reliability, reduce manual errors, and accelerate software delivery cycles.
+
+The single-machine approach used in this lab makes it easy to understand the concepts before scaling to multi-server environments in production scenarios.
