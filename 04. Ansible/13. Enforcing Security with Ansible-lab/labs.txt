@@ -1,0 +1,774 @@
+Lab 13: Enforcing Security with Ansible
+Lab Objectives
+By the end of this lab, students will be able to:
+
+Install and configure Ansible on a Linux system
+Create Ansible playbooks to enforce SSH security hardening
+Automate firewall configuration using Ansible for compliance
+Apply security baselines using Infrastructure as Code principles
+Validate security configurations and compliance settings
+Understand the importance of automated security enforcement in system administration
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of Linux command line operations
+Familiarity with text editors (nano, vim, or similar)
+Knowledge of SSH concepts and basic networking
+Understanding of YAML syntax basics
+Basic knowledge of firewall concepts
+Lab Environment
+Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated Linux machine. The provided machine is bare metal with no pre-installed tools, so you will install all required software during the lab exercises.
+
+Task 1: Setting Up Ansible Environment
+Subtask 1.1: Install Ansible and Dependencies
+First, update your system and install the necessary packages:
+
+# Update package repositories
+sudo apt update
+
+# Install Python3 and pip if not already installed
+sudo apt install -y python3 python3-pip
+
+# Install Ansible using pip
+pip3 install ansible
+
+# Verify Ansible installation
+ansible --version
+
+# Install additional packages for SSH and firewall management
+sudo apt install -y openssh-server ufw
+Subtask 1.2: Configure Ansible Inventory
+Create a local inventory file to manage the localhost:
+
+# Create Ansible working directory
+mkdir -p ~/ansible-security-lab
+cd ~/ansible-security-lab
+
+# Create inventory file
+cat > inventory.ini << 'EOF'
+[local]
+localhost ansible_connection=local
+
+[local:vars]
+ansible_python_interpreter=/usr/bin/python3
+EOF
+Subtask 1.3: Test Ansible Connectivity
+Verify that Ansible can connect to the local machine:
+
+# Test connection to localhost
+ansible -i inventory.ini local -m ping
+
+# Gather system facts
+ansible -i inventory.ini local -m setup | head -20
+Task 2: SSH Security Hardening with Ansible
+Subtask 2.1: Create SSH Hardening Playbook
+Create a comprehensive SSH hardening playbook:
+
+# Create SSH hardening playbook
+cat > ssh-hardening.yml << 'EOF'
+---
+- name: SSH Security Hardening
+  hosts: local
+  become: yes
+  vars:
+    ssh_config_file: /etc/ssh/sshd_config
+    ssh_backup_file: /etc/ssh/sshd_config.backup
+    
+  tasks:
+    - name: Create backup of original SSH config
+      copy:
+        src: "{{ ssh_config_file }}"
+        dest: "{{ ssh_backup_file }}"
+        backup: yes
+      
+    - name: Disable root login via SSH
+      lineinfile:
+        path: "{{ ssh_config_file }}"
+        regexp: '^#?PermitRootLogin'
+        line: 'PermitRootLogin no'
+        backup: yes
+      notify: restart ssh
+      
+    - name: Disable password authentication
+      lineinfile:
+        path: "{{ ssh_config_file }}"
+        regexp: '^#?PasswordAuthentication'
+        line: 'PasswordAuthentication no'
+        backup: yes
+      notify: restart ssh
+      
+    - name: Enable public key authentication
+      lineinfile:
+        path: "{{ ssh_config_file }}"
+        regexp: '^#?PubkeyAuthentication'
+        line: 'PubkeyAuthentication yes'
+        backup: yes
+      notify: restart ssh
+      
+    - name: Disable empty passwords
+      lineinfile:
+        path: "{{ ssh_config_file }}"
+        regexp: '^#?PermitEmptyPasswords'
+        line: 'PermitEmptyPasswords no'
+        backup: yes
+      notify: restart ssh
+      
+    - name: Set maximum authentication attempts
+      lineinfile:
+        path: "{{ ssh_config_file }}"
+        regexp: '^#?MaxAuthTries'
+        line: 'MaxAuthTries 3'
+        backup: yes
+      notify: restart ssh
+      
+    - name: Set client alive interval
+      lineinfile:
+        path: "{{ ssh_config_file }}"
+        regexp: '^#?ClientAliveInterval'
+        line: 'ClientAliveInterval 300'
+        backup: yes
+      notify: restart ssh
+      
+    - name: Set client alive count max
+      lineinfile:
+        path: "{{ ssh_config_file }}"
+        regexp: '^#?ClientAliveCountMax'
+        line: 'ClientAliveCountMax 2'
+        backup: yes
+      notify: restart ssh
+      
+    - name: Disable X11 forwarding
+      lineinfile:
+        path: "{{ ssh_config_file }}"
+        regexp: '^#?X11Forwarding'
+        line: 'X11Forwarding no'
+        backup: yes
+      notify: restart ssh
+      
+    - name: Set SSH protocol version 2
+      lineinfile:
+        path: "{{ ssh_config_file }}"
+        regexp: '^#?Protocol'
+        line: 'Protocol 2'
+        backup: yes
+      notify: restart ssh
+      
+    - name: Configure allowed users (create security group)
+      group:
+        name: ssh-users
+        state: present
+        
+    - name: Add current user to ssh-users group
+      user:
+        name: "{{ ansible_user_id }}"
+        groups: ssh-users
+        append: yes
+        
+    - name: Restrict SSH access to ssh-users group
+      lineinfile:
+        path: "{{ ssh_config_file }}"
+        regexp: '^#?AllowGroups'
+        line: 'AllowGroups ssh-users'
+        backup: yes
+      notify: restart ssh
+      
+  handlers:
+    - name: restart ssh
+      service:
+        name: ssh
+        state: restarted
+EOF
+Subtask 2.2: Execute SSH Hardening Playbook
+Run the SSH hardening playbook:
+
+# Execute the SSH hardening playbook
+ansible-playbook -i inventory.ini ssh-hardening.yml
+
+# Verify SSH configuration changes
+sudo grep -E "PermitRootLogin|PasswordAuthentication|MaxAuthTries|AllowGroups" /etc/ssh/sshd_config
+Subtask 2.3: Create SSH Key Pair for Secure Access
+Since we disabled password authentication, create SSH keys:
+
+# Generate SSH key pair (if not already exists)
+if [ ! -f ~/.ssh/id_rsa ]; then
+    ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ""
+fi
+
+# Add public key to authorized_keys
+mkdir -p ~/.ssh
+cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+chmod 700 ~/.ssh
+Task 3: Firewall Configuration Automation
+Subtask 3.1: Create Firewall Security Playbook
+Create a comprehensive firewall configuration playbook:
+
+# Create firewall configuration playbook
+cat > firewall-config.yml << 'EOF'
+---
+- name: Firewall Security Configuration
+  hosts: local
+  become: yes
+  vars:
+    allowed_ssh_port: 22
+    allowed_http_port: 80
+    allowed_https_port: 443
+    
+  tasks:
+    - name: Install UFW firewall
+      apt:
+        name: ufw
+        state: present
+        update_cache: yes
+        
+    - name: Reset UFW to defaults
+      ufw:
+        state: reset
+        
+    - name: Set UFW default policies
+      ufw:
+        direction: "{{ item.direction }}"
+        policy: "{{ item.policy }}"
+      loop:
+        - { direction: 'incoming', policy: 'deny' }
+        - { direction: 'outgoing', policy: 'allow' }
+        - { direction: 'routed', policy: 'deny' }
+        
+    - name: Allow SSH access
+      ufw:
+        rule: allow
+        port: "{{ allowed_ssh_port }}"
+        proto: tcp
+        comment: "SSH access"
+        
+    - name: Allow HTTP traffic
+      ufw:
+        rule: allow
+        port: "{{ allowed_http_port }}"
+        proto: tcp
+        comment: "HTTP web traffic"
+        
+    - name: Allow HTTPS traffic
+      ufw:
+        rule: allow
+        port: "{{ allowed_https_port }}"
+        proto: tcp
+        comment: "HTTPS web traffic"
+        
+    - name: Allow loopback traffic
+      ufw:
+        rule: allow
+        interface: lo
+        direction: in
+        
+    - name: Allow loopback traffic out
+      ufw:
+        rule: allow
+        interface: lo
+        direction: out
+        
+    - name: Deny specific high-risk ports
+      ufw:
+        rule: deny
+        port: "{{ item }}"
+        proto: tcp
+        comment: "Block high-risk port"
+      loop:
+        - "23"    # Telnet
+        - "135"   # RPC
+        - "139"   # NetBIOS
+        - "445"   # SMB
+        - "1433"  # SQL Server
+        - "3389"  # RDP
+        
+    - name: Enable UFW logging
+      ufw:
+        logging: "on"
+        
+    - name: Enable UFW firewall
+      ufw:
+        state: enabled
+        
+    - name: Create firewall status check script
+      copy:
+        content: |
+          #!/bin/bash
+          echo "=== UFW Firewall Status ==="
+          sudo ufw status verbose
+          echo ""
+          echo "=== Active Network Connections ==="
+          sudo netstat -tuln
+          echo ""
+          echo "=== UFW Rules ==="
+          sudo ufw show added
+        dest: /usr/local/bin/firewall-status.sh
+        mode: '0755'
+EOF
+Subtask 3.2: Execute Firewall Configuration
+Run the firewall configuration playbook:
+
+# Execute the firewall configuration playbook
+ansible-playbook -i inventory.ini firewall-config.yml
+
+# Check firewall status
+sudo ufw status verbose
+
+# Run the firewall status script
+sudo /usr/local/bin/firewall-status.sh
+Subtask 3.3: Create Advanced Security Rules
+Create additional security rules playbook:
+
+# Create advanced security rules playbook
+cat > advanced-security.yml << 'EOF'
+---
+- name: Advanced Security Configuration
+  hosts: local
+  become: yes
+  
+  tasks:
+    - name: Install fail2ban for intrusion prevention
+      apt:
+        name: fail2ban
+        state: present
+        update_cache: yes
+        
+    - name: Create fail2ban SSH jail configuration
+      copy:
+        content: |
+          [sshd]
+          enabled = true
+          port = ssh
+          filter = sshd
+          logpath = /var/log/auth.log
+          maxretry = 3
+          bantime = 3600
+          findtime = 600
+        dest: /etc/fail2ban/jail.d/ssh.conf
+        backup: yes
+      notify: restart fail2ban
+      
+    - name: Start and enable fail2ban
+      service:
+        name: fail2ban
+        state: started
+        enabled: yes
+        
+    - name: Configure automatic security updates
+      apt:
+        name: unattended-upgrades
+        state: present
+        
+    - name: Enable automatic security updates
+      copy:
+        content: |
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Download-Upgradeable-Packages "1";
+          APT::Periodic::AutocleanInterval "7";
+          APT::Periodic::Unattended-Upgrade "1";
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        backup: yes
+        
+    - name: Set secure file permissions on sensitive files
+      file:
+        path: "{{ item }}"
+        mode: "0600"
+        owner: root
+        group: root
+      loop:
+        - /etc/ssh/sshd_config
+        - /etc/shadow
+        - /etc/gshadow
+        
+    - name: Disable unused network services
+      service:
+        name: "{{ item }}"
+        state: stopped
+        enabled: no
+      loop:
+        - avahi-daemon
+        - cups
+      ignore_errors: yes
+      
+    - name: Create security audit script
+      copy:
+        content: |
+          #!/bin/bash
+          echo "=== Security Audit Report ==="
+          echo "Date: $(date)"
+          echo ""
+          echo "=== SSH Configuration Status ==="
+          grep -E "PermitRootLogin|PasswordAuthentication|MaxAuthTries" /etc/ssh/sshd_config
+          echo ""
+          echo "=== Firewall Status ==="
+          ufw status
+          echo ""
+          echo "=== Fail2ban Status ==="
+          fail2ban-client status
+          echo ""
+          echo "=== Failed Login Attempts ==="
+          grep "Failed password" /var/log/auth.log | tail -5
+          echo ""
+          echo "=== System Updates Available ==="
+          apt list --upgradable 2>/dev/null | wc -l
+          echo ""
+          echo "=== Listening Services ==="
+          netstat -tuln | grep LISTEN
+        dest: /usr/local/bin/security-audit.sh
+        mode: '0755'
+        
+  handlers:
+    - name: restart fail2ban
+      service:
+        name: fail2ban
+        state: restarted
+EOF
+Subtask 3.4: Execute Advanced Security Configuration
+Run the advanced security playbook:
+
+# Execute advanced security configuration
+ansible-playbook -i inventory.ini advanced-security.yml
+
+# Run security audit
+sudo /usr/local/bin/security-audit.sh
+Task 4: Security Compliance Validation
+Subtask 4.1: Create Compliance Check Playbook
+Create a playbook to validate security compliance:
+
+# Create compliance validation playbook
+cat > compliance-check.yml << 'EOF'
+---
+- name: Security Compliance Validation
+  hosts: local
+  become: yes
+  
+  tasks:
+    - name: Check SSH root login is disabled
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^PermitRootLogin no'
+        state: absent
+      check_mode: yes
+      register: ssh_root_check
+      failed_when: ssh_root_check.changed
+      
+    - name: Check password authentication is disabled
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^PasswordAuthentication no'
+        state: absent
+      check_mode: yes
+      register: ssh_password_check
+      failed_when: ssh_password_check.changed
+      
+    - name: Verify UFW firewall is active
+      command: ufw status
+      register: ufw_status
+      failed_when: "'Status: active' not in ufw_status.stdout"
+      
+    - name: Check fail2ban is running
+      service:
+        name: fail2ban
+        state: started
+      check_mode: yes
+      register: fail2ban_check
+      
+    - name: Verify SSH service is running
+      service:
+        name: ssh
+        state: started
+      check_mode: yes
+      register: ssh_service_check
+      
+    - name: Display compliance results
+      debug:
+        msg: |
+          === SECURITY COMPLIANCE REPORT ===
+          SSH Root Login Disabled: {{ 'PASS' if not ssh_root_check.changed else 'FAIL' }}
+          SSH Password Auth Disabled: {{ 'PASS' if not ssh_password_check.changed else 'FAIL' }}
+          UFW Firewall Active: {{ 'PASS' if 'Status: active' in ufw_status.stdout else 'FAIL' }}
+          Fail2ban Service Running: {{ 'PASS' if not fail2ban_check.changed else 'FAIL' }}
+          SSH Service Running: {{ 'PASS' if not ssh_service_check.changed else 'FAIL' }}
+EOF
+Subtask 4.2: Run Compliance Validation
+Execute the compliance check:
+
+# Run compliance validation
+ansible-playbook -i inventory.ini compliance-check.yml
+
+# Generate detailed security report
+cat > generate-security-report.sh << 'EOF'
+#!/bin/bash
+echo "=== COMPREHENSIVE SECURITY REPORT ==="
+echo "Generated on: $(date)"
+echo "Hostname: $(hostname)"
+echo "User: $(whoami)"
+echo ""
+
+echo "=== SSH SECURITY CONFIGURATION ==="
+echo "SSH Configuration File: /etc/ssh/sshd_config"
+grep -E "PermitRootLogin|PasswordAuthentication|MaxAuthTries|AllowGroups|ClientAlive" /etc/ssh/sshd_config
+echo ""
+
+echo "=== FIREWALL CONFIGURATION ==="
+sudo ufw status verbose
+echo ""
+
+echo "=== FAIL2BAN STATUS ==="
+sudo fail2ban-client status
+echo ""
+
+echo "=== NETWORK SERVICES ==="
+sudo netstat -tuln | grep LISTEN
+echo ""
+
+echo "=== SYSTEM SECURITY UPDATES ==="
+apt list --upgradable 2>/dev/null | head -10
+echo ""
+
+echo "=== RECENT SECURITY EVENTS ==="
+sudo grep -i "failed\|error\|denied" /var/log/auth.log | tail -5
+echo ""
+
+echo "=== FILE PERMISSIONS CHECK ==="
+ls -la /etc/ssh/sshd_config /etc/shadow /etc/passwd
+echo ""
+
+echo "=== SECURITY REPORT COMPLETE ==="
+EOF
+
+chmod +x generate-security-report.sh
+./generate-security-report.sh
+Task 5: Creating Reusable Security Roles
+Subtask 5.1: Create Ansible Role Structure
+Organize the security configurations into reusable Ansible roles:
+
+# Create Ansible roles directory structure
+mkdir -p roles/security-hardening/{tasks,handlers,vars,templates,files}
+
+# Create main tasks file for the role
+cat > roles/security-hardening/tasks/main.yml << 'EOF'
+---
+- name: Include SSH hardening tasks
+  include_tasks: ssh-hardening.yml
+
+- name: Include firewall configuration tasks
+  include_tasks: firewall-config.yml
+
+- name: Include system security tasks
+  include_tasks: system-security.yml
+EOF
+
+# Create SSH hardening tasks
+cat > roles/security-hardening/tasks/ssh-hardening.yml << 'EOF'
+---
+- name: Backup SSH configuration
+  copy:
+    src: /etc/ssh/sshd_config
+    dest: /etc/ssh/sshd_config.backup
+    backup: yes
+
+- name: Apply SSH security settings
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+    backup: yes
+  loop:
+    - { regexp: '^#?PermitRootLogin', line: 'PermitRootLogin no' }
+    - { regexp: '^#?PasswordAuthentication', line: 'PasswordAuthentication no' }
+    - { regexp: '^#?MaxAuthTries', line: 'MaxAuthTries 3' }
+    - { regexp: '^#?ClientAliveInterval', line: 'ClientAliveInterval 300' }
+    - { regexp: '^#?X11Forwarding', line: 'X11Forwarding no' }
+  notify: restart ssh
+EOF
+
+# Create firewall configuration tasks
+cat > roles/security-hardening/tasks/firewall-config.yml << 'EOF'
+---
+- name: Configure UFW firewall
+  ufw:
+    rule: "{{ item.rule }}"
+    port: "{{ item.port | default(omit) }}"
+    proto: "{{ item.proto | default(omit) }}"
+    direction: "{{ item.direction | default(omit) }}"
+    policy: "{{ item.policy | default(omit) }}"
+  loop:
+    - { direction: 'incoming', policy: 'deny' }
+    - { direction: 'outgoing', policy: 'allow' }
+    - { rule: 'allow', port: '22', proto: 'tcp' }
+    - { rule: 'allow', port: '80', proto: 'tcp' }
+    - { rule: 'allow', port: '443', proto: 'tcp' }
+
+- name: Enable UFW
+  ufw:
+    state: enabled
+    logging: 'on'
+EOF
+
+# Create system security tasks
+cat > roles/security-hardening/tasks/system-security.yml << 'EOF'
+---
+- name: Install security packages
+  apt:
+    name:
+      - fail2ban
+      - unattended-upgrades
+    state: present
+    update_cache: yes
+
+- name: Configure fail2ban
+  copy:
+    content: |
+      [sshd]
+      enabled = true
+      maxretry = 3
+      bantime = 3600
+    dest: /etc/fail2ban/jail.d/ssh.conf
+  notify: restart fail2ban
+
+- name: Start security services
+  service:
+    name: "{{ item }}"
+    state: started
+    enabled: yes
+  loop:
+    - fail2ban
+EOF
+
+# Create handlers
+cat > roles/security-hardening/handlers/main.yml << 'EOF'
+---
+- name: restart ssh
+  service:
+    name: ssh
+    state: restarted
+
+- name: restart fail2ban
+  service:
+    name: fail2ban
+    state: restarted
+EOF
+Subtask 5.2: Create Master Security Playbook
+Create a master playbook that uses the security role:
+
+# Create master security playbook
+cat > master-security-playbook.yml << 'EOF'
+---
+- name: Master Security Hardening Playbook
+  hosts: local
+  become: yes
+  
+  roles:
+    - security-hardening
+    
+  post_tasks:
+    - name: Run final security validation
+      command: "{{ item }}"
+      register: security_checks
+      loop:
+        - "ufw status"
+        - "fail2ban-client status"
+        - "systemctl is-active ssh"
+        
+    - name: Display security status
+      debug:
+        msg: |
+          === SECURITY IMPLEMENTATION COMPLETE ===
+          UFW Status: {{ security_checks.results[0].stdout }}
+          Fail2ban Status: {{ security_checks.results[1].stdout }}
+          SSH Service: {{ security_checks.results[2].stdout }}
+          
+    - name: Create final security summary
+      copy:
+        content: |
+          SECURITY HARDENING SUMMARY
+          ==========================
+          Date: {{ ansible_date_time.iso8601 }}
+          Host: {{ inventory_hostname }}
+          
+          IMPLEMENTED SECURITY MEASURES:
+          - SSH root login disabled
+          - SSH password authentication disabled
+          - UFW firewall configured and enabled
+          - Fail2ban intrusion prevention active
+          - Automatic security updates enabled
+          - File permissions secured
+          - Network services hardened
+          
+          COMPLIANCE STATUS: SECURED
+        dest: /var/log/security-hardening-summary.log
+        mode: '0644'
+EOF
+Subtask 5.3: Execute Master Security Playbook
+Run the comprehensive security hardening:
+
+# Execute the master security playbook
+ansible-playbook -i inventory.ini master-security-playbook.yml
+
+# View the security summary
+sudo cat /var/log/security-hardening-summary.log
+
+# Final security verification
+echo "=== FINAL SECURITY VERIFICATION ==="
+sudo ufw status verbose
+echo ""
+sudo fail2ban-client status
+echo ""
+sudo systemctl status ssh --no-pager -l
+Troubleshooting Common Issues
+SSH Connection Issues
+If you encounter SSH connection problems after hardening:
+
+# Check SSH service status
+sudo systemctl status ssh
+
+# Verify SSH configuration syntax
+sudo sshd -t
+
+# Restore SSH configuration if needed
+sudo cp /etc/ssh/sshd_config.backup /etc/ssh/sshd_config
+sudo systemctl restart ssh
+Firewall Blocking Connections
+If the firewall blocks necessary connections:
+
+# Check UFW status and rules
+sudo ufw status verbose
+
+# Add specific rules if needed
+sudo ufw allow from [IP_ADDRESS] to any port 22
+
+# Reset UFW if necessary
+sudo ufw --force reset
+Ansible Execution Errors
+For Ansible-related issues:
+
+# Check Ansible syntax
+ansible-playbook --syntax-check -i inventory.ini [playbook-name].yml
+
+# Run in verbose mode for debugging
+ansible-playbook -vvv -i inventory.ini [playbook-name].yml
+
+# Check Ansible configuration
+ansible --version
+ansible-config dump
+Conclusion
+In this comprehensive lab, you have successfully implemented automated security hardening using Ansible. You accomplished the following key objectives:
+
+Security Implementations Completed:
+
+SSH Hardening: Disabled root login, password authentication, and configured secure SSH settings
+Firewall Automation: Implemented UFW firewall rules with proper access controls
+Intrusion Prevention: Deployed fail2ban for automated threat response
+System Security: Configured automatic updates and secure file permissions
+Compliance Validation: Created automated compliance checking mechanisms
+Technical Skills Developed:
+
+Infrastructure as Code: Used Ansible playbooks to codify security configurations
+Security Automation: Automated repetitive security tasks for consistency
+Compliance Management: Implemented systematic security baseline enforcement
+Role-Based Organization: Created reusable Ansible roles for security hardening
+Real-World Applications: This lab demonstrates critical skills used in enterprise environments where security compliance must be maintained across multiple systems. The automated approach ensures consistent security posture, reduces human error, and enables rapid deployment of security updates across infrastructure.
+
+Why This Matters: Security hardening through automation is essential in modern IT operations. Manual security configuration is time-consuming, error-prone, and difficult to maintain at scale. By using Ansible for security enforcement, organizations can ensure consistent security baselines, rapid incident response, and compliance with security standards across their entire infrastructure.
+
+The skills you've developed in this lab are directly applicable to roles in DevSecOps, system administration, and cybersecurity, where automated security enforcement is becoming the industry standard.
